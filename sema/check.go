@@ -182,7 +182,9 @@ func (c *checker) declareContained(host *Scope, cu *syntax.Unit) {
 	psc := c.declareUnit(cu, host)
 	name := cu.Ident.Name
 	sym := host.Names[name]
-	if sym == nil || sym.Kind == SymGeneric {
+	if sym == nil || sym.Kind == SymGeneric || sym.Flags&FUsed != 0 {
+		// a use-associated name is shadowed by the local definition (the
+		// session's redefinition rule, bib §7)
 		sym = c.newSym(host, name, SymProc, cu.Pos)
 	} else if placeholder(sym) {
 		sym.Kind = SymProc // "public :: f" before the definition of f

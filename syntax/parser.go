@@ -14,6 +14,7 @@ type parser struct {
 	lim  Limits
 	errs ErrorList
 	stop bool
+	cell bool // Options.Cell
 
 	toks  []Token // tokens of the current logical line
 	nx    int     // next token of the line not yet assigned to a statement
@@ -43,7 +44,7 @@ func Parse(name string, src []byte, opts *Options) (*File, error) {
 	}
 	fset := &FileSet{}
 	file := &File{Name: name, Form: form, Set: fset}
-	p := &parser{fset: fset, lim: lim}
+	p := &parser{fset: fset, lim: lim, cell: opts.Cell}
 	p.lx = lexer{intern: map[string]string{}, errf: p.errorAt}
 	if len(src) > lim.MaxSourceBytes {
 		f := fset.add(name, nil)
@@ -415,6 +416,18 @@ func (p *parser) file() []*Unit {
 func (p *parser) implicitMain() *Unit {
 	u := &Unit{StmtBase: p.base(), Kind: ProgramUnit, Implicit: true}
 	u.Label = 0
+	if p.cell {
+		// loose cell material: up to the next program unit, an END, or EOF
+		u.Body = p.block(p.isUnitStart)
+		if p.load() && p.atUnitEnd() {
+			p.unitTail(u)
+		} else if p.load() && !p.isUnitStart() {
+			// "contains" outside a unit: report it and move on, never loop
+			p.errorAt(p.tok().Pos, "unexpected "+p.describe(p.tok())+" outside a program unit")
+			p.statement()
+		}
+		return u
+	}
 	p.unitBody(u)
 	return u
 }

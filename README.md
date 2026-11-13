@@ -16,7 +16,7 @@ by hand.
 |---|---|---|
 | M0 oracle harness | `internal/oracle`, `cmd/foracle`, pinned gfortran 15.2.0, golden file, corpus runner, reference column of the gate | **done** |
 | M1 front end, part 1 | lexer (free and fixed form, continuation, `include`), parser for the gate's kernels; **the §4.2 gate**, report published | in progress (syntax done) |
-| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: PR 1 of 4 (package `sema`: scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types); modules/generics/intent, array shapes and the cell splitter are not done |
+| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: package `sema` (scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types: PR 1) and the cell splitter, session module and go-notebook-facing analysis (PR 4); generic resolution, argument association and `intent` at calls (PR 2) and shape conformance (PR 3) are not done |
 | M3 back end | as the gate decides: A = closure compiler over the typed tree, B = lowering to go-embedded-c's IR | planned |
 | M4 runtime | I/O (ported from flang-rt), intrinsics on go-ndarray and go-fft | planned |
 | M5 notebook bridge | values table, `file:line` errors, cells on desktop and playground | planned |
@@ -352,6 +352,40 @@ allocations and 497 KB per pass, exact; time **not measured: load** (1-min load
 46 when it ran, above the bound of 8), and the comparison with
 `gfortran -fsyntax-only` was not run for the same reason.
 
+### The cell splitter and the session module (bib §7)
+
+`sema.Session` analyses the cells of a notebook in order, with the shape of
+go-notebook's `analysis.Sequential` (`Begin`, `AnalyzeNext(state, index, src)`;
+go-notebook was read, not edited: `analysis/lang.go` at commit `0cb6796`). `syntax.Options.Cell`
+is the grammar of a cell: statements outside any program unit are main-program
+material that needs no `END` and ends at EOF or at the next unit, so one cell
+mixes declarations, statements and program units. A cell is then split:
+
+- top-level declarations and top-level subroutines and functions go into the
+  session module `__cell<N>`;
+- top-level executable statements are wrapped in the subroutine
+  `__cell<N>_run`, a procedure of that module (no call is generated: running
+  it is M3);
+- every earlier session module and every module an earlier cell defined is an
+  implicit `use` of `__cell<N>`;
+- names are lower case (the lexer normalises; `Crosses` and the lists are lower
+  case); redefinition shadows (a use-associated name is replaced by the local
+  declaration; earlier cells keep their binding); implicit typing is off unless
+  `SessionOptions.ImplicitTyping`;
+- a cell with errors returns the state it was given, so a broken cell leaves
+  nothing behind (tested).
+
+`CellInfo` carries what go-notebook's graph needs: `Defines` (variables and
+named constants: the names that cross, `Crosses`), `Procedures`, `Types` and
+`Modules` (they stay Fortran's), `Uses` (earlier cells' names this cell reads),
+`Errors`, and what the back ends need: the transformed `File` and its `Info`.
+`sema.GoType` is the values table of bib §7 (`integer(k)` to `int8..int64`,
+`real` to `float32|float64`, `complex(4|8)` to `complex64|complex128`,
+`logical` to `bool`, `character` to `string`, arrays to `*ndarray.Array`,
+derived types opaque; `integer(16)`, `real(10)` and `real(16)` have none). The
+adapter that fills `analysis.Cell` belongs to the language registration in
+go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
+
 ## Not yet
 
 - Semantics not done, of bib §1.1: generic resolution and ambiguity (a generic
@@ -359,8 +393,8 @@ allocations and 497 KB per pass, exact; time **not measured: load** (1-min load
   association and `intent` checks at calls, explicit-interface checks,
   conformance of shapes (only ranks are compared), `select type` dispatch,
   derived-type I/O, submodules, `entry` result typing, `common`/`equivalence`
-  storage rules, `data` value conversion, the cell splitter and session module
-  of bib §7 and the go-notebook analysis. `eval` was **not** moved onto the
+  storage rules, `data` value conversion, the go-notebook adapter and the
+  "value from Go into a cell" direction of bib §7. `eval` was **not** moved onto the
   typed tree (it still walks the syntax tree: the migration comes with part 2,
   when procedures and arguments are resolved).
 - No general evaluator: package `eval` is the gate's

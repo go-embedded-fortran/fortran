@@ -9,6 +9,38 @@ import (
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
 
+// FuzzSession feeds arbitrary cells to a session, two in a row: no panic, no
+// diagnostic without a message, and a cell with errors leaves the state alone.
+func FuzzSession(f *testing.F) {
+	for _, s := range []string{
+		"integer :: n\nn = 1\n",
+		"subroutine s()\nend subroutine\ncall s()\n",
+		"module m\n integer :: k\nend module\nx = 1\n",
+		"real :: a(3)\na = [1., 2., 3.]\nprint *, sum(a)\n",
+	} {
+		f.Add(s, "integer :: m\nm = n + 1\n")
+	}
+	f.Fuzz(func(t *testing.T, a, b string) {
+		if len(a)+len(b) > 1<<15 {
+			return
+		}
+		s := NewSession(SessionOptions{Limits: Limits{MaxSymbols: 5000, MaxConstChars: 1 << 14}})
+		st := s.Begin()
+		for i, src := range []string{a, b} {
+			ci, next := s.AnalyzeNext(st, i, src)
+			for _, e := range ci.Errors {
+				if strings.HasPrefix(e.Msg, "internal error") || strings.Contains(e.Msg, "internal parser error") {
+					t.Fatalf("panic recovered: %v", e)
+				}
+			}
+			if len(ci.Errors) > 0 && next != st {
+				t.Fatal("a cell with errors changed the state")
+			}
+			st = next
+		}
+	})
+}
+
 // FuzzAnalyze feeds arbitrary text to the parser and, when it parses, to the
 // analyser: no input may panic, hang, or leave a diagnostic without a
 // position. The committed corpus is testdata/fuzz/FuzzAnalyze plus the seeds

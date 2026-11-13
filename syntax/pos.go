@@ -184,4 +184,9 @@ type Options struct {
 	Form   Form  // Auto: DetectForm(name)
 	FS     fs.FS // resolves INCLUDE; nil refuses every INCLUDE
 	Limits Limits
+	// Cell selects the grammar of a notebook cell (bib/fortran.md §7):
+	// statements outside any program unit form main-program material that
+	// needs no END statement and ends at EOF or at the next program unit, so
+	// that one cell can mix declarations, statements and program units.
+	Cell bool
 }
