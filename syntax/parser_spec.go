@@ -1,7 +1,5 @@
 package syntax
 
-import "strings"
-
 // stmt parses the current statement (not yet consumed) by its first word.
 func (p *parser) stmt() Stmt {
 	t := p.tok()
@@ -1042,7 +1040,7 @@ func (p *parser) interfaceStmt() Stmt {
 	p.enter()
 	defer p.leave()
 	for p.load() {
-		if p.atEnd("interface") || (p.atUnitEnd() && !p.isUnitEndOfBody()) {
+		if p.atEnd("interface") || p.atUnitEnd() {
 			break
 		}
 		switch {
@@ -1078,9 +1076,3 @@ func (p *parser) interfaceStmt() Stmt {
 	}
 	return s
 }
-
-// isUnitEndOfBody is false: an END inside an interface block that is not
-// "end interface" closes nothing here, so the block stops (error recovery).
-func (p *parser) isUnitEndOfBody() bool { return false }
-
-var _ = strings.ToLower
