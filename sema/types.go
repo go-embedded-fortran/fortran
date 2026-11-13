@@ -119,7 +119,9 @@ type DerivedType struct {
 	// that implements it, resolved in Scope.
 	Bound    map[string]string
 	Sequence bool
-	Scope    *Scope
+	// Forward marks a type named by a pointer component before its definition.
+	Forward bool
+	Scope   *Scope
 }
 
 // Component is a data component of a derived type.

@@ -48,6 +48,9 @@ func intRange(kind int) (lo, hi int64, ok bool) {
 }
 
 func fitsInt(v int64, kind int) bool {
+	if kind == 16 {
+		return true // 128 bits: every int64 fits; arithmetic is not folded
+	}
 	lo, hi, ok := intRange(kind)
 	return ok && v >= lo && v <= hi
 }
@@ -262,7 +265,7 @@ func foldArith(op string, x, y *Const) (*Const, string) {
 	switch t.Basic {
 	case Integer:
 		if _, _, ok := intRange(t.Kind); !ok {
-			return nil, ""
+			return nil, "" // kind 16: not folded
 		}
 		a, b := x.I, y.I
 		var v int64

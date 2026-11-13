@@ -27,6 +27,17 @@ type checker struct {
 	nsyms int
 	stop  bool
 	depth int
+	// fwdOK allows a type name not yet defined (pointer/allocatable components).
+	fwdOK bool
+	// intrMods caches the intrinsic modules: a type of iso_c_binding is one
+	// type however many scopes use it.
+	intrMods map[string]*Scope
+	// deferTyping is set while evaluating array bounds and character lengths
+	// of a declaration: an untyped dummy is not given its implicit type yet.
+	deferTyping bool
+	// definedAssign is set while checking an assignment in a scope where a
+	// defined assignment is visible: the pair of types is then not refused.
+	definedAssign bool
 	// pending generic interfaces: "module procedure" names to resolve once
 	// the host's contained procedures are declared.
 	pending []pendingGeneric
@@ -163,7 +174,7 @@ func (c *checker) declareUnit(u *syntax.Unit, host *Scope) *Scope {
 	for _, cu := range u.Contains {
 		c.declareContained(sc, cu)
 	}
-	c.resolvePending(sc)
+	c.resolvePending(host == c.root)
 	return sc
 }
 
@@ -273,7 +284,7 @@ func isSpec(s syntax.Stmt) bool {
 	switch s.(type) {
 	case *syntax.Decl, *syntax.AttrStmt, *syntax.ParameterStmt, *syntax.ImplicitStmt,
 		*syntax.UseStmt, *syntax.CommonStmt, *syntax.EquivalenceStmt, *syntax.NamelistStmt,
-		*syntax.ImportStmt, *syntax.TypeDef, *syntax.Interface, *syntax.EnumDef, *syntax.KeywordStmt:
+		*syntax.ImportStmt, *syntax.TypeDef, *syntax.Interface, *syntax.EnumDef, *syntax.KeywordStmt, *syntax.ProcBinding:
 		return true
 	}
 	return false
@@ -352,11 +363,47 @@ func (c *checker) specStmt(sc *Scope, s syntax.Stmt) {
 				next++
 			}
 		}
+	case *syntax.ProcBinding:
+		// procedure(iface) [, attrs] :: names: procedure declaration statement
+		// (F2018 15.4.3.6), outside a derived type and an interface block
+		var fl Flags
+		for _, a := range s.Attrs {
+			switch a.Name {
+			case "pointer":
+				fl |= FPointer
+			case "optional":
+				fl |= FOptional
+			case "public":
+				fl |= FPublic
+			case "private":
+				fl |= FPrivate
+			}
+		}
+		for _, it := range s.Items {
+			sym := sc.Names[it.Name]
+			if sym == nil || sym.Flags&FUsed != 0 {
+				sym = c.newSym(sc, it.Name, SymProc, s.Pos)
+			}
+			sym.Kind = SymProc
+			sym.Flags |= fl | FExternal
+			if sym.Type.Basic == Invalid {
+				sym.Type = Type{Basic: Unknown}
+			}
+		}
 	case *syntax.KeywordStmt:
 		if s.Word == "private" && sc.Kind == syntax.ModuleUnit {
 			sc.DefaultPrivate = true
 		}
 	}
+}
+
+func hasAttr(as []syntax.Attr, name string) bool {
+	for i := range as {
+		if as[i].Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // placeholder reports whether sym was created by an attribute statement
@@ -390,9 +437,9 @@ func (c *checker) attrStmt(sc *Scope, s *syntax.AttrStmt) {
 				sym = c.newSym(sc, e.Name.Name, SymVar, e.Pos)
 			}
 			if s.Attr == "private" {
-				sym.Flags |= FPrivate
+				sym.Flags = sym.Flags&^FPublic | FPrivate
 			} else {
-				sym.Flags |= FPublic
+				sym.Flags = sym.Flags&^FPrivate | FPublic
 			}
 			continue
 		}
@@ -452,12 +499,12 @@ func (c *checker) parameterItem(sc *Scope, e *syntax.Entity) {
 // setParam gives a named constant its value: the initialisation expression
 // must be a constant expression (F2018 10.1.12) convertible to the type.
 func (c *checker) setParam(sc *Scope, sym *Symbol, t Type, tv TV, pos syntax.Pos) {
-	if t.Lenient() || tv.Type.Lenient() {
-		return
+	if t.Lenient() || tv.Type.Lenient() || t.Basic == Derived {
+		return // derived-type constants are typed but not folded
 	}
 	if tv.Const == nil {
-		if tv.Rank != 0 {
-			return // array-valued constants are typed but not folded
+		if tv.Rank != 0 || tv.IsConst {
+			return // array-valued and subobject constants are typed but not folded
 		}
 		c.errorf(pos, "Parameter '%s' at (1) is initialised with an expression that is not a constant expression", sym.Name)
 		return
@@ -503,6 +550,12 @@ func (c *checker) typeSpec(sc *Scope, ts *syntax.TypeSpec) Type {
 			return c.typeSpec(sc, &syntax.TypeSpec{Span: ts.Span, Name: ts.Derived, Kind: ts.Kind})
 		}
 		s := sc.Lookup(ts.Derived)
+		if s == nil && c.fwdOK {
+			// a pointer or allocatable component may name a type defined
+			// later in the same specification part (F2018 7.5.4.1)
+			s = c.newSym(sc, ts.Derived, SymType, ts.Pos)
+			s.Der = &DerivedType{Name: ts.Derived, Bound: map[string]string{}, Scope: sc, Forward: true}
+		}
 		if s == nil || s.Kind != SymType {
 			if sc.Opaque {
 				return Type{Basic: Unknown}
@@ -543,7 +596,9 @@ func (c *checker) typeSpec(sc *Scope, ts *syntax.TypeSpec) Type {
 // constLen is a character length: a constant when it folds, else -1 (a
 // length given by a dummy or automatic expression).
 func (c *checker) constLen(sc *Scope, e syntax.Expr) int64 {
+	c.deferTyping = true
 	tv := c.expr(sc, e)
+	c.deferTyping = false
 	if tv.Type.Basic == Integer && tv.Const != nil {
 		if tv.Const.I < 0 {
 			return 0
@@ -655,8 +710,8 @@ func (c *checker) decl(sc *Scope, d *syntax.Decl) {
 		if fl&(FExternal|FIntrinsic) != 0 {
 			sym.Kind = SymProc
 		}
-		if proc && d.Type != nil {
-			sym.Kind = SymProc
+		if proc {
+			sym.Kind = SymProc // procedure(iface) :: p
 		}
 		switch {
 		case e.HasDims:
@@ -728,7 +783,9 @@ func (c *checker) setDims(sc *Scope, sym *Symbol, dims []syntax.Dim) {
 }
 
 func (c *checker) boundValue(sc *Scope, e syntax.Expr) (int64, bool) {
+	c.deferTyping = true
 	tv := c.expr(sc, e)
+	c.deferTyping = false
 	if !tv.Type.Lenient() && tv.Type.Basic != Integer {
 		c.errorf(e.P(), "Array bound at (1) must be INTEGER, it is %s", tv.Type)
 		return 0, false
@@ -744,17 +801,24 @@ func (c *checker) typeDef(sc *Scope, td *syntax.TypeDef) {
 	dt := &DerivedType{Name: td.Ident.Name, Bound: map[string]string{}, Scope: sc}
 	var sym *Symbol
 	if old, dup := sc.Names[dt.Name]; dup && old.Flags&FUsed == 0 {
-		if !placeholder(old) {
+		switch {
+		case old.Kind == SymType && old.Der != nil && old.Der.Forward:
+			dt = old.Der // referenced by a pointer component before this definition
+			dt.Forward = false
+			sym = old
+		case placeholder(old):
+			sym = old
+			sym.Kind = SymType
+		default:
 			c.errorf(td.Ident.Pos, "Derived type '%s' at (1) is already defined", dt.Name)
 			return
 		}
-		sym = old
-		sym.Kind = SymType
 	} else {
 		sym = c.newSym(sc, dt.Name, SymType, td.Ident.Pos)
 	}
 	sym.Der = dt
-	if sc.Kind == syntax.ModuleUnit && sc.DefaultPrivate {
+	dt.Bound = map[string]string{}
+	if sc.Kind == syntax.ModuleUnit && sc.DefaultPrivate && sym.Flags&FPublic == 0 {
 		sym.Flags |= FPrivate
 	}
 	for _, a := range td.Attrs {
@@ -773,9 +837,9 @@ func (c *checker) typeDef(sc *Scope, td *syntax.TypeDef) {
 				}
 			}
 		case "private":
-			sym.Flags |= FPrivate
+			sym.Flags = sym.Flags&^FPublic | FPrivate
 		case "public":
-			sym.Flags |= FPublic
+			sym.Flags = sym.Flags&^FPrivate | FPublic
 		}
 	}
 	for _, b := range td.Body {
@@ -784,10 +848,19 @@ func (c *checker) typeDef(sc *Scope, td *syntax.TypeDef) {
 			if b.Word == "sequence" {
 				dt.Sequence = true
 			}
+		case *syntax.ProcBinding:
+			// procedure(iface), pointer :: p: a procedure pointer component
+			if hasAttr(b.Attrs, "pointer") {
+				for _, it := range b.Items {
+					dt.Components = append(dt.Components, &Component{Name: it.Name, Type: Type{Basic: Unknown}, Pointer: true})
+				}
+			}
 		case *syntax.Decl:
 			t := Type{Basic: Unknown}
 			if b.Type != nil && b.Type.Name != "procedure" {
+				c.fwdOK = hasAttr(b.Attrs, "pointer") || hasAttr(b.Attrs, "allocatable")
 				t = c.typeSpec(sc, b.Type)
+				c.fwdOK = false
 			}
 			var fl Flags
 			var adims []syntax.Dim
@@ -850,6 +923,19 @@ func (c *checker) typeDef(sc *Scope, td *syntax.TypeDef) {
 				target = it.Name
 			}
 			dt.Bound[it.Name] = target
+		}
+	}
+	for _, b := range td.Bound { // generic :: g => specific, ...
+		if pb, ok := b.(*syntax.ProcBinding); ok && pb.Kind == "generic" {
+			for _, it := range pb.Items {
+				target := it.Target
+				if t, ok := dt.Bound[target]; ok {
+					target = t
+				}
+				if target != "" {
+					dt.Bound[it.Name] = target
+				}
+			}
 		}
 	}
 }
@@ -922,22 +1008,25 @@ func (c *checker) iface(sc *Scope, in *syntax.Interface) {
 
 // resolvePending resolves the "module procedure" names of the generics of sc
 // to the procedures its contained units declared.
-func (c *checker) resolvePending(sc *Scope) {
-	keep := c.pending[:0]
+func (c *checker) resolvePending(final bool) {
+	var keep []pendingGeneric
 	for _, p := range c.pending {
-		if p.host != sc {
-			keep = append(keep, p)
-			continue
-		}
+		var left []string
 		for _, n := range p.names {
-			s := sc.Lookup(n)
+			s := p.host.Lookup(n)
 			if s == nil || s.Kind != SymProc {
-				if !sc.Opaque {
+				if !final {
+					left = append(left, n) // a procedure of an enclosing unit, declared later
+				} else if !p.host.Opaque {
 					c.errorf(p.pos, "Procedure '%s' in generic interface '%s' at (1) is neither function nor subroutine", n, p.gen.Name)
 				}
 				continue
 			}
 			p.gen.Specifics = append(p.gen.Specifics, s)
+		}
+		if len(left) > 0 {
+			p.names = left
+			keep = append(keep, p)
 		}
 	}
 	c.pending = keep
@@ -973,6 +1062,11 @@ func (c *checker) intrinsicModule(sc *Scope, name string) *Scope {
 			for _, n := range []string{"c_ptr", "c_funptr"} {
 				s := c.newSym(m, n, SymType, 0)
 				s.Der = &DerivedType{Name: n, Bound: map[string]string{}, Scope: m}
+			}
+			for _, n := range []string{"c_loc", "c_funloc", "c_associated", "c_f_pointer", "c_f_procpointer", "c_sizeof"} {
+				s := c.newSym(m, n, SymProc, 0)
+				s.Type = Type{Basic: Unknown}
+				s.Flags |= FFunction | FSub // function or subroutine: not checked
 			}
 			s := c.newSym(m, "c_null_char", SymParam, 0)
 			s.Type = Type{Basic: Character, Kind: 1, Len: 1}
@@ -1013,7 +1107,15 @@ func (c *checker) intrinsicModule(sc *Scope, name string) *Scope {
 func (c *checker) use(sc *Scope, u *syntax.UseStmt) {
 	mod := c.info.Modules[u.Module.Name]
 	if mod == nil && (u.Nature == "intrinsic" || u.Nature == "") {
-		mod = c.intrinsicModule(sc, u.Module.Name)
+		if m, ok := c.intrMods[u.Module.Name]; ok {
+			mod = m
+		} else {
+			mod = c.intrinsicModule(sc, u.Module.Name)
+			if c.intrMods == nil {
+				c.intrMods = map[string]*Scope{}
+			}
+			c.intrMods[u.Module.Name] = mod
+		}
 	}
 	if mod == nil {
 		// unknown (ieee_arithmetic, omp_lib, a module of another file): its

@@ -88,12 +88,30 @@ func (c *checker) rootSym(sc *Scope, e syntax.Expr) *Symbol {
 	}
 }
 
+// hasComponent reports whether a designator goes through a structure
+// component (which may be a pointer: the target is then definable).
+func hasComponent(e syntax.Expr) bool {
+	for {
+		switch x := e.(type) {
+		case *syntax.Component:
+			return true
+		case *syntax.Index:
+			e = x.X
+		default:
+			return false
+		}
+	}
+}
+
 // definable checks that e can be defined (F2018 9.4.2, 8.5.10: INTENT(IN),
 // 8.5.13: named constants, 11.1.7.4.3: an active DO variable). what is the
 // context, as gfortran words it.
 func (c *checker) definable(sc *Scope, e syntax.Expr, tv TV, what string) {
 	pos := e.P()
 	if !tv.Var {
+		if tv.Call {
+			return // a function reference returning a pointer: f() = x
+		}
 		if tv.Sym != nil && tv.Sym.Kind == SymParam {
 			c.errorf(pos, "Named constant '%s' in variable definition context (%s) at (1)", tv.Sym.Name, what)
 		} else if !tv.Type.Lenient() {
@@ -106,7 +124,7 @@ func (c *checker) definable(sc *Scope, e syntax.Expr, tv TV, what string) {
 		return
 	}
 	_, direct := e.(*syntax.Ident)
-	if root.Intent == "in" && root.Flags&(FPointer) == 0 {
+	if root.Intent == "in" && root.Flags&(FPointer) == 0 && !hasComponent(e) {
 		c.errorf(pos, "Dummy argument '%s' with INTENT(IN) in variable definition context (%s) at (1)", root.Name, what)
 	}
 	if direct && root.Flags&FDoVar != 0 {
@@ -124,6 +142,9 @@ func (c *checker) definable(sc *Scope, e syntax.Expr, tv TV, what string) {
 func (c *checker) assignable(pos syntax.Pos, lt Type, lrank int, r TV, what string) {
 	if lt.Lenient() || r.Type.Lenient() {
 		return
+	}
+	if c.definedAssign {
+		return // a defined assignment (assignment(=)) may accept the pair
 	}
 	ok := false
 	switch {
@@ -187,11 +208,12 @@ func (c *checker) stmt(sc *Scope, s syntax.Stmt) {
 		c.selectType(sc, s)
 	case *syntax.SelectRank:
 		tv := c.expr(sc, s.Expr)
+		assoc := assocName(s.Assoc, s.Expr)
 		for i := range s.Cases {
 			cs := &s.Cases[i]
 			csc := c.constructScope(sc)
-			if s.Assoc != "" {
-				a := c.newSym(csc, s.Assoc, SymVar, cs.Pos)
+			if assoc != "" {
+				a := c.newSym(csc, assoc, SymVar, cs.Pos)
 				a.Type, a.Flags = tv.Type, a.Flags|FAssoc
 				a.Rank = RankUnknown
 				a.Rank = -1
@@ -296,6 +318,11 @@ func (c *checker) stmt(sc *Scope, s syntax.Stmt) {
 				c.expr(sc, o)
 			}
 			for _, v := range d.Values {
+				// "n*value": a repeat count, then the value (F2018 8.6.2)
+				if b, ok := v.(*syntax.Binary); ok && b.Op == "*" {
+					c.expr(sc, b.X)
+					v = b.Y
+				}
 				c.expr(sc, v)
 			}
 		}
@@ -329,6 +356,19 @@ func (c *checker) stmt(sc *Scope, s syntax.Stmt) {
 	}
 }
 
+// assocName is the name of the construct entity of SELECT TYPE and SELECT
+// RANK: the associate-name, else the selector's own name (F2018 11.1.10,
+// 11.1.11).
+func assocName(assoc string, sel syntax.Expr) string {
+	if assoc != "" {
+		return assoc
+	}
+	if id, ok := sel.(*syntax.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
 func (c *checker) cond1(sc *Scope, e syntax.Expr, what string) {
 	tv := c.expr(sc, e)
 	if !tv.Type.Lenient() && tv.Type.Basic != Logical {
@@ -353,7 +393,7 @@ func (c *checker) assignment(sc *Scope, s *syntax.Assignment) {
 	// assignment to a name that is not an array (F2018 15.6.4, deleted
 	// feature of Annex B).
 	if ix, ok := s.LHS.(*syntax.Index); ok {
-		if id, ok := ix.X.(*syntax.Ident); ok && c.isStmtFunc(sc, id) {
+		if id, ok := ix.X.(*syntax.Ident); ok && onlyNames(ix.Args) && c.isStmtFunc(sc, id) {
 			c.stmtFunc(sc, s, ix, id)
 			return
 		}
@@ -365,7 +405,9 @@ func (c *checker) assignment(sc *Scope, s *syntax.Assignment) {
 	}
 	c.definable(sc, s.LHS, l, "assignment")
 	if l.Var {
+		c.definedAssign = sc.Lookup("assignment(=)") != nil
 		c.assignable(s.Pos, l.Type, l.Rank, r, "assignment")
+		c.definedAssign = false
 	}
 }
 
@@ -377,7 +419,19 @@ func (c *checker) isStmtFunc(sc *Scope, id *syntax.Ident) bool {
 		}
 		return !sc.Opaque
 	}
-	return sym.Kind == SymVar && sym.Rank == 0 && sym.Flags&(FPointer|FAllocatable|FDummy|FResult) == 0 && sym.Type.Basic != Character && sym.Type.Basic != Derived
+	return sym.Kind == SymVar && sym.Rank == 0 && sym.Flags&(FPointer|FAllocatable|FDummy|FResult) == 0
+}
+
+// onlyNames reports whether every argument is a plain name: the dummy
+// arguments of a statement function (a substring or element needs a triplet
+// or an expression).
+func onlyNames(as []syntax.Arg) bool {
+	for i := range as {
+		if _, ok := as[i].Value.(*syntax.Ident); !ok || as[i].Keyword != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *checker) stmtFunc(sc *Scope, s *syntax.Assignment, ix *syntax.Index, id *syntax.Ident) {
@@ -485,11 +539,12 @@ func (c *checker) selectCase(sc *Scope, s *syntax.Select) {
 
 func (c *checker) selectType(sc *Scope, s *syntax.SelectType) {
 	tv := c.expr(sc, s.Expr)
+	assoc := assocName(s.Assoc, s.Expr)
 	for i := range s.Cases {
 		cs := &s.Cases[i]
 		csc := c.constructScope(sc)
-		if s.Assoc != "" {
-			a := c.newSym(csc, s.Assoc, SymVar, cs.Pos)
+		if assoc != "" {
+			a := c.newSym(csc, assoc, SymVar, cs.Pos)
 			a.Flags |= FAssoc
 			a.Rank = tv.Rank
 			a.Type = tv.Type

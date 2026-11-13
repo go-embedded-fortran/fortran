@@ -1,6 +1,7 @@
 package sema
 
 import (
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -42,7 +43,16 @@ func (c *checker) expr1(sc *Scope, e syntax.Expr) TV {
 		t := Type{Basic: Character, Kind: k, Len: int64(utf8.RuneCountInString(e.Value))}
 		return TV{Type: t, Const: &Const{Type: t, S: e.Value}}
 	case *syntax.BozLit:
-		return TV{Type: Default(Integer)}
+		tv := TV{Type: Default(Integer)}
+		base := map[byte]int{'b': 2, 'o': 8, 'z': 16}[e.Base]
+		if v, err := strconv.ParseUint(e.Digits, max(base, 2), 64); err == nil && v <= math.MaxInt64 {
+			t := tv.Type
+			if v > math.MaxInt32 {
+				t.Kind = 8
+			}
+			tv.Type, tv.Const = t, &Const{Type: t, I: int64(v)}
+		}
+		return tv
 	case *syntax.ComplexLit:
 		re, im := c.expr(sc, e.Re), c.expr(sc, e.Im)
 		if re.Type.Lenient() || im.Type.Lenient() {
@@ -201,7 +211,9 @@ func (c *checker) symTV(sc *Scope, sym *Symbol, pos syntax.Pos) TV {
 	case SymVar:
 		t := sym.Type
 		if t.Basic == Invalid {
-			if sym.Flags&(FExternal|FFunction|FSub) != 0 {
+			if sym.Flags&(FExternal|FFunction|FSub) != 0 || c.deferTyping {
+				// a specification expression may name a dummy whose type
+				// is declared further down: its type is checked at the end
 				return TV{Type: Type{Basic: Unknown}, Rank: RankUnknown, Sym: sym}
 			}
 			t = c.typeOf(sym, pos)
@@ -212,7 +224,7 @@ func (c *checker) symTV(sc *Scope, sym *Symbol, pos syntax.Pos) TV {
 		if t.Basic == Invalid {
 			t = c.typeOf(sym, pos)
 		}
-		return TV{Type: t, Rank: sym.Rank, Const: sym.Const, Sym: sym}
+		return TV{Type: t, Rank: sym.Rank, Const: sym.Const, Sym: sym, IsConst: true}
 	case SymProc:
 		// a procedure name as an actual argument or a procedure pointer target
 		return TV{Type: Type{Basic: Unknown}, Rank: RankUnknown, Sym: sym}
@@ -241,6 +253,10 @@ func (c *checker) unary(sc *Scope, e *syntax.Unary) TV {
 		tv.Type.Basic = Unknown
 		return tv
 	}
+	if x.Type.Basic == Derived || sc.Lookup("operator("+e.Op+")") != nil {
+		tv.Type = Type{Basic: Unknown}
+		return tv // a defined operation: generic resolution decides
+	}
 	switch e.Op {
 	case "+", "-":
 		if !x.Type.Numeric() {
@@ -260,6 +276,7 @@ func (c *checker) unary(sc *Scope, e *syntax.Unary) TV {
 		tv.Type = Type{Basic: Unknown}
 		return tv
 	}
+	tv.IsConst = x.constant()
 	if x.Const != nil {
 		r, msg := c.foldUnary(e.Op, x.Const)
 		if msg != "" {
@@ -285,6 +302,9 @@ func (c *checker) binary(sc *Scope, e *syntax.Binary) TV {
 		return unknown() // a defined operator: generic resolution decides
 	}
 	bad := func(what string) TV {
+		if sc.Lookup("operator("+e.Op+")") != nil {
+			return unknown() // an extension of the intrinsic operator (F2018 15.4.3.4.2)
+		}
 		c.errorf(e.Pos, "Operands of %s '%s' at (1) are %s/%s", what, e.Op, x.Type, y.Type)
 		return unknown()
 	}
@@ -330,6 +350,7 @@ func (c *checker) binary(sc *Scope, e *syntax.Binary) TV {
 	default:
 		return unknown() // ".foo.": defined binary operator
 	}
+	tv.IsConst = x.constant() && y.constant()
 	if x.Const != nil && y.Const != nil && tv.Rank == 0 {
 		r, msg := c.foldBinary(e.Op, x.Const, y.Const)
 		if msg != "" {
@@ -410,6 +431,14 @@ func (c *checker) indexValue(sc *Scope, e *syntax.Index, base TV) TV {
 	case base.Type.Lenient() && base.Rank == RankUnknown:
 		c.args(sc, e.Args)
 		return unknownTV
+	case base.Type.Basic == Character && isIndex(e.X) && allTriplets(e.Args):
+		// a(i)(2:3), a(:,:)(1:2): a substring of an array element or section
+		for i := range e.Args {
+			c.expr(sc, e.Args[i].Value)
+		}
+		t := base.Type
+		t.Len = -1
+		return TV{Type: t, Rank: base.Rank, Var: base.Var, Sym: base.Sym}
 	case base.Rank != 0 && base.Rank != RankUnknown:
 		r := c.subscripts(sc, e, base, "")
 		tv := base
@@ -521,7 +550,7 @@ func (c *checker) indexName(sc *Scope, e *syntax.Index, id *syntax.Ident) TV {
 		if sym.Rank != 0 {
 			base := TV{Type: sym.Type, Rank: sym.Rank, Sym: sym}
 			r := c.subscripts(sc, e, base, name)
-			return TV{Type: sym.Type, Rank: r, Sym: sym}
+			return TV{Type: sym.Type, Rank: r, Sym: sym, IsConst: true}
 		}
 		if sym.Type.Basic == Character {
 			for i := range e.Args {
@@ -558,6 +587,8 @@ func (c *checker) indexName(sc *Scope, e *syntax.Index, id *syntax.Ident) TV {
 	return unknownTV
 }
 
+func isIndex(e syntax.Expr) bool { _, ok := e.(*syntax.Index); return ok }
+
 func isComponent(e syntax.Expr) bool { _, ok := e.(*syntax.Component); return ok }
 
 func allTriplets(as []syntax.Arg) bool {
@@ -581,6 +612,10 @@ func (c *checker) intrinsicCall(sc *Scope, e *syntax.Index, name string, in intr
 		c.errorf(e.Pos, "%s at (1)", msg)
 		return tv
 	}
+	tv.IsConst = true
+	for _, a := range args {
+		tv.IsConst = tv.IsConst && a.tv.constant()
+	}
 	if tv.Rank == 0 || tv.Rank == RankUnknown {
 		if k := c.foldIntrinsic(name, args, tv.Type); k != nil {
 			tv.Const = k
@@ -599,13 +634,10 @@ func (c *checker) component(sc *Scope, e *syntax.Component) TV {
 	case t.Basic == Derived && t.Der != nil:
 		if comp := t.Der.Find(name); comp != nil {
 			r := comp.Rank
-			if base.Rank != 0 && comp.Rank > 0 && base.Rank > 0 {
-				c.errorf(e.Pos, "Two or more part references with nonzero rank must not be specified at (1)")
-			}
 			if base.Rank != 0 {
 				r = base.Rank
 			}
-			return TV{Type: comp.Type, Rank: r, Var: base.Var}
+			return TV{Type: comp.Type, Rank: r, Var: base.Var, IsConst: base.IsConst}
 		}
 		if target, ok := t.Der.FindBound(name); ok {
 			if ps := t.Der.Scope.Lookup(target); ps != nil && ps.Kind == SymProc {
@@ -617,8 +649,8 @@ func (c *checker) component(sc *Scope, e *syntax.Component) TV {
 		return unknownTV
 	case t.Basic == Complex && (name == "re" || name == "im"):
 		return TV{Type: Type{Basic: Real, Kind: t.Kind}, Rank: base.Rank, Var: base.Var}
-	case t.Basic == Character && name == "len":
-		return TV{Type: Default(Integer), Rank: base.Rank}
+	case t.Basic != Derived && (name == "len" && t.Basic == Character || name == "kind"):
+		return TV{Type: Default(Integer), Rank: base.Rank} // type parameter inquiry (F2018 9.4.5)
 	case t.Basic == Derived:
 		return unknownTV
 	}

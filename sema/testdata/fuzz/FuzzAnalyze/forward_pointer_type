@@ -1,0 +1,2 @@
+go test fuzz v1
+string("module m\n type a\n  type(b), pointer :: p\n end type\n type b\n  type(a), allocatable :: q(:)\n end type\n private\n public :: a\nend\nprogram q\n use m\n type(a) :: x\n x%p => null()\nend\n")

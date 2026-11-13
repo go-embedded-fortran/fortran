@@ -44,7 +44,7 @@ jobs:
       # for the Go heap and, on Linux, ulimit -v for the address space.
       - name: Parser bomb tests under GOMEMLIMIT and ulimit -v
         if: matrix.os == 'ubuntu-latest'
-        run: ulimit -v 16000000 && GOMEMLIMIT=256MiB go test -count=1 -timeout=10m ./syntax
+        run: ulimit -v 16000000 && GOMEMLIMIT=256MiB go test -count=1 -timeout=10m ./syntax ./sema
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -70,6 +70,7 @@ jobs:
           - { pkg: ./syntax, target: FuzzParseFree }
           - { pkg: ./syntax, target: FuzzParseFixed }
           - { pkg: ./syntax, target: FuzzLex }
+          - { pkg: ./sema, target: FuzzAnalyze }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -218,6 +219,12 @@ jobs:
       # gfortran -fsyntax-only (pass / fail-only-ours / fail-both, bib §8).
       - name: Parse floors (syntax package)
         run: go test -count=1 -v ./syntax -run 'TestCorporaParseFloor'
+        env:
+          FORACLE_CORPORA: ${{ runner.temp }}
+      # The semantic analyser against gfortran's committed verdicts
+      # (sema/testdata/gf-*.tsv): both-accept floors, refusal ceilings.
+      - name: Semantic floors (sema package)
+        run: go test -count=1 -v ./sema -run 'TestCorporaDifferentialFloor'
         env:
           FORACLE_CORPORA: ${{ runner.temp }}
       - name: Parse rate, FCVS and fortran-torture

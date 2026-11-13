@@ -16,7 +16,7 @@ by hand.
 |---|---|---|
 | M0 oracle harness | `internal/oracle`, `cmd/foracle`, pinned gfortran 15.2.0, golden file, corpus runner, reference column of the gate | **done** |
 | M1 front end, part 1 | lexer (free and fixed form, continuation, `include`), parser for the gate's kernels; **the §4.2 gate**, report published | in progress (syntax done) |
-| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | planned |
+| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: PR 1 of 4 (package `sema`: scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types); modules/generics/intent, array shapes and the cell splitter are not done |
 | M3 back end | as the gate decides: A = closure compiler over the typed tree, B = lowering to go-embedded-c's IR | planned |
 | M4 runtime | I/O (ported from flang-rt), intrinsics on go-ndarray and go-fft | planned |
 | M5 notebook bridge | values table, `file:line` errors, cells on desktop and playground | planned |
@@ -280,9 +280,90 @@ refused or need other files.
 Counts per corpus are not given here: the first CI run of the corpora job
 produces them (artefact `corpora-oracle`) and nothing was measured before.
 
+## Semantic analysis (M2, part 1)
+
+`github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the
+**typed tree**: the syntax tree annotated by `sema.Info` (the design of
+`go/types`): `Info.Types` maps every expression to its type, kind, rank and
+constant value, `Info.Uses` maps a name to its symbol, `Info.Scopes` maps a
+program unit to its scope. Both back ends of bib §4.2 walk the one tree and ask
+`Info`. LFortran's ASR is the design reference (BSD-3); no code was ported, so
+`NOTICE` is unchanged. Clauses read: F2018 7.4 (types, kinds), 7.5 (derived
+types), 8.2 to 8.7 (declarations, attributes, implicit typing), 10.1 and
+10.2.1 (expressions, intrinsic assignment), 10.1.12 (constant expressions),
+11.1.7 (DO variables), 14.2.2 and 19.3 to 19.5 (use and host association).
+
+```go
+f, _ := syntax.Parse("a.f90", src, nil)
+info, errs := sema.Analyze(f, &sema.Options{ImplicitNone: true})
+// errs: "a.f90:3:5: Symbol 'x' at (1) has no IMPLICIT type"
+```
+
+Done in this part: scopes and symbols; implicit typing and `implicit none`
+(`Options.ImplicitNone` is the notebook default of bib §7); intrinsic types and
+kinds validated against gfortran's kinds; folding of named constants (integer,
+real, complex, logical, character; kind 16 is typed but not folded; overflow,
+division by zero and a bound on folded character length are errors); typing of
+expressions with the promotion rules of Table 10.2; array element, section and
+substring versus function reference; intrinsic function result types (a table,
+not all of F2018 16.9: a function absent from it types as `Unknown`, which no
+check refuses); derived types with components, `extends`, type-bound
+procedure names and forward pointer components; use association with `only`,
+renames and `private`/`public`; `iso_fortran_env` and `iso_c_binding`
+constants; statement functions; statement checks (conditions, DO variables,
+`intent(in)`, named constants, ranks of assignment, array constructors).
+
+Diagnostics are `file:line:col: message`. The analyser never panics (a panic
+is recovered into an error and the fuzzer treats it as a failure); its bounds
+(`Limits`: symbols, folded character length, nesting, errors) are refusals,
+asserted by bomb tests.
+
+### Differential against gfortran 15.2.0
+
+`foracle sema-rate --dir D` parses and analyses every file and compares with
+`gfortran -fsyntax-only` (which also makes the semantic checks).
+`sema/testdata/gf-*.tsv` are gfortran's verdicts, committed so that
+`sema/corpus_test.go` asserts the counts with the corpora but without the
+compiler; a drop of both-accept or a rise of either other class fails it.
+
+| corpus | files | both accept | refused only by us | accepted only by us | both refuse |
+|---|---|---|---|---|---|
+| FCVS | 180 | 179 | 0 | 1 | 0 |
+| gcc `gfortran.fortran-torture` | 314 | 313 | 1 (parser) | 0 | 0 |
+| gcc `gfortran.dg` | 8 306 | 5 742 | 302 (125 parser, 177 analyser) | 1 292 | 970 |
+| `gfortran.dg`, `dg-do run` files | 3 151 | 2 667 | 163 (72 parser, 91 analyser) | 95 | 226 |
+
+The 1 292 files accepted only by us are the `gfortran.dg` tests written to be
+refused for reasons not checked yet (argument association, interfaces,
+shapes, type-bound procedure rules, `-std` conformance). The refused-only-by-us
+files are defects or gaps of ours; the most frequent first errors of the 177
+analyser refusals are names with no implicit type (32), kind expressions that
+need an intrinsic we do not fold (28), derived types used before a definition
+the analyser does not order yet (24), named-constant initialisers that are not
+recognised as constant (16), type-bound members (14) and entities not found in
+a module (12); the list is `foracle sema-rate --errors N`.
+`sema/oracle_test.go` checks 16 negative programs (type mismatch, undeclared
+under `implicit none`, rank mismatch, `intent(in)` assignment, named constant,
+DO variable, ...) and 5 positive ones against gfortran itself. Ambiguous generics
+are part 2.
+
+`BenchmarkAnalyze` (the 12 programs of `testdata/programs`, one core): 2 104
+allocations and 497 KB per pass, exact; time **not measured: load** (1-min load
+46 when it ran, above the bound of 8), and the comparison with
+`gfortran -fsyntax-only` was not run for the same reason.
+
 ## Not yet
 
-- No semantic analysis and no general evaluator: package `eval` is the gate's
+- Semantics not done, of bib §1.1: generic resolution and ambiguity (a generic
+  reference types as `Unknown` unless its specifics agree), argument
+  association and `intent` checks at calls, explicit-interface checks,
+  conformance of shapes (only ranks are compared), `select type` dispatch,
+  derived-type I/O, submodules, `entry` result typing, `common`/`equivalence`
+  storage rules, `data` value conversion, the cell splitter and session module
+  of bib §7 and the go-notebook analysis. `eval` was **not** moved onto the
+  typed tree (it still walks the syntax tree: the migration comes with part 2,
+  when procedures and arguments are resolved).
+- No general evaluator: package `eval` is the gate's
   prototype and accepts only the kernels' language. The gate's playground home
   (headless browser) is not implemented, and its figures were not published
   (see "The gate").

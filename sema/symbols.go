@@ -148,7 +148,12 @@ type TV struct {
 	Var bool
 	// Elemental call or reference to a function, for the back end.
 	Call bool
+	// IsConst is set for a constant expression that was not folded to a
+	// Const (an element or component of a named constant, an array).
+	IsConst bool
 }
+
+func (t TV) constant() bool { return t.Const != nil || t.IsConst }
 
 // Info is the result of Analyze.
 type Info struct {

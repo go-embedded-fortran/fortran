@@ -53,13 +53,15 @@ func init() {
 			intrinsicFuncs[n] = intrinsic{res: r, pol: p, numeric: numeric, kindArg: kindArg, min: min}
 		}
 	}
-	def(rSame, pElem, true, -1, 1, "sqrt exp log sin cos tan asin acos atan sinh cosh tanh asinh acosh atanh aint anint abs conjg aimag_ erf erfc erfc_scaled gamma log_gamma bessel_j0 bessel_j1 bessel_y0 bessel_y1 sind cosd tand")
-	def(rSame, pElem, true, -1, 2, "sign dim mod modulo max min atan2 hypot max0 min0 amax1 amin1 dmax1 dmin1 bessel_jn bessel_yn")
-	def(rSame, pElem, false, -1, 1, "iand ior ieor not ishft ishftc ibits ibset ibclr shifta shiftl shiftr fraction rrspacing spacing set_exponent scale nearest dshiftl dshiftr merge_bits")
-	def(rSame, pUnknown, false, -1, 1, "merge cshift eoshift transpose reshape pack spread unpack sum product maxval minval norm2 parity iall iany iparity findloc_ ")
+	def(rSame, pElem, true, -1, 1, "sqrt exp log log10 sin cos tan asin acos atan sinh cosh tanh asinh acosh atanh aint anint abs conjg erf erfc erfc_scaled gamma log_gamma bessel_j0 bessel_j1 bessel_y0 bessel_y1 sind cosd tand")
+	def(rSame, pElem, true, -1, 2, "sign dim mod modulo atan2 hypot bessel_jn bessel_yn")
+	def(rSame, pElem, false, -1, 2, "max min max0 min0 amax1 amin1 dmax1 dmin1")
+	def(rSame, pElem, false, -1, 1, "and or xor iand ior ieor not ishft ishftc ibits ibset ibclr shifta shiftl shiftr fraction rrspacing spacing set_exponent scale nearest dshiftl dshiftr merge_bits")
+	def(rSame, pUnknown, false, -1, 1, "merge cshift eoshift transpose reshape pack spread unpack sum product maxval minval norm2 parity iall iany iparity")
 	def(rInt, pElem, true, 1, 1, "int nint floor ceiling idint ifix")
 	def(rInt, pElem, false, 1, 1, "ichar iachar")
-	def(rInt, pScalar, false, -1, 1, "minexponent maxexponent len len_trim digits radix kind precision range exponent bit_size popcnt poppar leadz trailz storage_size command_argument_count selected_int_kind selected_real_kind selected_char_kind this_image num_images")
+	def(rInt, pScalar, false, -1, 1, "minexponent maxexponent len len_trim digits radix kind precision range exponent bit_size popcnt poppar leadz trailz storage_size selected_int_kind selected_real_kind selected_char_kind selected_logical_kind")
+	def(rInt, pScalar, false, -1, 0, "command_argument_count this_image num_images")
 	def(rInt, pElem, false, -1, 2, "index scan verify")
 	def(rInt, pUnknown, false, -1, 1, "size lbound ubound shape count maxloc minloc findloc")
 	def(rReal, pElem, true, 1, 1, "real float sngl")
@@ -74,7 +76,7 @@ func init() {
 	for _, n := range strings.Fields("system_clock random_number random_seed date_and_time cpu_time get_command_argument get_command get_environment_variable move_alloc mvbits execute_command_line flush exit abort sleep fdate getenv getarg gettime") {
 		intrinsicSubs[n] = true
 	}
-	for _, n := range strings.Fields("loc c_loc c_funloc c_associated c_f_pointer c_f_procpointer time clock etime dtime second rand irand getpid getcwd access cmplx dcmplx imag aimag ieee_value ieee_class ieee_support_datatype trim_ null cosh_ lbound_ iargc irand secnds ran srand chdir hostnm signal unlink fnum ttynam kill alarm iachar_ lnblnk malloc free ishftc_ compiler_version compiler_options acosd asind atand atan2d cosd sind tand coshape cobound image_index team_number failed_images stopped_images get_team coarray_ event_query atomic_ ") {
+	for _, n := range strings.Fields("loc c_loc c_funloc c_associated c_f_pointer c_f_procpointer time clock etime dtime second rand irand getpid getcwd access cmplx dcmplx imag aimag ieee_value ieee_class ieee_support_datatype null iargc secnds ran srand chdir hostnm signal unlink fnum ttynam kill alarm lnblnk malloc free compiler_version compiler_options acosd asind atand atan2d coshape cobound image_index team_number failed_images stopped_images get_team event_query amax0 amax1 amin0 amin1 max1 min1 dmax1 dmin1 jmax0 jmin0 dabs iabs cabs zabs cdabs dsqrt csqrt cdsqrt zsqrt dexp cexp cdexp zexp dlog clog cdlog zlog alog alog10 dlog10 dsin csin cdsin zsin dcos ccos cdcos zcos dtan dasin dacos datan datan2 dsinh dcosh dtanh isign dsign idim ddim dmod amod dint dnint idnint inint jint int2 int8 jnint ifix dconjg dimag dreal derf derfc dgamma dlgama lgamma getlog lshift rshift int1 sizeof getuid getgid chmod cotan cotand algama imagpart realpart besj0 besj1 besjn besy0 besy1 besyn dbesj0 dbesj1 dbesjn dbesy0 dbesy1 dbesyn transfer maskl maskr rank c_sizeof reduce co_sum co_max co_min co_broadcast co_reduce ieee_selected_real_kind") {
 		if _, ok := intrinsicFuncs[n]; !ok {
 			intrinsicFuncs[n] = intrinsic{res: rUnknown, pol: pUnknown, kindArg: -1}
 		}
@@ -84,8 +86,6 @@ func init() {
 	intrinsicFuncs["dcmplx"] = intrinsic{res: rUnknown, pol: pElem, kindArg: -1}
 	intrinsicFuncs["imag"] = intrinsic{res: rUnknown, pol: pElem, kindArg: -1}
 	intrinsicFuncs["aimag"] = intrinsic{res: rUnknown, pol: pElem, kindArg: -1}
-	delete(intrinsicFuncs, "aimag_")
-	delete(intrinsicFuncs, "findloc_")
 }
 
 // IsIntrinsicFunc reports whether name is an intrinsic function known to the analyser.
@@ -213,6 +213,9 @@ func (c *checker) intrinsicType(name string, in intrinsic, args []argTV) (TV, st
 				}
 			}
 			tv.Type = Type{Basic: Complex, Kind: k}
+		case "loc", "sizeof", "c_sizeof":
+			tv.Type = Type{Basic: Integer, Kind: 8}
+			tv.Rank = 0
 		case "imag", "aimag":
 			if a0.Basic == Complex {
 				tv.Type = Type{Basic: Real, Kind: a0.Kind}
@@ -231,6 +234,23 @@ func hasKind(args []argTV, pos int) bool {
 	return false
 }
 
+// inquiry lists the inquiry functions whose result depends on the type of
+// the argument, not on its value (F2018 16.1): they fold for a variable.
+var inquiry = map[string]bool{
+	"kind": true, "huge": true, "epsilon": true, "len": true, "tiny": true, "bit_size": true,
+	"digits": true, "precision": true, "range": true, "radix": true, "minexponent": true, "maxexponent": true,
+}
+
+// realModel is the model of a real kind (F2018 16.4): digits, minimum and
+// maximum exponent, decimal precision and range, for the IEEE kinds of x86-64
+// and aarch64.
+var realModel = map[int][5]int64{
+	4:  {24, -125, 128, 6, 37},
+	8:  {53, -1021, 1024, 15, 307},
+	10: {64, -16381, 16384, 18, 4931},
+	16: {113, -16381, 16384, 33, 4931},
+}
+
 // foldIntrinsic folds the intrinsic functions that may appear in a constant
 // expression and that the analyser needs for kind parameters and array
 // bounds (F2018 10.1.12: elemental intrinsics with constant arguments and the
@@ -238,7 +258,7 @@ func hasKind(args []argTV, pos int) bool {
 func (c *checker) foldIntrinsic(name string, args []argTV, rt Type) *Const {
 	cs := make([]*Const, len(args))
 	for i, a := range args {
-		if a.tv.Const == nil && !(name == "kind" || name == "huge" || name == "epsilon" || name == "len" || name == "tiny" || name == "bit_size" || name == "digits" || name == "precision" || name == "range") {
+		if a.tv.Const == nil && !inquiry[name] {
 			return nil
 		}
 		cs[i] = a.tv.Const
@@ -253,6 +273,24 @@ func (c *checker) foldIntrinsic(name string, args []argTV, rt Type) *Const {
 			return nil
 		}
 		return &Const{Type: rt, I: int64(a0.Kind)}
+	case "digits", "precision", "range", "radix", "minexponent", "maxexponent":
+		if name == "radix" {
+			return &Const{Type: rt, I: 2}
+		}
+		m, ok := realModel[a0.Kind]
+		if a0.Basic == Complex || a0.Basic == Real {
+			if !ok {
+				return nil
+			}
+			return &Const{Type: rt, I: map[string]int64{"digits": m[0], "minexponent": m[1], "maxexponent": m[2], "precision": m[3], "range": m[4]}[name]}
+		}
+		if a0.Basic == Integer && (name == "digits" || name == "range") {
+			bitsOf := int64(8*a0.Kind - 1)
+			if name == "digits" {
+				return &Const{Type: rt, I: bitsOf}
+			}
+			return &Const{Type: rt, I: bitsOf * 301 / 1000}
+		}
 	case "len":
 		if a0.Basic == Character && a0.Len >= 0 {
 			return &Const{Type: rt, I: a0.Len}
@@ -281,6 +319,28 @@ func (c *checker) foldIntrinsic(name string, args []argTV, rt Type) *Const {
 	case "bit_size":
 		if a0.Basic == Integer {
 			return &Const{Type: rt, I: int64(8 * a0.Kind)}
+		}
+	case "selected_char_kind":
+		if cs[0] != nil && cs[0].Type.Basic == Character {
+			k := int64(-1)
+			switch strings.ToLower(strings.TrimRight(cs[0].S, " ")) {
+			case "ascii", "default":
+				k = 1
+			case "iso_10646":
+				k = 4
+			}
+			return &Const{Type: rt, I: k}
+		}
+	case "selected_logical_kind":
+		if cs[0] != nil && cs[0].Type.Basic == Integer {
+			k := int64(-1)
+			for _, b := range []int64{1, 2, 4, 8, 16} {
+				if cs[0].I <= 8*b {
+					k = b
+					break
+				}
+			}
+			return &Const{Type: rt, I: k}
 		}
 	case "selected_int_kind":
 		if cs[0] != nil && cs[0].Type.Basic == Integer {
