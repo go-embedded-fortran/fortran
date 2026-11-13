@@ -1,0 +1,162 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Shape follows go-embedded-c/c's ci.yml: OS lanes, govulncheck, short fuzz
+# runs, and the live-oracle lanes that provision the pinned gfortran 15.2.0
+# (`foracle toolchain`) on linux/amd64 and darwin/arm64. The corpora are
+# fetched by commit, never committed (licences, see NOTICE).
+env:
+  GCC_COMMIT: 5115c7e447fc07457443df874bf57840e8316d5f         # tag releases/gcc-15.2.0
+  LLVM_TEST_SUITE_COMMIT: 19b349c5aa391729e688f9b4b53ded177e1531cb
+  LFORTRAN_COMMIT: 4f2cd049c87f4413e00e7f8e5aefe354e63c79d1
+
+jobs:
+  # vet, gofmt and race tests. Without the toolchain the live tests skip; the
+  # oracle lanes below are the ones that require it.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.27.4
+      - run: go version
+      - run: go vet ./...
+      - name: gofmt
+        if: matrix.os != 'windows-latest'
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go build ./...
+      - run: go test -race -timeout=30m ./...
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.27.4
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - run: "$(go env GOPATH)/bin/govulncheck ./..."
+
+  # A short run of every fuzz target: the golden decoder reads files from a
+  # working tree, and the Content-Range parser reads a server's header.
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { pkg: ./internal/golden, target: FuzzDecode }
+          - { pkg: ./internal/provision, target: FuzzParseContentRange }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.27.4
+      - run: go test -run '^$' -fuzz '^${{ matrix.target }}$' -fuzztime 60s ${{ matrix.pkg }}
+
+  # The live oracle: gfortran 15.2.0 run natively. Every skipped-without-
+  # toolchain test runs here, with FORACLE_REQUIRE=1 turning a missing
+  # toolchain into a failure.
+  oracle:
+    name: oracle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      FORACLE_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.27.4
+      # Outside the checkout, and without '..' (actions/cache refuses them).
+      - name: Toolchain location
+        run: echo "FORACLE_HOME=$HOME/foracle-home" >> "$GITHUB_ENV"
+      - name: Toolchain cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/foracle-home
+          key: foracle-home-${{ runner.os }}-${{ runner.arch }}-gfortran-15.2.0-${{ hashFiles('internal/provision/provision.go') }}
+      - name: Provision the pinned toolchain
+        run: go run ./cmd/foracle toolchain --home "$FORACLE_HOME"
+      - run: go run ./cmd/foracle version
+      - name: Tests (oracle, goldens, corpus runner, bench)
+        run: go test -count=1 -timeout=30m -v ./...
+      - name: The goldens regenerate unchanged
+        run: |
+          go run ./cmd/foracle golden
+          git diff --stat --exit-code
+      - name: The gate's reference column (smoke, one round, load not enforced on shared runners)
+        run: go run ./cmd/foracle bench --rounds 1 --force
+
+  # The corpora: reported per file, never gating (many gfortran.dg files are
+  # written to be refused, or need other files). The tsv files are the
+  # artefact; README records the revisions.
+  corpora:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 120
+    env:
+      FORACLE_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.27.4
+      - name: Toolchain location
+        run: echo "FORACLE_HOME=$HOME/foracle-home" >> "$GITHUB_ENV"
+      - name: Toolchain cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/foracle-home
+          key: foracle-home-${{ runner.os }}-${{ runner.arch }}-gfortran-15.2.0-${{ hashFiles('internal/provision/provision.go') }}
+      - run: go run ./cmd/foracle toolchain --home "$FORACLE_HOME"
+      - name: gcc 15.2.0 gfortran.dg and gfortran.fortran-torture (sparse, by commit)
+        run: |
+          git init -q "$RUNNER_TEMP/gcc"
+          git -C "$RUNNER_TEMP/gcc" sparse-checkout set --no-cone /gcc/testsuite/gfortran.dg /gcc/testsuite/gfortran.fortran-torture
+          git -C "$RUNNER_TEMP/gcc" fetch -q --depth 1 --filter=blob:none https://github.com/gcc-mirror/gcc "$GCC_COMMIT"
+          git -C "$RUNNER_TEMP/gcc" checkout -q FETCH_HEAD
+      - name: llvm-test-suite FCVS (sparse, by commit)
+        run: |
+          git init -q "$RUNNER_TEMP/lts"
+          git -C "$RUNNER_TEMP/lts" sparse-checkout set --no-cone /Fortran/UnitTests/fcvs21_f95
+          git -C "$RUNNER_TEMP/lts" fetch -q --depth 1 --filter=blob:none https://github.com/llvm/llvm-test-suite "$LLVM_TEST_SUITE_COMMIT"
+          git -C "$RUNNER_TEMP/lts" checkout -q FETCH_HEAD
+      - name: LFortran integration_tests (sparse, by commit)
+        run: |
+          git init -q "$RUNNER_TEMP/lfortran"
+          git -C "$RUNNER_TEMP/lfortran" sparse-checkout set --no-cone /integration_tests
+          git -C "$RUNNER_TEMP/lfortran" fetch -q --depth 1 --filter=blob:none https://github.com/lfortran/lfortran "$LFORTRAN_COMMIT"
+          git -C "$RUNNER_TEMP/lfortran" checkout -q FETCH_HEAD
+      - run: go build -o "$RUNNER_TEMP/foracle" ./cmd/foracle
+      - name: fortran-torture
+        run: '"$RUNNER_TEMP/foracle" corpus --dir "$RUNNER_TEMP/gcc/gcc/testsuite/gfortran.fortran-torture" --jobs 4 --out torture.tsv'
+      - name: FCVS
+        run: '"$RUNNER_TEMP/foracle" corpus --dir "$RUNNER_TEMP/lts/Fortran/UnitTests/fcvs21_f95" --jobs 4 --out fcvs.tsv'
+      - name: LFortran integration tests
+        run: '"$RUNNER_TEMP/foracle" corpus --dir "$RUNNER_TEMP/lfortran/integration_tests" --jobs 4 --out lfortran.tsv'
+      - name: gfortran.dg
+        run: '"$RUNNER_TEMP/foracle" corpus --dir "$RUNNER_TEMP/gcc/gcc/testsuite/gfortran.dg" --jobs 4 --out gfortran-dg.tsv'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: corpora-oracle
+          path: "*.tsv"
