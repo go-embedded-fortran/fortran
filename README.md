@@ -16,7 +16,7 @@ by hand.
 |---|---|---|
 | M0 oracle harness | `internal/oracle`, `cmd/foracle`, pinned gfortran 15.2.0, golden file, corpus runner, reference column of the gate | **done** |
 | M1 front end, part 1 | lexer (free and fixed form, continuation, `include`), parser for the gate's kernels; **the §4.2 gate**, report published | in progress (syntax done) |
-| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: package `sema` (scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types: PR 1), the cell splitter, session module and go-notebook-facing analysis (PR 4), generic resolution, argument association, explicit-interface requirements and `intent` at calls (PR 2); shape conformance (PR 3) and `eval` on the typed tree are not done |
+| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: package `sema` (scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types: PR 1), the cell splitter, session module and go-notebook-facing analysis (PR 4), generic resolution, argument association, explicit-interface requirements and `intent` at calls (PR 2), shape conformance (PR 3); `eval` on the typed tree is not done |
 | M3 back end | as the gate decides: A = closure compiler over the typed tree, B = lowering to go-embedded-c's IR | planned |
 | M4 runtime | I/O (ported from flang-rt), intrinsics on go-ndarray and go-fft | planned |
 | M5 notebook bridge | values table, `file:line` errors, cells on desktop and playground | planned |
@@ -364,6 +364,45 @@ check is quadratic in it) and `Limits.MaxActuals` (4 096 per reference), both
 asserted by bomb tests. Leniency as before: an unknown type (`class(*)`,
 `type(*)`, an opaque module) is never the reason for a refusal.
 
+### Shapes (M2, part 3)
+
+Clauses read (J3/18-007r1): 3.51 and 10.1.5 (conformable operands), 10.2.1.2
+(shapes of intrinsic assignment, 10.2.1.3 reallocation of an allocatable left
+side), 9.5.3 (sections and vector subscripts), 7.8 (array constructors and
+implied DO), 8.5.8 (array specs, implied-shape named constants), 10.2.3
+(WHERE), 15.5.2.11 (sequence association), 16.9 (shape results of `shape`,
+`size`, `lbound`, `ubound`, `reshape`, `matmul`, `transpose`, `spread`,
+`pack`, `cshift`, `eoshift`, `merge`, `maxloc`, `minloc`, `sum` and the other
+reductions with `dim` and `mask`, `dot_product`, elemental intrinsics).
+`sema/shape.go`.
+
+`TV.Shape` is the extent of each dimension of an expression: a number when it
+is a compile-time constant, -1 when it is not (assumed-shape, deferred,
+automatic, a variable bound). `TV.Dims` keeps the declared bounds of a whole
+array, which a section needs for its defaults. Shapes come from declarations
+(variables, components, named constants, function results), sections (the
+extent of `lo:hi:stride`, vector subscripts), array constructors (element
+counts, implied DO with constant controls), the intrinsics above and the
+elemental operations. An unknown extent is never the reason for a refusal.
+
+- Operands of an operation, the two sides of an array assignment (a whole
+  array or section that is neither allocatable nor a pointer), an
+  initialisation, the arguments of an elemental procedure or intrinsic, a WHERE
+  mask and the assignments of its body must have conforming extents.
+- `reshape` needs enough source elements without `pad` and no negative
+  extent; the rank of its result is the extent of `shape`, its extents the
+  values of `shape` when it is a constant array (a literal or a named
+  constant). `matmul` needs conforming inner extents and ranks 1 or 2 (not both
+  1); `transpose` needs rank 2; `dot_product` needs rank 1 and equal extents;
+  `spread` needs `dim` in range; a reduction with `mask` needs a conforming
+  mask.
+- `size` folds to a constant when the shape is known, and `size`, `lbound`,
+  `ubound` and `shape` of an array with explicit bounds are constant
+  expressions (F2018 10.1.12).
+- A constant subscript outside the bounds is not refused: gfortran only warns.
+- Bounds: extents and products are capped at 2^40 (a larger one is an unknown
+  extent, so nothing wraps; `TestBombShapeOverflow`).
+
 ### Differential against gfortran 15.2.0
 
 `foracle sema-rate --dir D` parses and analyses every file and compares with
@@ -376,8 +415,8 @@ compiler; a drop of both-accept or a rise of either other class fails it.
 |---|---|---|---|---|---|
 | FCVS | 180 | 179 | 0 | 1 | 0 |
 | gcc `gfortran.fortran-torture` | 314 | 313 | 1 (parser) | 0 | 0 |
-| gcc `gfortran.dg` | 8 306 | 5 750 | 294 (125 parser, 169 analyser) | 1 230 | 1 032 |
-| `gfortran.dg`, `dg-do run` files | 3 151 | 2 674 | 156 | 95 | 226 |
+| gcc `gfortran.dg` | 8 306 | 5 753 | 291 (125 parser, 166 analyser) | 1 202 | 1 060 |
+| `gfortran.dg`, `dg-do run` files | 3 151 | 2 675 | 155 | 95 | 226 |
 
 Part 2 (argument association, generic resolution, defined operations) moved
 `gfortran.dg` from 5 742 / 302 / 1 292 to 5 750 / 294 / 1 230 (both accept up,
@@ -390,9 +429,16 @@ gfortran accepts. Three files stay refused only by us because gfortran skips
 the argument checks on a `!GCC$ ATTRIBUTES NO_ARG_CHECK` directive, which the
 lexer drops with the other comments.
 
-The 1 230 files accepted only by us are the `gfortran.dg` tests written to be
-refused for reasons not checked yet (shapes, type-bound procedure rules,
-`-std` conformance). The refused-only-by-us
+Part 3 (shapes) moved it on to 5 753 / 291 / 1 202: 28 more of the files gfortran
+refuses are refused (shape of operands, assignments, initialisations, `reshape`,
+`matmul`, `dot_product`, `spread`, reductions with `dim` and `mask`, `where`,
+too few elements for an explicit-shape dummy) and three that gfortran accepts
+are accepted again. From the main branch before part 2 the three parts together
+give 5 742 / 302 / 1 292 -> 5 753 / 291 / 1 202.
+
+The 1 202 files accepted only by us are the `gfortran.dg` tests written to be
+refused for reasons not checked yet (type-bound procedure rules, input/output
+tag checks, polymorphism, `-std` conformance). The refused-only-by-us
 files are defects or gaps of ours; the most frequent first errors of the 169
 analyser refusals are names with no implicit type (31), kind expressions that
 need an intrinsic we do not fold (28), derived types used before a definition
@@ -407,9 +453,10 @@ generics, no specific, argument type, kind, rank, count and keyword,
 `intent(out)` actuals, function versus subroutine, explicit-interface
 requirements, defined operators and assignment, elemental ranks).
 
-`BenchmarkAnalyze` (the 12 programs of `testdata/programs`, one core): 2 389
-allocations and 598 KB per pass, exact (part 1: 2 104 and 497 KB); time **not
-measured: load** (1-min load 24 when it ran, above the bound of 8), and the comparison with
+`BenchmarkAnalyze` (the 12 programs of `testdata/programs`, one core): 3 733
+allocations and 550 KB per pass, exact (part 1: 2 104 and 497 KB; part 2: 2 389
+and 598 KB; part 3 adds a shape slice to array expressions); time **not
+measured: load** (1-min load 14 when it ran, above the bound of 8), and the comparison with
 `gfortran -fsyntax-only` was not run for the same reason.
 
 ### The cell splitter and the session module (bib §7)
@@ -448,14 +495,13 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
 
 ## Not yet
 
-- Semantics not done, of bib §1.1: conformance of shapes (only ranks are
-  compared), type-bound generics and `pass` (a type-bound reference is not
+- Semantics not done, of bib §1.1: shapes of pointer assignment, of `forall` and of
+  type-bound results, type-bound generics and `pass` (a type-bound reference is not
   resolved), the `!GCC$ ATTRIBUTES NO_ARG_CHECK` directive, `select type` dispatch,
   derived-type I/O, submodules, `entry` result typing, `common`/`equivalence`
   storage rules, `data` value conversion, the go-notebook adapter and the
   "value from Go into a cell" direction of bib §7. `eval` was **not** moved onto the
-  typed tree (it still walks the syntax tree: the migration follows shape
-  conformance).
+  typed tree (it still walks the syntax tree).
 - No general evaluator: package `eval` is the gate's
   prototype and accepts only the kernels' language. The gate's playground home
   (headless browser) is not implemented, and its figures were not published

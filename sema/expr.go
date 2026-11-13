@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -81,7 +82,7 @@ func (c *checker) expr1(sc *Scope, e syntax.Expr) TV {
 		return c.identExpr(sc, e)
 	case *syntax.Paren:
 		x := c.expr(sc, e.X)
-		x.Var, x.Sym = false, nil
+		x.Var, x.Sym, x.Dims = false, nil, nil
 		return x
 	case *syntax.Unary:
 		return c.unary(sc, e)
@@ -219,13 +220,13 @@ func (c *checker) symTV(sc *Scope, sym *Symbol, pos syntax.Pos) TV {
 			}
 			t = c.typeOf(sym, pos)
 		}
-		return TV{Type: t, Rank: sym.Rank, Sym: sym, Var: true}
+		return TV{Type: t, Rank: sym.Rank, Sym: sym, Var: true, Shape: shapeOfDims(sym.Dims, sym.Rank), Dims: wholeDims(sym)}
 	case SymParam:
 		t := sym.Type
 		if t.Basic == Invalid {
 			t = c.typeOf(sym, pos)
 		}
-		return TV{Type: t, Rank: sym.Rank, Const: sym.Const, Sym: sym, IsConst: true}
+		return TV{Type: t, Rank: sym.Rank, Const: sym.Const, Sym: sym, IsConst: true, Shape: shapeOfDims(sym.Dims, sym.Rank), Dims: wholeDims(sym), Values: sym.Values}
 	case SymProc:
 		// a procedure name as an actual argument or a procedure pointer target
 		return TV{Type: Type{Basic: Unknown}, Rank: RankUnknown, Sym: sym}
@@ -248,7 +249,7 @@ func combineRank(a, b int) int {
 
 func (c *checker) unary(sc *Scope, e *syntax.Unary) TV {
 	x := c.expr(sc, e.X)
-	tv := TV{Rank: x.Rank}
+	tv := TV{Rank: x.Rank, Shape: x.Shape}
 	if x.Type.Lenient() {
 		tv.Type = x.Type
 		tv.Type.Basic = Unknown
@@ -301,9 +302,13 @@ func (c *checker) unary(sc *Scope, e *syntax.Unary) TV {
 
 func (c *checker) binary(sc *Scope, e *syntax.Binary) TV {
 	x, y := c.expr(sc, e.X), c.expr(sc, e.Y)
-	tv := TV{Rank: combineRank(x.Rank, y.Rank)}
-	if x.Rank > 0 && y.Rank > 0 && x.Rank != y.Rank && x.Type.Basic != Derived && y.Type.Basic != Derived && sc.Lookup("operator("+e.Op+")") == nil {
-		c.errorf(e.Pos, "Shapes for operands at (1) and (2) are not conformable: ranks %d and %d", x.Rank, y.Rank)
+	tv := TV{Rank: combineRank(x.Rank, y.Rank), Shape: joinShape(x.Shape, y.Shape, x.Rank, y.Rank)}
+	if x.Rank > 0 && y.Rank > 0 && x.Type.Basic != Derived && y.Type.Basic != Derived && sc.Lookup("operator("+e.Op+")") == nil {
+		if x.Rank != y.Rank {
+			c.errorf(e.Pos, "Shapes for operands at (1) and (2) are not conformable: ranks %d and %d", x.Rank, y.Rank)
+		} else if d, a, b, bad := conformDim(x.Shape, y.Shape); bad {
+			c.errorf(e.Pos, "Shapes for operands at (1) and (2) are not conformable: extents %d and %d on dimension %d", a, b, d)
+		}
 	}
 	unknown := func() TV { tv.Type = Type{Basic: Unknown}; return tv }
 	if x.Type.Lenient() || y.Type.Lenient() {
@@ -323,6 +328,11 @@ func (c *checker) binary(sc *Scope, e *syntax.Binary) TV {
 		return r
 	}
 	if x.Type.Basic == Derived || y.Type.Basic == Derived {
+		return bad("binary operator")
+	}
+	if x.Rank > 0 && y.Rank > 0 && x.Rank != y.Rank && sc.Lookup("operator("+e.Op+")") != nil {
+		// operands of different ranks are no intrinsic operation: only a defined
+		// operation can take them (F2018 15.4.3.4.2)
 		return bad("binary operator")
 	}
 	if gnuExt(e.Op, x.Type, y.Type) && sc.Lookup("operator("+e.Op+")") != nil {
@@ -404,33 +414,54 @@ func (c *checker) args(sc *Scope, as []syntax.Arg) []argTV {
 // subscripts checks the subscripts of an array reference (F2018 9.5.3) and
 // returns the rank of the result: each section triplet or vector subscript
 // adds one dimension.
-func (c *checker) subscripts(sc *Scope, e *syntax.Index, base TV, name string) int {
+func (c *checker) subscripts(sc *Scope, e *syntax.Index, base TV, name string) (int, []int64) {
 	rank := 0
 	n := 0
+	var shape []int64 // the extents of the section, in order
+	shapeOK := true
+	var dims []Dim
+	if len(base.Dims) == base.Rank {
+		dims = base.Dims
+	}
 	for i := range e.Args {
 		a := &e.Args[i]
 		if a.Value == nil {
 			continue
 		}
 		n++
+		var dim *Dim
+		if n <= len(dims) {
+			dim = &dims[n-1]
+		}
 		tv := c.expr(sc, a.Value)
-		if _, tr := a.Value.(*syntax.Triplet); tr {
+		if t, tr := a.Value.(*syntax.Triplet); tr {
 			rank++
+			shape = append(shape, c.tripletExtent(t, dim))
 			continue
 		}
 		if !tv.Type.Lenient() && tv.Type.Basic != Integer {
 			c.errorf(a.Value.P(), "Array index at (1) must be of INTEGER type, found %s", tv.Type)
 		}
-		if tv.Rank > 0 {
+		switch {
+		case tv.Rank > 0: // a vector subscript (F2018 9.5.3.3.4)
 			rank++
-		} else if tv.Rank < 0 {
-			rank = RankUnknown
+			if len(tv.Shape) == 1 {
+				shape = append(shape, tv.Shape[0])
+			} else {
+				shape = append(shape, unknownExtent)
+			}
+		case tv.Rank < 0:
+			rank, shapeOK = RankUnknown, false
 		}
 	}
 	if base.Rank > 0 && n != base.Rank {
 		c.errorf(e.Pos, "Rank mismatch in array reference at (1) (%d/%d)", n, base.Rank)
+		shapeOK = false
 	}
-	return rank
+	if !shapeOK || rank <= 0 || len(shape) != rank {
+		return rank, nil
+	}
+	return rank, shape
 }
 
 // index types X(args): an array element or section, a substring, a
@@ -461,20 +492,33 @@ func (c *checker) indexValue(sc *Scope, e *syntax.Index, base TV) TV {
 		}
 		t := base.Type
 		t.Len = -1
-		return TV{Type: t, Rank: base.Rank, Var: base.Var, Sym: base.Sym}
+		return TV{Type: t, Rank: base.Rank, Var: base.Var, Sym: base.Sym, Shape: base.Shape}
+	case base.Type.Basic == Character && isComponent(e.X) && base.CompRank == 0 && allTriplets(e.Args):
+		// s%name(2:3) with a scalar character component: a substring, the
+		// designator keeps the rank and shape of s
+		for i := range e.Args {
+			c.expr(sc, e.Args[i].Value)
+		}
+		t := base.Type
+		t.Len = -1
+		return TV{Type: t, Rank: base.Rank, Var: base.Var, Sym: base.Sym, Shape: base.Shape}
 	case base.Rank > 0 && base.Outer > 0 && base.CompRank > 0 && isComponent(e.X):
 		// s%c(subscripts) with s and c arrays: the subscripts are those of c
 		b := base
-		b.Rank = base.CompRank
-		r := c.subscripts(sc, e, b, "")
+		b.Rank, b.Dims = base.CompRank, nil
+		r, sh := c.subscripts(sc, e, b, "")
 		tv := base
-		tv.Rank, tv.Const, tv.Call, tv.Outer, tv.CompRank = base.Outer+r, nil, false, 0, 0
+		tv.Rank, tv.Const, tv.Call, tv.Outer, tv.CompRank, tv.Dims = base.Outer+r, nil, false, 0, 0, nil
+		tv.Shape = nil
+		if len(base.Shape) == base.Outer && (r == 0 || sh != nil) {
+			tv.Shape = append(slices.Clone(base.Shape), sh...)
+		}
 		return tv
 	case base.Rank != 0 && base.Rank != RankUnknown:
-		r := c.subscripts(sc, e, base, "")
+		r, sh := c.subscripts(sc, e, base, "")
 		tv := base
 		tv.Outer, tv.CompRank = 0, 0
-		tv.Rank, tv.Const, tv.Call = r, nil, false
+		tv.Rank, tv.Const, tv.Call, tv.Shape, tv.Dims, tv.Values = r, nil, false, sh, nil, nil
 		return tv
 	case base.Type.Basic == Character:
 		for i := range e.Args {
@@ -537,9 +581,9 @@ func (c *checker) indexName(sc *Scope, e *syntax.Index, id *syntax.Ident) TV {
 		switch {
 		case sym.Rank != 0:
 			t := c.typeOf(sym, id.Pos)
-			base := TV{Type: t, Rank: sym.Rank, Sym: sym, Var: true}
-			r := c.subscripts(sc, e, base, name)
-			return TV{Type: t, Rank: r, Sym: sym, Var: true}
+			base := TV{Type: t, Rank: sym.Rank, Sym: sym, Var: true, Dims: wholeDims(sym)}
+			r, sh := c.subscripts(sc, e, base, name)
+			return TV{Type: t, Rank: r, Sym: sym, Var: true, Shape: sh}
 		case sym.Type.Basic == Character && allTriplets(e.Args):
 			for i := range e.Args {
 				if v := e.Args[i].Value; v != nil {
@@ -581,9 +625,9 @@ func (c *checker) indexName(sc *Scope, e *syntax.Index, id *syntax.Ident) TV {
 		return TV{Type: sym.Type, Call: true, Sym: sym}
 	case SymParam:
 		if sym.Rank != 0 {
-			base := TV{Type: sym.Type, Rank: sym.Rank, Sym: sym}
-			r := c.subscripts(sc, e, base, name)
-			return TV{Type: sym.Type, Rank: r, Sym: sym, IsConst: true}
+			base := TV{Type: sym.Type, Rank: sym.Rank, Sym: sym, Dims: wholeDims(sym)}
+			r, sh := c.subscripts(sc, e, base, name)
+			return TV{Type: sym.Type, Rank: r, Sym: sym, IsConst: true, Shape: sh}
 		}
 		if sym.Type.Basic == Character {
 			for i := range e.Args {
@@ -609,9 +653,9 @@ func (c *checker) indexName(sc *Scope, e *syntax.Index, id *syntax.Ident) TV {
 		acts, alt := c.actuals(sc, e.Args)
 		callee, explicit := c.calleeOf(sym)
 		r := c.callCheck(sc, e.Pos, name, callee, explicit, acts, alt)
-		tv := TV{Type: t, Rank: sym.Rank, Call: true, Sym: sym}
+		tv := TV{Type: t, Rank: sym.Rank, Call: true, Sym: sym, Shape: shapeOfDims(sym.Dims, sym.Rank)}
 		if r != -3 {
-			tv.Rank = r
+			tv.Rank, tv.Shape = r, actualsShape(acts)
 		}
 		return tv
 	case SymGeneric:
@@ -645,22 +689,8 @@ func allTriplets(as []syntax.Arg) bool {
 }
 
 func (c *checker) intrinsicCall(sc *Scope, e *syntax.Index, name string, in intrinsic) TV {
-	args := c.args(sc, e.Args)
-	tv, msg := c.intrinsicType(name, in, args)
-	if msg != "" {
-		c.errorf(e.Pos, "%s at (1)", msg)
-		return tv
-	}
-	tv.IsConst = true
-	for _, a := range args {
-		tv.IsConst = tv.IsConst && a.tv.constant()
-	}
-	if tv.Rank == 0 || tv.Rank == RankUnknown {
-		if k := c.foldIntrinsic(name, args, tv.Type); k != nil {
-			tv.Const = k
-		}
-	}
-	return tv
+	acts, _ := c.actuals(sc, e.Args)
+	return c.intrinsicOf(sc, e, name, in, acts)
 }
 
 func (c *checker) component(sc *Scope, e *syntax.Component) TV {
@@ -676,7 +706,16 @@ func (c *checker) component(sc *Scope, e *syntax.Component) TV {
 			if base.Rank != 0 {
 				r = base.Rank
 			}
-			return TV{Type: comp.Type, Rank: r, Var: base.Var, IsConst: base.IsConst, Outer: base.Rank, CompRank: comp.Rank}
+			tv := TV{Type: comp.Type, Rank: r, Var: base.Var, IsConst: base.IsConst, Outer: base.Rank, CompRank: comp.Rank}
+			if base.Rank == 0 {
+				tv.Shape, tv.Dims = shapeOfDims(comp.Dims, comp.Rank), comp.Dims
+				if comp.Rank != len(comp.Dims) {
+					tv.Dims = nil
+				}
+			} else {
+				tv.Shape = base.Shape
+			}
+			return tv
 		}
 		if target, ok := t.Der.FindBound(name); ok {
 			if ps := t.Der.Scope.Lookup(target); ps != nil && ps.Kind == SymProc {
@@ -703,8 +742,18 @@ func (c *checker) arrayCons(sc *Scope, e *syntax.ArrayCons) TV {
 		t = c.typeSpec(sc, e.Type)
 	}
 	have := e.Type != nil
+	extent := int64(0)
+	var values []int64
+	valuesOK, allConst := true, true
 	for _, el := range e.Elems {
 		tv := c.expr(sc, el)
+		allConst = allConst && tv.constant()
+		extent = c.constructorExtent(extent, el, tv)
+		if tv.Const != nil && tv.Const.Type.Basic == Integer && tv.Rank == 0 {
+			values = append(values, tv.Const.I)
+		} else {
+			valuesOK = false
+		}
 		if tv.Type.Lenient() {
 			continue
 		}
@@ -725,17 +774,26 @@ func (c *checker) arrayCons(sc *Scope, e *syntax.ArrayCons) TV {
 	if t.Basic == Character && e.Type == nil {
 		t.Len = -1
 	}
-	return TV{Type: t, Rank: 1}
+	tv := TV{Type: t, Rank: 1, Shape: []int64{extent}, IsConst: allConst}
+	if extent < 0 {
+		tv.Shape = []int64{unknownExtent}
+	}
+	if valuesOK && len(e.Elems) > 0 && t.Basic == Integer {
+		tv.Values = values
+	}
+	return tv
 }
 
 func (c *checker) impliedDo(sc *Scope, e *syntax.ImpliedDo) TV {
 	csc := c.constructScope(sc)
 	c.doVar(csc, sc, &e.Var)
+	ctlConst := true // the control expressions are constant: the items may use the do variable (F2018 10.1.12)
 	for _, p := range []syntax.Expr{e.Lo, e.Hi, e.Step} {
 		if p == nil {
 			continue
 		}
 		tv := c.expr(sc, p)
+		ctlConst = ctlConst && tv.constant()
 		if !tv.Type.Lenient() && !tv.Type.Numeric() {
 			c.errorf(p.P(), "Implied-do control expression at (1) must be numeric, it is %s", tv.Type)
 		}
@@ -748,7 +806,7 @@ func (c *checker) impliedDo(sc *Scope, e *syntax.ImpliedDo) TV {
 			t, have = tv.Type, true
 		}
 	}
-	return TV{Type: t, Rank: 1}
+	return TV{Type: t, Rank: 1, IsConst: ctlConst}
 }
 
 func (c *checker) constructScope(sc *Scope) *Scope {

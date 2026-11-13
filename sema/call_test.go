@@ -717,3 +717,26 @@ func TestBombActuals(t *testing.T) {
 		t.Fatalf("no refusal: %v", errs)
 	}
 }
+
+// TestBombShapeOverflow: extents whose products overflow int64 are not known
+// extents (shape.go maxExtent); the analyser does not wrap, panic or refuse a
+// valid program for them.
+func TestBombShapeOverflow(t *testing.T) {
+	src := `program p
+ implicit none
+ integer :: i, j, k, l
+ integer, parameter :: big = 2000000000
+ integer :: a(big, big, big)
+ integer :: s(3)
+ s = [(((i, i = 1, big), j = 1, big), k = 1, big)]
+ s = a(1:big:3, 1, 1)
+ s = a(-9000000000000000000:9000000000000000000, 1, 1)
+end
+`
+	_, errs := analyze(t, "t.f90", src, nil)
+	for _, e := range errs {
+		if e.Msg == "" || strings.Contains(e.Msg, "internal error") {
+			t.Fatalf("bad diagnostic %v", e)
+		}
+	}
+}

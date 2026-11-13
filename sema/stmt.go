@@ -216,17 +216,19 @@ func (c *checker) stmt(sc *Scope, s syntax.Stmt) {
 			c.execBody(csc, cs.Body)
 		}
 	case *syntax.Where:
-		c.cond1(sc, s.Mask, "WHERE mask")
+		mask := c.cond1(sc, s.Mask, "WHERE mask")
+		c.where = append(c.where, mask)
 		if s.Single != nil {
 			c.stmt(sc, s.Single)
 		}
 		c.execBody(sc, s.Body)
 		for i := range s.Else {
 			if s.Else[i].Mask != nil {
-				c.cond1(sc, s.Else[i].Mask, "ELSEWHERE mask")
+				c.where[len(c.where)-1] = c.cond1(sc, s.Else[i].Mask, "ELSEWHERE mask")
 			}
 			c.execBody(sc, s.Else[i].Body)
 		}
+		c.where = c.where[:len(c.where)-1]
 	case *syntax.Forall:
 		csc := c.constructScope(sc)
 		c.indices(csc, sc, s.Indices)
@@ -357,11 +359,12 @@ func assocName(assoc string, sel syntax.Expr) string {
 	return ""
 }
 
-func (c *checker) cond1(sc *Scope, e syntax.Expr, what string) {
+func (c *checker) cond1(sc *Scope, e syntax.Expr, what string) TV {
 	tv := c.expr(sc, e)
 	if !tv.Type.Lenient() && tv.Type.Basic != Logical {
 		c.errorf(e.P(), "%s at (1) must be LOGICAL, it is %s", what, tv.Type)
 	}
+	return tv
 }
 
 func (c *checker) execBody(sc *Scope, body []syntax.Stmt) {
@@ -392,14 +395,32 @@ func (c *checker) assignment(sc *Scope, s *syntax.Assignment) {
 		return
 	}
 	c.definable(sc, s.LHS, l, "assignment")
+	if n := len(c.where); n > 0 && l.Rank > 0 && c.where[n-1].Rank > 0 {
+		// the assignment of a WHERE body conforms with its mask (F2018 10.2.3.2)
+		if m := c.where[n-1]; m.Rank != l.Rank {
+			c.errorf(s.Pos, "Incompatible ranks %d and %d in the WHERE mask and the assignment at (1)", m.Rank, l.Rank)
+		} else {
+			c.conformable(s.Pos, m, l, "the WHERE mask and the assignment")
+		}
+	}
 	if l.Var {
 		// the intrinsic assignment, else a defined assignment (F2018 10.2.1.4)
 		if msg := c.assignMsg(l.Type, l.Rank, r, "assignment"); msg != "" {
 			if !c.definedAssignment(sc, s.Pos, actual{e: s.LHS, tv: l, pos: s.LHS.P()}, actual{e: s.RHS, tv: r, pos: s.RHS.P()}) {
 				c.errorf(s.Pos, "%s", msg)
 			}
+		} else if l.Rank > 0 && r.Rank == l.Rank && c.fixedShape(sc, s.LHS) {
+			c.conformable(s.Pos, l, r, "array assignment") // F2018 10.2.1.2
 		}
 	}
+}
+
+// fixedShape reports whether the variable e keeps its shape under assignment: a
+// whole array or section of an array that is neither allocatable nor a pointer
+// (an allocatable left side is reallocated, F2018 10.2.1.3).
+func (c *checker) fixedShape(sc *Scope, e syntax.Expr) bool {
+	root := c.rootSym(sc, e)
+	return root != nil && !hasComponent(e) && root.Flags&(FAllocatable|FPointer) == 0
 }
 
 func (c *checker) isStmtFunc(sc *Scope, id *syntax.Ident) bool {

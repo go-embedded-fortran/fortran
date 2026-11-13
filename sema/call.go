@@ -103,7 +103,7 @@ func (d *dummy) size() (int64, bool) {
 
 // extent is the number of elements of a dimension with constant bounds.
 func (x Dim) extent() (int64, bool) {
-	if !x.LoKnown || !x.HiKnown || x.Assumed || x.Deferred {
+	if !x.LoKnown || !x.HiKnown || x.Assumed || x.Deferred || x.Lo < -maxExtent || x.Lo > maxExtent || x.Hi < -maxExtent || x.Hi > maxExtent {
 		return 0, false
 	}
 	return max(x.Hi-x.Lo+1, 0), true
@@ -356,14 +356,23 @@ func (c *checker) callCheck(sc *Scope, pos syntax.Pos, name string, callee *Symb
 		c.sizeCheck(d, a)
 	}
 	if ifc.elemental {
-		first := -1
+		var first *actual
 		for i := range acts {
-			if r := acts[i].tv.Rank; r > 0 {
-				if first > 0 && r != first {
-					c.errorf(acts[i].pos, "Shapes for arguments of elemental procedure '%s' at (1) are not conformable: ranks %d and %d", name, first, r)
-					break
-				}
-				first = r
+			a := &acts[i]
+			if a.tv.Rank <= 0 {
+				continue
+			}
+			if first == nil {
+				first = a
+				continue
+			}
+			if a.tv.Rank != first.tv.Rank {
+				c.errorf(a.pos, "Shapes for arguments of elemental procedure '%s' at (1) are not conformable: ranks %d and %d", name, first.tv.Rank, a.tv.Rank)
+				break
+			}
+			if d, x, y, bad := conformDim(first.tv.Shape, a.tv.Shape); bad {
+				c.errorf(a.pos, "Shapes for arguments of elemental procedure '%s' at (1) are not conformable: extents %d and %d on dimension %d", name, x, y, d)
+				break
 			}
 		}
 		return elementalRank(acts)
@@ -371,34 +380,39 @@ func (c *checker) callCheck(sc *Scope, pos syntax.Pos, name string, callee *Symb
 	return own
 }
 
+// actualsShape is the shape of an elemental reference: that of its array
+// actuals (F2018 15.8.1); conformance is checked by callCheck.
+func actualsShape(acts []actual) []int64 {
+	var out []int64
+	rank := 0
+	for i := range acts {
+		if tv := acts[i].tv; tv.Rank > 0 {
+			if rank == 0 {
+				out, rank = tv.Shape, tv.Rank
+			} else if tv.Rank == rank {
+				out = joinShape(out, tv.Shape, rank, rank)
+			}
+		}
+	}
+	return out
+}
+
 // sizeCheck refuses a whole array too small for an explicit-shape dummy (F2018
 // 15.5.2.11, sequence association).
 func (c *checker) sizeCheck(d *dummy, a *actual) {
-	id, ok := a.e.(*syntax.Ident)
-	if !ok || a.tv.Sym == nil || a.tv.Sym.Kind != SymVar || a.tv.Rank <= 0 {
+	if a.tv.Rank <= 0 {
 		return
 	}
 	dn, ok := d.size()
 	if !ok || d.fl&FValue != 0 || d.t.Basic == Character {
 		return // a character element sequence counts characters, not elements
 	}
-	s := a.tv.Sym
-	if s.Rank != len(s.Dims) || s.Flags&(FPointer|FAllocatable) != 0 {
+	if s := a.tv.Sym; s != nil && s.Flags&(FPointer|FAllocatable) != 0 {
 		return
 	}
-	n := int64(1)
-	for _, x := range s.Dims {
-		e, ok := x.extent()
-		if !ok {
-			return
-		}
-		n *= e
-		if n > 1<<40 {
-			return
-		}
-	}
-	if n < dn {
-		c.errorf(id.Pos, "Actual argument contains too few elements for dummy argument '%s' (%d/%d) at (1)", d.name, n, dn)
+	n, ok := shapeSize(a.tv.Shape)
+	if ok && n < dn {
+		c.errorf(a.pos, "Actual argument contains too few elements for dummy argument '%s' (%d/%d) at (1)", d.name, n, dn)
 	}
 }
 
@@ -561,12 +575,12 @@ func (c *checker) resolveGeneric(sc *Scope, e *syntax.Index, g *Symbol, acts []a
 		return unknown
 	}
 	r := c.callCheck(sc, e.Pos, best.Name, best, true, acts, false)
-	return c.callTV(best, r)
+	return c.callTV(best, r, acts)
 }
 
 // callTV is the typed result of a reference to procedure p whose elemental
 // rank (or -3) is r.
-func (c *checker) callTV(p *Symbol, r int) TV {
+func (c *checker) callTV(p *Symbol, r int, acts []actual) TV {
 	t := p.Type
 	if t.Basic == Invalid {
 		if it, ok := implicitFor(p.Scope, p.Name); ok && p.Scope != nil {
@@ -575,9 +589,9 @@ func (c *checker) callTV(p *Symbol, r int) TV {
 			t = Type{Basic: Unknown}
 		}
 	}
-	tv := TV{Type: t, Rank: p.Rank, Call: true, Sym: p}
+	tv := TV{Type: t, Rank: p.Rank, Call: true, Sym: p, Shape: shapeOfDims(p.Dims, p.Rank)}
 	if r != -3 {
-		tv.Rank = r
+		tv.Rank, tv.Shape = r, actualsShape(acts)
 	}
 	return tv
 }
@@ -592,16 +606,80 @@ func (c *checker) intrinsicOf(sc *Scope, e *syntax.Index, name string, in intrin
 		c.errorf(e.Pos, "%s at (1)", msg)
 		return tv
 	}
+	if in.pol == pElem {
+		tv.Shape = c.elementalShape(e.Pos, name, acts)
+	} else {
+		c.intrinsicShape(e.Pos, name, args, &tv)
+	}
 	tv.IsConst = true
 	for _, a := range args {
-		tv.IsConst = tv.IsConst && a.tv.constant()
+		tv.IsConst = tv.IsConst && (a.tv.constant() || a.tv.Type.Lenient())
+	}
+	switch name {
+	case "size", "lbound", "ubound", "shape":
+		// the inquiries of F2018 10.1.12 (8): constant unless the array has a
+		// deferred or assumed shape
+		if len(args) > 0 {
+			tv.IsConst = tv.IsConst || !deferredDims(args[0].tv.Dims)
+		}
 	}
 	if tv.Rank == 0 || tv.Rank == RankUnknown {
 		if k := c.foldIntrinsic(name, args, tv.Type); k != nil {
 			tv.Const = k
+		} else if name == "size" {
+			if k := sizeOf(args, tv.Type); k != nil {
+				tv.Const = k
+			}
 		}
 	}
 	return tv
+}
+
+// elementalShape is the shape of an elemental reference: that of its array
+// arguments, which shall conform (F2018 15.8.1).
+func (c *checker) elementalShape(pos syntax.Pos, name string, acts []actual) []int64 {
+	var out []int64
+	rank := 0
+	for i := range acts {
+		tv := acts[i].tv
+		if tv.Rank <= 0 {
+			continue
+		}
+		if rank == 0 {
+			out, rank = tv.Shape, tv.Rank
+			continue
+		}
+		if tv.Rank != rank {
+			c.errorf(acts[i].pos, "Incompatible ranks %d and %d in the arguments of intrinsic '%s' at (1)", rank, tv.Rank, name)
+			return nil
+		}
+		if d, x, y, bad := conformDim(out, tv.Shape); bad {
+			c.errorf(acts[i].pos, "Different shape for the arguments of intrinsic '%s' at (1) on dimension %d (%d and %d)", name, d, x, y)
+			return nil
+		}
+		out = joinShape(out, tv.Shape, rank, rank)
+	}
+	return out
+}
+
+// sizeOf folds size(array [, dim]) when the shape of the array is known (F2018
+// 16.9.196, 10.1.12).
+func sizeOf(args []argTV, t Type) *Const {
+	if len(args) == 0 || args[0].tv.Rank <= 0 || len(args[0].tv.Shape) == 0 {
+		return nil
+	}
+	s := args[0].tv.Shape
+	if d, ok := argAt(args, "dim", 1); ok {
+		if d.Const == nil || d.Const.Type.Basic != Integer || d.Const.I < 1 || int(d.Const.I) > len(s) || s[d.Const.I-1] < 0 {
+			return nil
+		}
+		return &Const{Type: t, I: s[d.Const.I-1]}
+	}
+	n, ok := shapeSize(s)
+	if !ok {
+		return nil
+	}
+	return &Const{Type: t, I: n}
 }
 
 // ---- defined operations and assignment (F2018 10.1.6, 10.2.1.4) ----
@@ -651,7 +729,7 @@ func (c *checker) definedOp(sc *Scope, pos syntax.Pos, op string, xs ...actual) 
 	if ifc != nil && len(ifc.ds) != len(xs) {
 		return unknown, true
 	}
-	return c.callTV(best, c.operatorRank(ifc, xs)), true
+	return c.callTV(best, c.operatorRank(ifc, xs), xs), true
 }
 
 func (c *checker) operatorRank(ifc *procIface, xs []actual) int {
