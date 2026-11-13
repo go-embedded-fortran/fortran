@@ -53,8 +53,25 @@ func ParseOne(root string, e corpus.Entry) (*syntax.File, error) {
 }
 
 // Gfortran runs "gfortran -fsyntax-only" on a file with its directory as the
-// include path; it reports acceptance.
+// include path; it reports acceptance. The run is bounded like every run of
+// the oracle (timeout, address space where the OS enforces it): a few
+// gfortran.dg files make the compiler allocate without bound while folding
+// constants, which took a CI runner down. It needs oracle.Init in main.
 func Gfortran(ctx context.Context, tc *oracle.Toolchain, root string, e corpus.Entry) (bool, time.Duration) {
+	full, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(e.Path)))
+	if err != nil {
+		return false, 0
+	}
+	t := time.Now()
+	res, err := oracle.Run(ctx, tc.Gfortran, filepath.Dir(full), []string{"-fsyntax-only", "-w", "-I", filepath.Dir(full), full}, nil,
+		oracle.Limits{Timeout: 30 * time.Second, MemoryBytes: 2 << 30})
+	return err == nil && res.Exit == 0 && res.Signal == "" && !res.TimedOut, time.Since(t)
+}
+
+// gfortranTimed is Gfortran without the bounding helper, for the benchmark:
+// the timing must not include a re-executed helper process. Only the largest
+// files that were already accepted once are given to it.
+func gfortranTimed(ctx context.Context, tc *oracle.Toolchain, root string, e corpus.Entry) (bool, time.Duration) {
 	full := filepath.Join(root, filepath.FromSlash(e.Path))
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -245,12 +262,12 @@ func Bench(ctx context.Context, tc *oracle.Toolchain, root string, es []corpus.E
 	gf := make([][]float64, len(idx))
 	var startup []float64
 	for r := 0; r < rounds; r++ {
-		_, d := Gfortran(ctx, tc, dir, empty)
+		_, d := gfortranTimed(ctx, tc, dir, empty)
 		startup = append(startup, d.Seconds())
 		for k, i := range idx {
 			e := es[i]
 			ours[k] = append(ours[k], timeParse(root, e))
-			_, d := Gfortran(ctx, tc, root, e)
+			_, d := gfortranTimed(ctx, tc, root, e)
 			gf[k] = append(gf[k], d.Seconds())
 		}
 	}
