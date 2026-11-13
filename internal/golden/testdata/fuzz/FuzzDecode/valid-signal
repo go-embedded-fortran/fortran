@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("# foracle golden v1\n@ t\nexit 4294967295\nsignal \"segmentation fault\"\nstdout \"a\\x00\\xff\\\"\\n\"\nstderr \"\"\n")

@@ -1,0 +1,39 @@
+go-embedded-fortran/fortran
+Copyright (c) 2026, go-embedded-fortran. BSD 3-Clause License (see LICENSE).
+
+What this repository contains that it did not write, and what it only runs.
+
+------------------------------------------------------------------------------
+Linked into the binaries (go.mod)
+
+- github.com/spf13/cobra v1.10.2 (Apache-2.0) and its dependencies
+  (github.com/spf13/pflag, BSD-3-Clause; github.com/inconshreveable/mousetrap,
+  Apache-2.0)
+
+------------------------------------------------------------------------------
+Downloaded or run, never committed, linked or redistributed
+
+- gfortran 15.2.0 (GPL-3.0-or-later with the GCC Runtime Library Exception for
+  libgfortran): the oracle. It is run as a separate program, as a compiler, and
+  its output is compared; none of its code is ported, linked or copied here.
+  It is installed by `foracle toolchain` from the conda-forge package
+  `gfortran==15.2.0` (build recipes BSD-3-Clause; the compiler keeps its own
+  licence).
+- micromamba 2.10.0 (BSD-3-Clause), a release binary fetched by
+  `foracle toolchain` and checked against the sha256 in
+  internal/provision/provision.go.
+- flang 23.1.4 (Apache-2.0 with LLVM Exceptions), optional, Linux only: the LLVM
+  release archive fetched by `foracle toolchain --flang`.
+- The gcc 15.2.0 testsuite, gfortran.dg and gfortran.fortran-torture (GPL):
+  test input for the oracle, fetched by commit from the gcc mirror, never
+  copied here.
+- llvm-test-suite, Fortran/UnitTests/fcvs21_f95 (the NIST FCVS: redistribution
+  allowed but with explicit acknowledgement of what has been changed;
+  Apache-2.0 WITH LLVM-exception for the harness): fetched by commit, never
+  copied here.
+- LFortran integration_tests (BSD-3-Clause): fetched by commit, never copied
+  here.
+
+testdata/programs/*.f90 and testdata/gate/*.f90 are original programs written
+for this repository (BSD-3-Clause); testdata/programs.golden records what the
+oracle did with the former.
