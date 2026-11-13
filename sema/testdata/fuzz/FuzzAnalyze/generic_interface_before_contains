@@ -1,0 +1,2 @@
+go test fuzz v1
+string("module m\n interface g\n  module procedure s1, s2, s3\n end interface\n public :: g\ncontains\n subroutine s1(a)\n  real :: a\n end subroutine\n subroutine s2(a)\n  integer :: a\n end subroutine\nend\n")

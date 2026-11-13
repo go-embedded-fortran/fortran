@@ -1,0 +1,2 @@
+go test fuzz v1
+string("      program p\n      f(x) = x * 2.0\n      g() = 1\n      character*10 s\n      data s /'abc'/, n /3*7/\n      y = f(g()) + n\n      end\n")
