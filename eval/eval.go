@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-ndarray/ndarray"
 
+	"github.com/go-embedded-fortran/fortran/sema"
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
 
@@ -111,14 +110,13 @@ const (
 )
 
 type sym struct {
-	k      kind
-	slot   int
-	isC    bool // a parameter
-	ci     int64
-	cr     float64
-	rank   int
-	shape  []intFn // constant-shape arrays: allocated at start
-	hasDim bool
+	k     kind
+	slot  int
+	isC   bool // a parameter
+	ci    int64
+	cr    float64
+	rank  int
+	shape []intFn // constant-shape arrays: allocated at start
 }
 
 // ex is a compiled expression.
@@ -143,8 +141,13 @@ type ex struct {
 
 type compiler struct {
 	file *syntax.File
-	syms map[string]*sym
-	p    *Program
+	// info is the typed tree: every type, kind, rank, constant value and
+	// resolved name of the program comes from it (package sema); the compiler
+	// keeps only the storage slot of each variable.
+	info  *sema.Info
+	scope *sema.Scope
+	syms  map[*sema.Symbol]*sym
+	p     *Program
 }
 
 func (c *compiler) errf(n syntax.Node, format string, a ...any) error {
@@ -155,16 +158,28 @@ func (c *compiler) errf(n syntax.Node, format string, a ...any) error {
 	return e
 }
 
-// Compile compiles a parsed file. Anything outside the prototype's language is
+// Compile compiles a parsed file against its typed tree (sema.Analyze of the
+// same file; nil means analyse it here). A file the analyser refuses is refused
+// with its first diagnostic. Anything outside the prototype's language is
 // refused with a positioned error.
-func Compile(f *syntax.File) (*Program, error) {
-	c := &compiler{file: f, syms: map[string]*sym{}, p: &Program{}}
+func Compile(f *syntax.File, info *sema.Info) (*Program, error) {
+	c := &compiler{file: f, syms: map[*sema.Symbol]*sym{}, p: &Program{}}
+	if info == nil {
+		var errs syntax.ErrorList
+		if info, errs = sema.Analyze(f, nil); len(errs) > 0 {
+			return nil, &Error{Pos: errs[0].Pos.String(), Msg: errs[0].Msg}
+		}
+	}
+	c.info = info
 	if len(f.Units) != 1 || f.Units[0].Kind != syntax.ProgramUnit {
 		return nil, c.errf(nil, "exactly one main program is supported")
 	}
 	u := f.Units[0]
 	if u.HasContains {
 		return nil, c.errf(u, "internal procedures are not supported")
+	}
+	if c.scope = info.Scopes[u]; c.scope == nil {
+		return nil, c.errf(u, "the program unit was not analysed")
 	}
 	for _, s := range u.Body {
 		if err := c.stmt(s, &c.p.body); err != nil {
@@ -233,87 +248,101 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 
 // ---- declarations ----
 
-func (c *compiler) typeKind(t *syntax.TypeSpec) (kind, error) {
-	switch t.Name {
-	case "integer":
-		return kInt, nil
-	case "doubleprecision":
-		return kReal, nil
-	case "real":
-		if t.Kind == nil {
-			return 0, c.errf(t, "default real is real(4): only real(8) is supported")
-		}
-		if c.isInt(t.Kind, 8) {
-			return kReal, nil
-		}
+// kindOf is the evaluator's class of a value of the analyser's type t: the
+// prototype has integers (held as int64, whatever their kind up to 8), real(8)
+// scalars and real(8) arrays.
+func (c *compiler) kindOf(at syntax.Node, t sema.Type, rank int) (kind, error) {
+	var k kind
+	switch {
+	case t.Basic == sema.Integer && t.Kind <= 8:
+		k = kInt
+	case t.Basic == sema.Real && t.Kind == 8:
+		k = kReal
+	case t.Basic == sema.Real:
+		return 0, c.errf(at, "real(%d) is not supported: only real(8)", t.Kind)
+	default:
+		return 0, c.errf(at, "type %s is not supported", t)
 	}
-	return 0, c.errf(t, "type %q (kind %v) is not supported", t.Name, t.Kind != nil)
+	if rank != 0 {
+		if rank == sema.RankUnknown || k != kReal {
+			return 0, c.errf(at, "only real(8) arrays are supported")
+		}
+		return kArr, nil
+	}
+	return k, nil
 }
 
-func (c *compiler) isInt(e syntax.Expr, v int64) bool {
-	l, ok := e.(*syntax.IntLit)
+// tv is the analyser's annotation of an expression.
+func (c *compiler) tv(n syntax.Expr) (sema.TV, error) {
+	tv, ok := c.info.Types[n]
 	if !ok {
-		return false
+		return tv, c.errf(n, "the analyser has no type for this expression")
 	}
-	n, err := strconv.ParseInt(l.Text, 10, 64)
-	return err == nil && n == v
+	return tv, nil
+}
+
+// symOf is the storage of the variable a name denotes.
+func (c *compiler) symOf(id *syntax.Ident) (*sym, *sema.Symbol, error) {
+	ss := c.info.Uses[id]
+	if ss == nil {
+		return nil, nil, c.errf(id, "%s is not a variable of the program", id.Name)
+	}
+	s, ok := c.syms[ss]
+	if !ok {
+		return nil, ss, c.errf(id, "%s is not declared", id.Name)
+	}
+	return s, ss, nil
 }
 
 func (c *compiler) decl(d *syntax.Decl) error {
-	k, err := c.typeKind(d.Type)
-	if err != nil {
-		return err
-	}
-	var param, alloc bool
-	var attrDims []syntax.Dim
 	for _, a := range d.Attrs {
 		switch a.Name {
-		case "parameter":
-			param = true
-		case "allocatable":
-			alloc = true
-		case "dimension":
-			attrDims = a.Dims
+		case "parameter", "allocatable", "dimension":
 		default:
 			return c.errf(d, "attribute %q is not supported", a.Name)
 		}
 	}
 	for _, e := range d.Entities {
-		if _, dup := c.syms[e.Name.Name]; dup {
+		ss := c.scope.Names[e.Name.Name]
+		if ss == nil {
+			return c.errf(e, "%s was not analysed", e.Name.Name)
+		}
+		if _, dup := c.syms[ss]; dup {
 			return c.errf(e, "%s is declared twice", e.Name.Name)
 		}
-		dims := e.Dims
-		if dims == nil {
-			dims = attrDims
+		param := ss.Kind == sema.SymParam
+		if param && ss.Rank != 0 {
+			return c.errf(e, "only real(8) variable arrays are supported")
 		}
+		elem, err := c.kindOf(e, ss.Type, 0)
+		if err != nil {
+			return err
+		}
+		k := elem
 		s := &sym{k: k}
 		switch {
-		case len(dims) > 0:
-			if k != kReal || param {
+		case ss.Rank != 0:
+			if k != kReal {
 				return c.errf(e, "only real(8) variable arrays are supported")
 			}
-			if len(dims) > 2 {
-				return c.errf(e, "rank %d: only ranks 1 and 2 are supported", len(dims))
+			if ss.Rank < 0 || ss.Rank > 2 || len(ss.Dims) != ss.Rank {
+				return c.errf(e, "rank %d: only ranks 1 and 2 are supported", ss.Rank)
 			}
-			s.k, s.rank, s.slot = kArr, len(dims), c.p.nArrs
+			s.k, s.rank, s.slot = kArr, ss.Rank, c.p.nArrs
 			c.p.nArrs++
-			if !alloc {
-				for _, d := range dims {
-					if d.Colon || d.Star || d.Rank || d.Hi == nil || d.Lo != nil {
+			if ss.Flags&sema.FAllocatable == 0 {
+				for _, dm := range ss.Dims {
+					if !dm.LoKnown || dm.Lo != 1 || !dm.HiKnown || dm.Assumed || dm.Deferred {
 						return c.errf(e, "an explicit-shape array needs 1-based constant bounds")
 					}
-					fn, err := c.intExpr(d.Hi)
-					if err != nil {
-						return err
-					}
-					s.shape = append(s.shape, fn)
+					s.shape = append(s.shape, constInt(dm.Hi).i)
 				}
-				c.syms[e.Name.Name] = s
+				c.syms[ss] = s
 				c.p.init = append(c.p.init, allocFn(s.slot, s.shape))
 				continue
 			}
-			for _, d := range dims {
-				if !d.Colon {
+			for _, dm := range ss.Dims {
+				if !dm.Deferred {
 					return c.errf(e, "an allocatable array is declared with (:,...)")
 				}
 			}
@@ -324,26 +353,16 @@ func (c *compiler) decl(d *syntax.Decl) error {
 			s.slot = c.p.nReals
 			c.p.nReals++
 		}
-		c.syms[e.Name.Name] = s
+		c.syms[ss] = s
 		if param {
-			if e.Init == nil {
-				return c.errf(e, "parameter %s has no value", e.Name.Name)
-			}
-			v, err := c.expr(e.Init)
-			if err != nil {
-				return err
-			}
-			if !v.isC {
+			if ss.Const == nil {
 				return c.errf(e, "parameter %s is not a constant expression", e.Name.Name)
 			}
 			s.isC = true
 			if k == kInt {
-				if v.k != kInt {
-					return c.errf(e, "integer parameter %s with a real value", e.Name.Name)
-				}
-				s.ci = v.ci
+				s.ci = ss.Const.I
 			} else {
-				s.cr = v.asReal().cr
+				s.cr = constFloat(ss.Const)
 			}
 			continue
 		}
@@ -429,25 +448,44 @@ func constReal(v float64) *ex {
 	return &ex{k: kReal, isC: true, cr: v, slot: -1, r: func(*frame) float64 { return v }}
 }
 
+// constFloat is the value of a real constant the analyser folded.
+func constFloat(k *sema.Const) float64 {
+	if k.Type.Basic == sema.Integer {
+		return float64(k.I)
+	}
+	return k.F
+}
+
+// expr compiles an expression. Its type, kind, rank and, when the analyser
+// folded it (a literal, a named constant, a constant expression), its value
+// come from the typed tree: the compiler derives none of them.
 func (c *compiler) expr(n syntax.Expr) (*ex, error) {
+	tv, err := c.tv(n)
+	if err != nil {
+		return nil, err
+	}
+	want, err := c.kindOf(n, tv.Type, tv.Rank)
+	if err != nil {
+		return nil, err
+	}
+	var e *ex
+	if tv.Rank == 0 && tv.Const != nil {
+		if want == kInt {
+			e = constInt(tv.Const.I)
+		} else {
+			e = constReal(constFloat(tv.Const))
+		}
+	} else if e, err = c.expr1(n, tv); err != nil {
+		return nil, err
+	}
+	if e.k != want || (want == kArr && e.rank != tv.Rank) {
+		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
+	}
+	return e, nil
+}
+
+func (c *compiler) expr1(n syntax.Expr, tv sema.TV) (*ex, error) {
 	switch n := n.(type) {
-	case *syntax.IntLit:
-		txt, _, _ := strings.Cut(n.Text, "_")
-		v, err := strconv.ParseInt(txt, 10, 64)
-		if err != nil {
-			return nil, c.errf(n, "integer literal %q: %v", n.Text, err)
-		}
-		return constInt(v), nil
-	case *syntax.RealLit:
-		if n.Kind != "" && n.Kind != "8" && !strings.ContainsAny(n.Text, "d") {
-			return nil, c.errf(n, "only double precision literals are supported")
-		}
-		txt, _, _ := strings.Cut(n.Text, "_")
-		v, err := strconv.ParseFloat(strings.ReplaceAll(txt, "d", "e"), 64)
-		if err != nil {
-			return nil, c.errf(n, "real literal %q: %v", n.Text, err)
-		}
-		return constReal(v), nil
 	case *syntax.Paren:
 		return c.expr(n.X)
 	case *syntax.Ident:
@@ -465,17 +503,17 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 		}
 		return nil, c.errf(n, "operator %q is not supported", n.Op)
 	case *syntax.Binary:
-		return c.binary(n)
+		return c.binary(n, tv)
 	case *syntax.Index:
-		return c.index(n)
+		return c.index(n, tv)
 	}
 	return nil, c.errf(n, "%T is not supported in an expression", n)
 }
 
 func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
-	s, ok := c.syms[n.Name]
-	if !ok {
-		return nil, c.errf(n, "%s is not declared", n.Name)
+	s, _, err := c.symOf(n)
+	if err != nil {
+		return nil, err
 	}
 	switch {
 	case s.isC && s.k == kInt:
@@ -517,7 +555,7 @@ func (c *compiler) negate(n syntax.Node, x *ex) (*ex, error) {
 	return nil, c.errf(n, "negation of an array is not supported")
 }
 
-func (c *compiler) binary(n *syntax.Binary) (*ex, error) {
+func (c *compiler) binary(n *syntax.Binary, tv sema.TV) (*ex, error) {
 	x, err := c.expr(n.X)
 	if err != nil {
 		return nil, err
@@ -534,7 +572,7 @@ func (c *compiler) binary(n *syntax.Binary) (*ex, error) {
 	switch {
 	case x.k == kArr || y.k == kArr:
 		return c.arrayBinary(n, x, y)
-	case x.k == kInt && y.k == kInt:
+	case tv.Type.Basic == sema.Integer: // both operands are integers (F2018 Table 10.2)
 		return c.intBinary(n, x, y)
 	}
 	if n.Op == "**" && y.k == kInt && y.isC {
@@ -728,18 +766,22 @@ func wrap(f *frame, nd *ndarray.Array, like *array) *array {
 	return &array{nd: nd, data: data, n1: like.n1, n2: like.n2, rank: like.rank}
 }
 
-func (c *compiler) index(n *syntax.Index) (*ex, error) {
+func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	id, ok := n.X.(*syntax.Ident)
 	if !ok {
 		return nil, c.errf(n, "only a name can be subscripted or called")
 	}
-	if s, ok := c.syms[id.Name]; ok {
-		if s.k != kArr {
-			return nil, c.errf(n, "%s is not an array", id.Name)
-		}
-		return c.element(n, id.Name, s)
+	if c.info.Uses[id] == nil { // not a name of the program: an intrinsic (sema.Analyze resolved it)
+		return c.intrinsic(n, id.Name, tv)
 	}
-	return c.intrinsic(n, id.Name)
+	s, _, err := c.symOf(id)
+	if err != nil {
+		return nil, err
+	}
+	if s.k != kArr {
+		return nil, c.errf(n, "%s is not an array", id.Name)
+	}
+	return c.element(n, id.Name, s)
 }
 
 func (c *compiler) element(n *syntax.Index, name string, s *sym) (*ex, error) {
@@ -800,7 +842,7 @@ func bounds(f *frame, name string, dim int, i int64, n int) {
 	fail(f, "subscript %d of %s is %d, outside 1:%d", dim, name, i, n)
 }
 
-func (c *compiler) intrinsic(n *syntax.Index, name string) (*ex, error) {
+func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, error) {
 	args := make([]*ex, len(n.Args))
 	for i, a := range n.Args {
 		if a.Keyword != "" || a.Value == nil {
@@ -820,8 +862,10 @@ func (c *compiler) intrinsic(n *syntax.Index, name string) (*ex, error) {
 	}
 	switch name {
 	case "real", "dble":
+		// the analyser typed the result: real(x, 8) and dble(x) are real(8),
+		// real(x) is real(4) and is refused by kindOf before this point
 		if name == "real" {
-			if len(args) != 2 || !args[1].isC || args[1].ci != 8 {
+			if len(args) != 2 {
 				return nil, c.errf(n, "real(x, 8) is the only supported conversion")
 			}
 		} else if err := want(1); err != nil {
@@ -925,9 +969,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 	}
 	switch l := s.LHS.(type) {
 	case *syntax.Ident:
-		sy, ok := c.syms[l.Name]
-		if !ok {
-			return nil, c.errf(l, "%s is not declared", l.Name)
+		sy, _, err := c.symOf(l)
+		if err != nil {
+			return nil, err
 		}
 		if sy.isC {
 			return nil, c.errf(l, "%s is a parameter", l.Name)
@@ -941,8 +985,8 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		if !ok {
 			return nil, c.errf(l, "unsupported assignment target")
 		}
-		sy, ok := c.syms[id.Name]
-		if !ok || sy.k != kArr {
+		sy, _, err := c.symOf(id)
+		if err != nil || sy.k != kArr {
 			return nil, c.errf(l, "%s is not an array", id.Name)
 		}
 		if rhs.k == kArr {
@@ -1056,8 +1100,8 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 	if d.While != nil || d.Concurrent || !d.HasVar || d.Mask != nil {
 		return nil, c.errf(d, "only counted do loops are supported")
 	}
-	sy, ok := c.syms[d.Var.Name]
-	if !ok || sy.k != kInt || sy.isC {
+	sy, _, err := c.symOf(&d.Var)
+	if err != nil || sy.k != kInt || sy.isC {
 		return nil, c.errf(d, "the do variable %s must be a declared integer", d.Var.Name)
 	}
 	lo, err := c.intExpr(d.Lo)
@@ -1112,8 +1156,8 @@ func (c *compiler) call(s *syntax.Call) (stmtFn, error) {
 	if !ok {
 		return nil, c.errf(s, "cpu_time needs a real variable")
 	}
-	sy, ok := c.syms[t.Name]
-	if !ok || sy.k != kReal || sy.isC {
+	sy, _, err := c.symOf(t)
+	if err != nil || sy.k != kReal || sy.isC {
 		return nil, c.errf(s, "cpu_time needs a declared real(8) variable")
 	}
 	slot := sy.slot
@@ -1134,8 +1178,8 @@ func (c *compiler) allocate(a *syntax.Allocate) (stmtFn, error) {
 		if !ok {
 			return nil, c.errf(o, "allocate needs a name")
 		}
-		sy, ok := c.syms[id.Name]
-		if !ok || sy.k != kArr || sy.shape != nil {
+		sy, _, err := c.symOf(id)
+		if err != nil || sy.k != kArr || sy.shape != nil {
 			return nil, c.errf(o, "%s is not an allocatable array", id.Name)
 		}
 		if len(ix.Args) != sy.rank {

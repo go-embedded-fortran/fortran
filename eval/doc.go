@@ -16,6 +16,19 @@
 //     arrays, + and * of an array and a scalar) and matmul, all handed to
 //     go-ndarray; sum(array); the scalar intrinsics real, dble, mod, sqrt, abs.
 //
+// # The typed tree
+//
+// Compile takes the syntax tree and its sema.Info (sema.Analyze of the same
+// file; nil means analyse here). A file the analyser refuses is refused with
+// the first diagnostic. Every type, kind, rank and constant value is read from
+// Info (an expression the analyser folded, a literal, a named constant, an
+// extent, is a constant of the program), a name is resolved through Info.Uses,
+// and the compiler keeps only the storage slot of each variable. After
+// compiling an expression it checks its own class (integer, real(8), array)
+// against the analyser's type: a disagreement is an internal error, never a
+// silent difference. The kernels' behaviour is unchanged: the gate's
+// correctness smoke and the tests of this package are the witness.
+//
 // # Model
 //
 // The program is compiled once into closures over typed slots: an expression

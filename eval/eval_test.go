@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-ndarray/ndarray"
 
+	"github.com/go-embedded-fortran/fortran/sema"
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
 
@@ -19,7 +20,7 @@ func compile(t *testing.T, src string) (*Program, error) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	return Compile(f)
+	return Compile(f, nil)
 }
 
 func run(t *testing.T, src string) (string, Stats) {
@@ -338,7 +339,7 @@ func TestRefusals(t *testing.T) {
 			if perr != nil {
 				t.Fatalf("parse: %v", perr)
 			}
-			_, err := Compile(f)
+			_, err := Compile(f, nil)
 			var e *Error
 			if !errors.As(err, &e) {
 				t.Fatalf("accepted (err %v)", err)
@@ -386,5 +387,80 @@ func TestParseFormat(t *testing.T) {
 	}
 	if got := (edit{'e', 24, 16}).real(1.0 / 3); got != "  3.3333333333333331E-01" {
 		t.Errorf("%q", got)
+	}
+}
+
+// The evaluator takes every type, kind, rank and constant from the typed tree:
+// the analyser's diagnostics reach it as refusals, and its folded constants
+// are the values of the program.
+func TestConsumesTheTypedTree(t *testing.T) {
+	// the analyser refuses statically non-conformable arrays; the evaluator
+	// used to find out when the program ran
+	_, err := compile(t, "program p\n  implicit none\n  real(8) :: a(3), b(4)\n  a = a + b\nend program p\n")
+	var e *Error
+	if !errors.As(err, &e) || !strings.Contains(e.Msg, "not conformable") || e.Pos == "" {
+		t.Fatalf("got %v, want the analyser's positioned diagnostic", err)
+	}
+
+	// constants: named constants, kind suffixes, folded expressions, an extent
+	// that is a constant expression (none of it is evaluated by this package)
+	out, _ := run(t, `program p
+  implicit none
+  integer, parameter :: n = 2*3 + 1, m = n - 1
+  real(8), parameter :: third = 1d0/3d0, k = real(m, 8)*third
+  real(8) :: a(n)
+  integer(8) :: i
+  do i = 1, 1_8*n
+    a(i) = real(i, 8)*k
+  end do
+  print '(es24.16)', sum(a)
+  print '(es24.16)', k
+end program p
+`)
+	var want float64
+	k := float64(6) * (1.0 / 3.0)
+	for i := 1; i <= 7; i++ {
+		want += float64(i) * k
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	g1, _ := strconv.ParseFloat(strings.TrimSpace(lines[0]), 64)
+	g2, _ := strconv.ParseFloat(strings.TrimSpace(lines[1]), 64)
+	if math.Abs(g1-want) > 1e-13 || g2 != k {
+		t.Errorf("got %v %v, want %v %v", g1, g2, want, k)
+	}
+
+	// the typed tree of another file does not describe this one
+	f1, _ := syntax.Parse("a.f90", []byte("program p\n  implicit none\n  integer :: i\n  i = 1\nend program p\n"), nil)
+	f2, _ := syntax.Parse("b.f90", []byte("program p\n  implicit none\n  integer :: i\n  i = 2\nend program p\n"), nil)
+	info, errs := sema.Analyze(f1, nil)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if _, err := Compile(f2, info); err == nil {
+		t.Error("compiled a file against the typed tree of another")
+	}
+	// and the same file against its own typed tree compiles
+	if _, err := Compile(f1, info); err != nil {
+		t.Errorf("own typed tree: %v", err)
+	}
+}
+
+// The kind of a value is the analyser's: a default real literal is real(4) and
+// is refused, whatever it looks like.
+func TestKindsComeFromTheAnalyser(t *testing.T) {
+	for name, src := range map[string]string{
+		"real(4) literal":  "program p\n  implicit none\n  real(8) :: x\n  x = 1.5\nend program p\n",
+		"real(4) result":   "program p\n  implicit none\n  real(8) :: x\n  x = real(2)\nend program p\n",
+		"integer(16)":      "program p\n  implicit none\n  integer(16) :: i\nend program p\n",
+		"logical":          "program p\n  implicit none\n  logical :: l\nend program p\n",
+		"complex constant": "program p\n  implicit none\n  complex(8), parameter :: c = (1d0, 2d0)\nend program p\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := compile(t, src)
+			var e *Error
+			if !errors.As(err, &e) {
+				t.Fatalf("accepted (err %v)", err)
+			}
+		})
 	}
 }
