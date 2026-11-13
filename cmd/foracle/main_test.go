@@ -86,6 +86,21 @@ func TestCorpusCommand(t *testing.T) {
 	}
 }
 
+func TestGateNeedsItsToolchains(t *testing.T) {
+	t.Setenv(oracle.EnvHome, "")
+	t.Setenv(oracle.EnvGfortran, "")
+	if _, _, err := exec(t, "gate", "--smoke"); err == nil {
+		t.Fatal("ran the gate without a gfortran")
+	}
+	out, _, err := exec(t, "gate", "--help")
+	if err != nil || !strings.Contains(out, "--smoke") || !strings.Contains(out, "--coracle-home") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if _, _, err := exec(t, "gate", "extra"); err == nil {
+		t.Fatal("accepted an argument")
+	}
+}
+
 func TestBenchRefusesUnderLoad(t *testing.T) {
 	// Without a toolchain the command still refuses first on a bad load or
 	// reaches the toolchain check: either way it must not measure.

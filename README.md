@@ -187,10 +187,69 @@ is provisioned.
 | `foracle golden` | regenerates `testdata/programs.golden` from the 14 programs in `testdata/programs/` |
 | `foracle corpus --dir D` | compiles and runs every `.f90 .f95 .f03 .f08` (free form) and `.f .for` (fixed form) file below D; one line per file: path, outcome, exit status, detail |
 | `foracle bench` | the reference column of the §4.2 gate: the four kernels of `testdata/gate/` (five programs: K3 as loops and as `matmul`) with gfortran `-O2`, 7 rounds, median and spread; refuses above 1-minute load 8 |
+| `foracle gate [--smoke]` | the whole §4.2 gate: the contenders on the kernels, checksum bounds, the decision rule (see "The gate"); refuses above 1-minute load 8 |
 | `foracle parse-rate --dir D` | parses every Fortran file below D with the `syntax` package and compares with `gfortran -fsyntax-only` (see "The parser") |
 | `foracle parse-bench --dir D` | parse throughput against `gfortran -fsyntax-only` on the largest files both accept; refused above load 8 |
 | `foracle toolchain --home H [--flang]` | installs the pinned toolchain |
 | `foracle version` | prints the pinned versions and whether the toolchain was found |
+
+### The gate (bib §4.2)
+
+`foracle gate` decides between (A) a pure-Go evaluator and (B) compiling to
+wasm32. The decision rule is fixed in bib §4.2 and is implemented once, in
+`internal/gate/rule.go`, with its thresholds (5, 2, 1.2) pinned by a test; the
+tests of the rule are table-driven with the edge cases at exactly 5, 2 and 1.2.
+
+| contender | what it is |
+|---|---|
+| **A** | package `eval` (**prototype**, the seed of M3-A): the `syntax` AST compiled once into closures over typed slots (integer and real slots, no boxing in arithmetic); `real(8)` arrays of rank 1 and 2, column-major, bounds-checked; whole-array expressions and `matmul` are handed to go-ndarray v0.40.3. It accepts exactly the gate kernels' language and refuses the rest with a positioned error. |
+| **B-near**, **B-upper** | the C transliterations in `testdata/gate/c/` (line for line, same checksums, same formulas) compiled by clang 23.1.4 to `wasm32-wasip1` at `-O0` and `-O2`, run on wazero v1.12.0 (the version go-embedded-c pins). The array kernels (`matmul`, `a = b*c + d`) call the Go library through a host import, so the operands are copied out of linear memory and the result back inside the timed region, as bib §4.2 says; the copy cost alone is reported next to it. |
+| **gfortran** | 15.2.0 `-O2`, native: the reference. |
+| **direct** | go-ndarray called straight from Go, no evaluator, no copy: the baseline of A's array kernels. |
+
+The toolchain of B is go-embedded-c's oracle, which keeps its provisioning in
+`internal` packages: this repository does not copy it, it asks the `coracle`
+binary for it (`go install github.com/go-embedded-c/c/cmd/coracle@v0.2.1`,
+then `CORACLE_HOME=<dir> coracle toolchain`) and only uses the layout it installs.
+
+Every contender times its kernel with a clock around the kernel itself, one
+core (`GOMAXPROCS=1`), in interleaved rounds (every kernel, every contender, in
+each round; 7 rounds, median and spread). **A checksum out of its bound is a
+failure, not a time.** The bound is stated in `internal/gate/kernel.go`: the
+exact checksum is computed with `math/big` (`internal/gate/ref.go`; K3's by
+the exact identity `sum(ab) = sum_k colsum_k(a) rowsum_k(b)` in rational
+arithmetic), and a contender is within `1.01 * m * 2^-53 * exact`, `m` being
+the number of rounding steps on the longest chain of the kernel (nonnegative
+data, so the bound holds for any summation order, FMA or vectorisation: no
+contender has to reproduce another's bits). A wrong C kernel is refused by a
+test.
+
+**Arrays and go-ndarray.** go-ndarray v0.40.3 is
+row-major and cannot adopt a buffer (go-ndarray/ndarray#76, `Wrap`, open).
+Contender A allocates every array through go-ndarray in the reversed shape (the
+Fortran `a(n1,n2)` is the row-major `(n2,n1)` array) and indexes the array's own
+storage (`ndarray.Data` returns it, not a copy), so **no copy is forced when an
+array crosses to go-ndarray**, neither for `a = b*c + d` (written by `AddInto`)
+nor for `matmul` (`c' = b' a'` on the reversed arrays). The one copy is the
+result of `MatMul`, which go-ndarray allocates itself, into `c`'s storage:
+n² elements, counted and printed (`A copied N elements`). Under B every array
+crosses by copy, both ways.
+
+**Home.** Only the desktop home is implemented: the playground (headless
+Chromium, timed inside the page) needs a browser lane that does not exist yet.
+The rule needs both homes to pick A, so **with the desktop alone it can only
+answer B or "A first"**; the output says so. The browser lane is
+[#5](https://github.com/go-embedded-fortran/fortran/issues/5).
+
+`foracle gate --smoke` runs tiny sizes for correctness only, prints no time and
+no verdict, and is what CI runs (`gate-smoke`, linux and macOS): a shared runner
+is never at a load the gate accepts.
+
+**Figures: not run, load.** The development machine was at 1-minute load 10 to
+100 on 2026-11-13, above the gate's limit of 8, and `foracle gate` refuses to
+measure there (and discards a run whose load rises above 8 during it): no time
+and no verdict is published here. The first unloaded run's table, with its load
+samples, replaces this paragraph.
 
 ### Golden programs
 
@@ -223,11 +282,10 @@ produces them (artefact `corpora-oracle`) and nothing was measured before.
 
 ## Not yet
 
-- No evaluator, and no semantic analysis: the gate of bib §4.2 is the next
-  pull request, whose oracle side (`foracle bench`) runs here. Its contenders
-  and the decision rule are not implemented, and the bench times were not
-  published: a first smoke run was taken at 1-minute load above 6 on a shared
-  machine.
+- No semantic analysis and no general evaluator: package `eval` is the gate's
+  prototype and accepts only the kernels' language. The gate's playground home
+  (headless browser) is not implemented, and its figures were not published
+  (see "The gate").
 - Not parsed yet, of bib §1.1: submodule procedure bodies (`module procedure
   x ... end procedure`; the `submodule` header parses), derived-type
   parameters (refused by design), coarray and team statements (`codimension`

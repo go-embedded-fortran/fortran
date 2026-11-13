@@ -46,7 +46,7 @@ func RootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
-	root.AddCommand(versionCmd(), toolchainCmd(), runCmd(), goldenCmd(), corpusCmd(), benchCmd(), parseRateCmd(), parseBenchCmd())
+	root.AddCommand(versionCmd(), toolchainCmd(), runCmd(), goldenCmd(), corpusCmd(), benchCmd(), gateCmd(), parseRateCmd(), parseBenchCmd())
 	return root
 }
 

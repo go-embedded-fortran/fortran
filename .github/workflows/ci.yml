@@ -114,6 +114,53 @@ jobs:
       - name: The gate's reference column (smoke, one round, load not enforced on shared runners)
         run: go run ./cmd/foracle bench --rounds 1 --force
 
+  # The back-end gate of bib/fortran.md 4.2, as a SMOKE: tiny sizes, one round,
+  # every contender (A, B-near, B-upper on wazero, gfortran, direct go-ndarray)
+  # checked against the math/big bound. Correctness only: a shared runner is
+  # never at a load the gate accepts, so no time is printed and none is
+  # published. B's toolchain is go-embedded-c's oracle (clang 23.1.4, wasi-libc),
+  # installed by its coracle binary.
+  gate-smoke:
+    name: gate smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      FORACLE_REQUIRE: "1"
+      GATE_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.27.4
+      - name: Locations
+        run: |
+          echo "FORACLE_HOME=$HOME/foracle-home" >> "$GITHUB_ENV"
+          echo "CORACLE_HOME=$HOME/coracle-home" >> "$GITHUB_ENV"
+      - name: coracle needs zstd and cmake
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y zstd cmake
+      - name: Toolchain caches
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/foracle-home
+            ~/coracle-home
+          key: gate-home-${{ runner.os }}-${{ runner.arch }}-gfortran-15.2.0-coracle-v0.2.1-${{ hashFiles('internal/provision/provision.go') }}
+      - name: Provision gfortran
+        run: go run ./cmd/foracle toolchain --home "$FORACLE_HOME"
+      - name: Provision clang 23.1.4 and the wasi-libc sysroot (go-embedded-c's coracle)
+        run: |
+          GOBIN="$HOME/gobin" go install github.com/go-embedded-c/c/cmd/coracle@v0.2.1
+          "$HOME/gobin/coracle" toolchain
+          "$HOME/gobin/coracle" version
+      - name: Gate tests (evaluator, rule, live contenders)
+        run: go test -count=1 -timeout=30m -v ./eval ./internal/gate
+      - name: foracle gate --smoke
+        run: go run ./cmd/foracle gate --smoke
+
   # The corpora: reported per file, never gating (many gfortran.dg files are
   # written to be refused, or need other files). The tsv files are the
   # artefact; README records the revisions.
