@@ -64,6 +64,8 @@ func (p *parser) ifStmt() Stmt {
 		p.i++
 		p.endStmt()
 		p.done()
+	case b.Name != "":
+		p.fail(t.Pos, "the construct name '%s' needs an IF construct (if ... then), not an IF statement", b.Name)
 	case t.Kind == Int:
 		a := &ArithIf{StmtBase: b, Expr: cond}
 		a.Neg = p.labelNum(p.expect(Int))
@@ -152,6 +154,9 @@ func (p *parser) doStmt() Stmt {
 	b := p.base()
 	p.i++
 	d := &Do{StmtBase: b}
+	if p.tok().Kind == Comma && p.peek(1).Kind == Word { // "do, i = 1, n": the comma is optional
+		p.i++
+	}
 	if t := p.tok(); t.Kind == Int {
 		d.TermLabel = p.labelNum(t)
 		p.i++
@@ -197,6 +202,19 @@ func (p *parser) doStmt() Stmt {
 			return d
 		}
 		term := p.label == d.TermLabel
+		if term && p.atEnd("do") {
+			// "10 end do" ends a labelled DO (gfortran accepts it); kept as a labelled CONTINUE
+			p.closedLabel = 0
+			c := &Continue{p.base()}
+			p.clause(func() {
+				_, w, _ := p.endKind()
+				p.i += w
+				p.endStmt()
+			})
+			d.Body = append(d.Body, c)
+			p.closedLabel = d.TermLabel
+			return d
+		}
 		d.Body = append(d.Body, p.statement())
 		if term || p.closedLabel == d.TermLabel {
 			p.closedLabel = d.TermLabel
@@ -227,20 +245,23 @@ func (p *parser) selectStmt() Stmt {
 	b := p.base()
 	w := p.next().S
 	isType := w == "selecttype"
+	isRank := false
 	if w == "select" {
 		k := p.ident()
 		switch k.Name {
 		case "case":
 		case "type":
 			isType = true
+		case "rank":
+			isRank = true
 		default:
-			p.fail(k.Pos, "expected 'case' or 'type' after 'select'")
+			p.fail(k.Pos, "expected 'case', 'type' or 'rank' after 'select'")
 		}
 	}
 	p.expect(LParen)
 	var assoc string
 	var x Expr
-	if isType && p.tok().Kind == Word && p.peek(1).Kind == Arrow {
+	if (isType || isRank) && p.tok().Kind == Word && p.peek(1).Kind == Arrow {
 		assoc = p.next().S
 		p.i++
 	}
@@ -249,6 +270,41 @@ func (p *parser) selectStmt() Stmt {
 	p.endStmt()
 	p.done()
 	end := p.atEnd
+	if isRank {
+		st := &SelectRank{StmtBase: b, Assoc: assoc, Expr: x}
+		rankStart := func() bool { return p.word() == "rank" && (p.peek(1).Kind == LParen || p.peek(1).S == "default") }
+		for p.load() && !p.blockEnd() && !end("select") {
+			if !rankStart() {
+				p.errorAt(p.tok().Pos, "expected 'rank' in select rank")
+				p.statement()
+				continue
+			}
+			var rc RankCase
+			rc.Pos = p.tok().Pos
+			p.clause(func() {
+				p.i++
+				if p.acceptWord("default") {
+					rc.Default = true
+				} else {
+					p.expect(LParen)
+					if p.accept(Star) {
+						rc.Star = true
+					} else {
+						rc.Value = p.expr()
+					}
+					p.expect(RParen)
+				}
+				if p.tok().Kind == Word {
+					p.i++
+				}
+				p.endStmt()
+			})
+			rc.Body = p.block(func() bool { return rankStart() || end("select") })
+			st.Cases = append(st.Cases, rc)
+		}
+		p.expectEnd("select", b.Pos, b.Name)
+		return st
+	}
 	if isType {
 		st := &SelectType{StmtBase: b, Assoc: assoc, Expr: x}
 		for p.load() && !p.blockEnd() && !end("select") {
@@ -339,6 +395,9 @@ func (p *parser) whereStmt() Stmt {
 	w.Mask = p.expr()
 	p.expect(RParen)
 	if !p.atEOS() {
+		if b.Name != "" {
+			p.fail(p.tok().Pos, "the construct name '%s' needs a WHERE construct, not a WHERE statement", b.Name)
+		}
 		p.enter()
 		w.Single = p.stmt()
 		p.leave()
@@ -378,6 +437,9 @@ func (p *parser) forallStmt() Stmt {
 	f.Indices = p.forallControl(&f.Mask)
 	p.expect(RParen)
 	if !p.atEOS() {
+		if b.Name != "" {
+			p.fail(p.tok().Pos, "the construct name '%s' needs a FORALL construct, not a FORALL statement", b.Name)
+		}
 		p.enter()
 		f.Single = p.stmt()
 		p.leave()
@@ -461,8 +523,33 @@ func (p *parser) gotoStmt() Stmt {
 		p.endStmt()
 		return g
 	}
-	p.fail(t.Pos, "assigned GO TO is not supported (deleted feature)")
+	if t.Kind == Word {
+		g := &AssignedGoto{StmtBase: b, Var: p.ident()}
+		p.accept(Comma)
+		if p.accept(LParen) {
+			for {
+				g.Labels = append(g.Labels, p.labelNum(p.expect(Int)))
+				if !p.accept(Comma) {
+					break
+				}
+			}
+			p.expect(RParen)
+		}
+		p.endStmt()
+		return g
+	}
+	p.fail(t.Pos, "expected a label, '(' or a name after GO TO, found %s", p.describe(t))
 	return nil
+}
+
+func (p *parser) assignLabelStmt() Stmt {
+	s := &AssignLabel{StmtBase: p.base()}
+	p.i++
+	s.Target = p.labelNum(p.expect(Int))
+	p.expectWord("to")
+	s.Var = p.ident()
+	p.endStmt()
+	return s
 }
 
 func (p *parser) stopStmt() Stmt {
@@ -546,10 +633,15 @@ func (p *parser) allocateStmt() Stmt {
 	w := p.next().S
 	a := &Allocate{StmtBase: b, Dealloc: w == "deallocate"}
 	p.expect(LParen)
-	if !a.Dealloc && isTypeWord(p.tok().S) && p.tok().Kind == Word {
-		var ts *TypeSpec
-		if p.try(func() { ts = p.typeSpec(true); p.expect(DColon) }) {
-			a.Type = ts
+	if !a.Dealloc && p.hasDColon() {
+		// allocate (type-spec :: objects): intrinsic or a derived type name
+		if t := p.tok(); t.Kind == Word && !isTypeWord(t.S) && p.peek(1).Kind == DColon {
+			p.i++
+			a.Type = &TypeSpec{Span: Span{t.Pos}, Name: "type", Derived: t.S}
+			p.i++
+		} else {
+			a.Type = p.typeSpec(true)
+			p.expect(DColon)
 		}
 	}
 	for p.tok().Kind != RParen {

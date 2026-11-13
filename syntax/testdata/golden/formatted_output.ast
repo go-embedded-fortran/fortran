@@ -1,0 +1,370 @@
+Unit {
+  Kind: program
+  Ident: Ident {
+    Name: "formatted_output"
+  }
+  Body: [
+    ImplicitStmt {
+      None: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "integer"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "i"
+          }
+        }
+      ]
+      DColon: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "real"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "x"
+          }
+        }
+      ]
+      DColon: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "real"
+        Kind: IntLit {
+          Text: "8"
+        }
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "y"
+          }
+        }
+      ]
+      DColon: true
+    }
+    Assignment {
+      LHS: Ident {
+        Name: "x"
+      }
+      RHS: RealLit {
+        Text: "3.14159274"
+      }
+    }
+    Assignment {
+      LHS: Ident {
+        Name: "y"
+      }
+      RHS: RealLit {
+        Text: "2.718281828459045d0"
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(i5)"
+      }
+      Items: [
+        IntLit {
+          Text: "42"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(i0)"
+      }
+      Items: [
+        Unary {
+          Op: "-"
+          X: IntLit {
+            Text: "123456"
+          }
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(i6.4)"
+      }
+      Items: [
+        IntLit {
+          Text: "77"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(a,i3,a)"
+      }
+      Items: [
+        StringLit {
+          Value: "["
+        }
+        IntLit {
+          Text: "5"
+        }
+        StringLit {
+          Value: "]"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(f8.3)"
+      }
+      Items: [
+        Ident {
+          Name: "x"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(f0.2)"
+      }
+      Items: [
+        RealLit {
+          Text: "0.5"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(e12.4)"
+      }
+      Items: [
+        Ident {
+          Name: "y"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(es12.4)"
+      }
+      Items: [
+        Ident {
+          Name: "y"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(en12.3)"
+      }
+      Items: [
+        RealLit {
+          Text: "12345.678d0"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(g12.5)"
+      }
+      Items: [
+        Ident {
+          Name: "y"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(l2)"
+      }
+      Items: [
+        LogicalLit {
+          Value: true
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(a10,\"|\",a)"
+      }
+      Items: [
+        StringLit {
+          Value: "right"
+        }
+        StringLit {
+          Value: "tail"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(2(i3,1x))"
+      }
+      Items: [
+        IntLit {
+          Text: "1"
+        }
+        IntLit {
+          Text: "2"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(3i4)"
+      }
+      Items: [
+        ImpliedDo {
+          Items: [
+            Binary {
+              Op: "*"
+              X: Ident {
+                Name: "i"
+              }
+              Y: Ident {
+                Name: "i"
+              }
+            }
+          ]
+          Var: Ident {
+            Name: "i"
+          }
+          Lo: IntLit {
+            Text: "1"
+          }
+          Hi: IntLit {
+            Text: "6"
+          }
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(a,/,a)"
+      }
+      Items: [
+        StringLit {
+          Value: "line one"
+        }
+        StringLit {
+          Value: "line two"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(5x,a)"
+      }
+      Items: [
+        StringLit {
+          Value: "indented"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(f10.4,tr2,f6.1)"
+      }
+      Items: [
+        Unary {
+          Op: "-"
+          X: Binary {
+            Op: "/"
+            X: RealLit {
+              Text: "1.0d0"
+            }
+            Y: RealLit {
+              Text: "3.0d0"
+            }
+          }
+        }
+        RealLit {
+          Text: "2.0"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(1p,e12.4)"
+      }
+      Items: [
+        RealLit {
+          Text: "12345.6789d0"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(z8.8,1x,o4,1x,b8)"
+      }
+      Items: [
+        IntLit {
+          Text: "255"
+        }
+        IntLit {
+          Text: "8"
+        }
+        IntLit {
+          Text: "5"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(a)"
+      }
+      Items: [
+        Index {
+          X: Ident {
+            Name: "repeat"
+          }
+          Args: [
+            Arg {
+              Value: StringLit {
+                Value: "="
+              }
+            }
+            Arg {
+              Value: IntLit {
+                Text: "20"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: StringLit {
+        Value: "(f6.2)"
+      }
+      Items: [
+        RealLit {
+          Text: "123456.0"
+        }
+      ]
+    }
+  ]
+  EndName: "formatted_output"
+}

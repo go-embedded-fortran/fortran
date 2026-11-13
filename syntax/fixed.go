@@ -10,8 +10,8 @@ import "sort"
 var fixedKeywords = func() []string {
 	k := []string{
 		"program", "module", "submodule", "subroutine", "function", "blockdata", "block", "endprogram", "endmodule",
-		"endsubroutine", "endfunction", "endblockdata", "end", "implicitnone", "implicit", "integer", "real",
-		"doubleprecision", "complex", "logical", "character", "parameter", "dimension", "common", "equivalence",
+		"endsubroutine", "endfunction", "endblockdata", "end", "implicit", "integer", "real",
+		"doubleprecision", "doublecomplex", "byte", "complex", "logical", "character", "parameter", "dimension", "common", "equivalence",
 		"data", "external", "intrinsic", "save", "include", "entry", "call", "if", "elseif", "else", "endif",
 		"do", "enddo", "continue", "goto", "stop", "errorstop", "pause", "return", "read", "write", "print",
 		"open", "close", "rewind", "backspace", "endfile", "inquire", "flush", "allocate", "deallocate",
@@ -249,7 +249,7 @@ func (c *classifier) stmt(s []byte, base int) {
 		} else if hasPre(s[p:], "concurrent") {
 			c.insert(base + p + 10)
 		}
-	case "integer", "real", "doubleprecision", "complex", "logical", "character", "type", "class":
+	case "integer", "real", "doubleprecision", "doublecomplex", "byte", "complex", "logical", "character", "type", "class":
 		if !rest() {
 			return
 		}
@@ -289,6 +289,14 @@ func (c *classifier) stmt(s []byte, base int) {
 	case "assign":
 		if rest() {
 			c.insert(base + p)
+			q := p
+			for q < len(s) && isDigit(s[q]) {
+				q++
+			}
+			if q > p && hasPre(s[q:], "to") {
+				c.insert(base + q)
+				c.insert(base + q + 2)
+			}
 		}
 	default:
 		if rest() {

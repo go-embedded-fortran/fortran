@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("program hello\n  implicit none\n  print *, 'Hello, Fortran'\n  print *, 42, -7, 0\n  print *, 1.5, 2.25d0\n  print *, .true., .false.\n  print *, 'a', 'bc', 'def'\n  print *, (1.0, -2.0)\n  print *\n  write (*, *) 'write to unit *'\nend program hello\n")

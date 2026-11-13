@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("program stop_message\n  print *, 'before stop'\n  stop 'finished'\nend program stop_message\n")

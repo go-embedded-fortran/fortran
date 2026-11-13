@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("x = 1 + & ! c\n\n ! comment\n & 2\nend\n")

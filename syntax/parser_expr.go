@@ -194,7 +194,29 @@ func (p *parser) primary() Expr {
 		return &RealLit{Span{t.Pos}, t.S, t.X}
 	case String:
 		p.i++
-		return &StringLit{Span{t.Pos}, t.S, t.X}
+		var lit Expr = &StringLit{Span{t.Pos}, t.S, t.X}
+		if p.tok().Kind == LParen { // substring of a literal: "abc"(i:j)
+			o := p.next()
+			p.enter()
+			args := p.args()
+			p.leave()
+			p.expect(RParen)
+			lit = &Index{Span{o.Pos}, lit, args}
+		}
+		return lit
+	case Percent: // legacy %loc(x), %val(x), %ref(x)
+		p.i++
+		n := p.ident()
+		x := &Ident{Span{t.Pos}, "%" + n.Name, ""}
+		if p.tok().Kind == LParen {
+			o := p.next()
+			p.enter()
+			args := p.args()
+			p.leave()
+			p.expect(RParen)
+			return &Index{Span{o.Pos}, x, args}
+		}
+		return x
 	case Logical:
 		p.i++
 		return &LogicalLit{Span{t.Pos}, t.S == "true", t.X}
@@ -265,10 +287,15 @@ func (p *parser) arrayCons(pos Pos, end Kind) Expr {
 	p.noSlash = false
 	defer func() { p.noSlash = save }()
 	a := &ArrayCons{Span: Span{pos}}
-	if p.tok().Kind == Word && isTypeWord(p.tok().S) {
-		var ts *TypeSpec
-		if p.try(func() { ts = p.typeSpec(true); p.expect(DColon) }) {
-			a.Type = ts
+	if t := p.tok(); t.Kind == Word && p.hasDColon() {
+		if !isTypeWord(t.S) && p.peek(1).Kind == DColon {
+			p.i += 2
+			a.Type = &TypeSpec{Span: Span{t.Pos}, Name: "type", Derived: t.S}
+		} else if isTypeWord(t.S) {
+			var ts *TypeSpec
+			if p.try(func() { ts = p.typeSpec(true); p.expect(DColon) }) {
+				a.Type = ts
+			}
 		}
 	}
 	for p.tok().Kind != end {

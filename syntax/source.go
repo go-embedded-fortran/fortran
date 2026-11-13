@@ -116,7 +116,7 @@ func lineAt(src []byte, off int) (ls, le, next int) {
 	return
 }
 
-func isBlank(c byte) bool { return c == ' ' || c == '\t' }
+func isBlank(c byte) bool { return c == ' ' || c == '\t' || c == '\f' }
 
 func skipBlank(src []byte, i, e int) int {
 	for i < e && isBlank(src[i]) {
@@ -154,7 +154,9 @@ func (s *scanner) readFree(st *fileState) bool {
 			if src[i] == '&' {
 				i++
 			} else if quote != 0 {
-				s.errf(st.f.pos(i), "continued character literal must resume after an '&' (F2018 6.3.2.4)")
+				// F2018 6.3.2.4 requires the '&'; gfortran only warns, and so
+				// do we not: the literal continues at the first column
+				i = ls
 			}
 			continuing = false
 			conts++
@@ -163,8 +165,8 @@ func (s *scanner) readFree(st *fileState) bool {
 				s.errf(st.f.pos(i), fmt.Sprintf("statement has more than %d continuation lines (F2018 6.3.2.6): refused", s.lim.MaxContinuations))
 			}
 		} else {
-			if i == le || src[i] == '!' {
-				continue
+			if i == le || src[i] == '!' || (src[i] == '#' && i == ls) {
+				continue // a cpp directive of a .F90 file is skipped, not interpreted
 			}
 			firstPos = st.f.pos(i)
 		}
@@ -511,6 +513,9 @@ func (s *scanner) include(st *fileState, name string, pos Pos) {
 		s.total += len(data)
 		f := s.fset.add(c, data)
 		s.push(f, path.Dir(c), c)
+		if len(data) >= 3 && data[0] == 0xef && data[1] == 0xbb && data[2] == 0xbf {
+			s.stack[len(s.stack)-1].off = 3 // UTF-8 byte order mark
+		}
 		return
 	}
 	s.errf(pos, "include '"+name+"': file not found or not a valid path")

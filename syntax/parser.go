@@ -53,6 +53,9 @@ func Parse(name string, src []byte, opts *Options) (*File, error) {
 	f := fset.add(name, src)
 	p.sc = &scanner{fset: fset, opts: opts, form: form, lim: lim, errf: p.errorAt, total: len(src)}
 	st := &fileState{f: f}
+	if len(src) >= 3 && src[0] == 0xef && src[1] == 0xbb && src[2] == 0xbf {
+		st.off = 3 // UTF-8 byte order mark
+	}
 	if clean := cleanPath(name); clean != "" {
 		st.path = clean
 	}
@@ -298,6 +301,9 @@ func (p *parser) endKind() (kind string, width int, ok bool) {
 	if t.Kind != Word {
 		return "", 0, false
 	}
+	if len(t.S) < 3 || t.S[:3] != "end" || p.assignLike() { // "end = 1" is an assignment
+		return "", 0, false
+	}
 	if t.S == "end" {
 		n := p.peek(1)
 		if n.Kind == Word {
@@ -383,6 +389,14 @@ func (p *parser) file() []*Unit {
 	var units []*Unit
 	for p.load() {
 		if p.atUnitEnd() {
+			if k, _, _ := p.endKind(); k == "" {
+				// a lone END is an empty main program
+				u := &Unit{StmtBase: p.base(), Kind: ProgramUnit, Implicit: true}
+				u.Label = 0
+				p.unitTail(u)
+				units = append(units, u)
+				continue
+			}
 			p.errorAt(p.tok().Pos, "unexpected end statement outside a program unit")
 			p.done()
 			continue
@@ -400,8 +414,8 @@ func (p *parser) file() []*Unit {
 // statements of an F77 file, or of a cell) up to its END.
 func (p *parser) implicitMain() *Unit {
 	u := &Unit{StmtBase: p.base(), Kind: ProgramUnit, Implicit: true}
-	u.Body = p.block(func() bool { return false })
-	p.unitTail(u)
+	u.Label = 0
+	p.unitBody(u)
 	return u
 }
 
@@ -409,7 +423,7 @@ var unitPrefixes = map[string]bool{"recursive": true, "pure": true, "elemental":
 
 func isTypeWord(w string) bool {
 	switch w {
-	case "integer", "real", "complex", "logical", "character", "doubleprecision", "double", "type", "class", "byte":
+	case "integer", "real", "complex", "logical", "character", "doubleprecision", "doublecomplex", "double", "type", "class", "byte":
 		return true
 	}
 	return false
@@ -587,7 +601,7 @@ func (p *parser) unitHeader(u *Unit) {
 				p.i++
 				u.HasBind = true
 				p.expect(LParen)
-				u.Bind = p.exprList(RParen)
+				u.Bind = p.argExprs()
 				p.expect(RParen)
 			default:
 				p.fail(p.tok().Pos, "unexpected %s in the procedure header", p.describe(p.tok()))
@@ -620,7 +634,7 @@ func (p *parser) unitBody(u *Unit) {
 	p.unitTail(u)
 }
 
-var unitEndWords = [...]string{"program", "module", "submodule", "subroutine", "function", "blockdata"}
+var unitEndWords = [...]string{"", "program", "module", "submodule", "subroutine", "function", "blockdata"}
 
 // unitTail consumes the END statement of u.
 func (p *parser) unitTail(u *Unit) {
@@ -630,6 +644,7 @@ func (p *parser) unitTail(u *Unit) {
 	}
 	pos := p.tok().Pos
 	u.EndPos = pos
+	u.EndLabel = p.label
 	func() {
 		defer func() {
 			if r := recover(); r != nil {

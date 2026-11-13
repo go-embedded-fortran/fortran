@@ -48,12 +48,13 @@ const (
 	Eqv
 	Neqv
 	Dollar
+	DotDot
 )
 
 var kindNames = [...]string{"end of statement", "illegal character", "name", "integer literal", "real literal", "character literal",
 	"BOZ literal", "logical literal", "defined operator", "format", "'('", "')'", "','", "':'", "'::'", "'='", "'=>'", "'%'",
 	"';'", "'['", "']'", "'(/'", "'/)'", "'*'", "'**'", "'/'", "'//'", "'+'", "'-'", "'<'", "'>'", "'<='", "'>='", "'=='", "'/='",
-	"'.and.'", "'.or.'", "'.not.'", "'.eqv.'", "'.neqv.'", "'$'"}
+	"'.and.'", "'.or.'", "'.not.'", "'.eqv.'", "'.neqv.'", "'$'", "'..'"}
 
 func (k Kind) String() string {
 	if int(k) < len(kindNames) {
@@ -143,10 +144,10 @@ func (lx *lexer) tokenize(l *logLine) []Token {
 			if j-lx.i == 1 && j < len(b) && (b[j] == '\'' || b[j] == '"') && (lower(c) == 'b' || lower(c) == 'o' || lower(c) == 'z' || lower(c) == 'x') {
 				q := b[j]
 				k := j + 1
-				for k < len(b) && b[k] != q {
+				for k < len(b) && b[k] != q && isHex(b[k]) {
 					k++
 				}
-				if k < len(b) {
+				if k < len(b) && b[k] == q {
 					lx.emit(BOZ, start, lx.str(b[j+1:k]), string(lower(c)))
 					lx.i = k + 1
 					continue
@@ -291,6 +292,11 @@ func (lx *lexer) number() {
 		}
 	}
 	text := lx.lowerNum(b[start:i])
+	if !isReal && i+1 < len(b) && b[i] == '_' && (b[i+1] == '\'' || b[i+1] == '"') {
+		lx.i = i + 1 // 4_"text": a character literal of kind 4
+		lx.str2(text)
+		return
+	}
 	kind := ""
 	if i < len(b) && b[i] == '_' && i+1 < len(b) && (isNameCh(b[i+1])) {
 		k := i + 1
@@ -306,6 +312,10 @@ func (lx *lexer) number() {
 		lx.emit(Int, start, text, kind)
 	}
 	lx.i = i
+}
+
+func isHex(c byte) bool {
+	return isDigit(c) || (lower(c) >= 'a' && lower(c) <= 'f')
 }
 
 func (lx *lexer) lowerNum(b []byte) string {
@@ -346,6 +356,11 @@ func (lx *lexer) dot() {
 		}
 		return
 	}
+	if lx.i+1 < len(b) && b[lx.i+1] == '.' {
+		lx.emit(DotDot, start, "", "") // assumed rank "(..)"
+		lx.i += 2
+		return
+	}
 	lx.errf(lx.l.posAt(start), "unexpected '.'")
 	lx.emit(Illegal, start, ".", "")
 	lx.i++
@@ -363,7 +378,9 @@ func (lx *lexer) punct() {
 	switch c {
 	case '(':
 		k = LParen
-		if n == '/' && !(i+2 < len(b) && b[i+2] == ')') {
+		// "(/" opens an array constructor, but "(/)", "(//)" and "(/=)" are
+		// the parenthesised operators of operator(/) and friends
+		if n == '/' && !(i+2 < len(b) && (b[i+2] == ')' || b[i+2] == '=' || (b[i+2] == '/' && i+3 < len(b) && b[i+3] == ')'))) {
 			k, w = LParenSlash, 2
 		}
 	case ')':

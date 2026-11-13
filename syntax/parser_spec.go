@@ -9,10 +9,15 @@ func (p *parser) stmt() Stmt {
 		p.fail(t.Pos, "expected a statement, found %s", p.describe(t))
 	}
 	// construct name: "name: do ..."
-	if p.peek(1).Kind == Colon && p.peek(2).Kind == Word && !p.assignLike() {
-		p.cname = t.S
+	if p.peek(1).Kind == Colon && isConstructWord(p.peek(2).S) && p.peek(2).Kind == Word {
+		save := p.i
 		p.i += 2
-		t = p.tok()
+		if p.assignLike() { // "name: where = 1": an assignment cannot carry a construct name
+			p.i = save
+		} else {
+			p.cname = t.S
+			t = p.tok()
+		}
 	}
 	if p.assignLike() {
 		return p.assignment()
@@ -131,11 +136,26 @@ func (p *parser) stmt() Stmt {
 			return p.typeDef()
 		}
 		return p.decl()
-	case "integer", "real", "complex", "logical", "character", "doubleprecision", "double", "byte":
+	case "integer", "real", "complex", "logical", "character", "doubleprecision", "doublecomplex", "double", "byte":
 		return p.decl()
+	case "bind":
+		return p.bindStmt()
 	case "dimension", "allocatable", "pointer", "target", "optional", "public", "private", "save", "external", "intrinsic",
 		"value", "volatile", "protected", "contiguous", "asynchronous", "intent":
 		return p.attrStmt(w)
+	case "enum":
+		return p.enumDef()
+	case "enumerator":
+		s := &Enumerator{StmtBase: p.base()}
+		p.i++
+		s.DColon = p.accept(DColon)
+		s.Items = p.entities(true)
+		p.endStmt()
+		return s
+	case "procedure":
+		return p.procBinding(p.base())
+	case "assign":
+		return p.assignLabelStmt()
 	case "contains":
 		p.fail(t.Pos, "unexpected 'contains'")
 	}
@@ -144,6 +164,28 @@ func (p *parser) stmt() Stmt {
 	}
 	p.fail(t.Pos, "unrecognised statement beginning with %s", p.describe(t))
 	return nil
+}
+
+func (p *parser) enumDef() Stmt {
+	e := &EnumDef{StmtBase: p.base()}
+	p.i++
+	for p.accept(Comma) {
+		e.Attrs = append(e.Attrs, p.attr())
+	}
+	p.endStmt()
+	p.done()
+	e.Body = p.block(func() bool { return p.atEnd("enum") })
+	p.expectEnd("enum", e.Pos, "")
+	return e
+}
+
+// isConstructWord: the statements that may carry a construct name.
+func isConstructWord(w string) bool {
+	switch w {
+	case "do", "if", "select", "selectcase", "selecttype", "where", "forall", "associate", "block":
+		return true
+	}
+	return false
 }
 
 func (p *parser) assignment() Stmt {
@@ -173,9 +215,13 @@ func (p *parser) typeSpec(kinds bool) *TypeSpec {
 	ts := &TypeSpec{Span: Span{t.Pos}, Name: t.S}
 	switch t.S {
 	case "double":
-		p.expectWord("precision")
-		ts.Name = "doubleprecision"
-	case "doubleprecision":
+		if p.acceptWord("complex") {
+			ts.Name = "doublecomplex"
+		} else {
+			p.expectWord("precision")
+			ts.Name = "doubleprecision"
+		}
+	case "doubleprecision", "doublecomplex":
 	case "integer", "real", "complex", "logical", "byte":
 		if p.accept(Star) {
 			ts.KindStar = true
@@ -264,6 +310,9 @@ func (p *parser) dims() []Dim {
 		case t.Kind == Star:
 			p.i++
 			d.Star = true
+		case t.Kind == DotDot:
+			p.i++
+			d.Rank = true
 		case t.Kind == Colon:
 			p.i++
 			d.Colon = true
@@ -386,7 +435,12 @@ func (p *parser) entities(allowInit bool) []Entity {
 func (p *parser) decl() Stmt {
 	d := &Decl{StmtBase: p.base()}
 	d.Type = p.typeSpec(true)
-	for p.accept(Comma) {
+	// old "character*1, c": a comma after a star length without "::"
+	oldComma := (d.Type.KindStar || d.Type.LenStar) && p.tok().Kind == Comma && !p.hasDColon()
+	if oldComma {
+		p.i++
+	}
+	for !oldComma && p.accept(Comma) {
 		d.Attrs = append(d.Attrs, p.attr())
 	}
 	d.DColon = p.accept(DColon)
@@ -396,6 +450,47 @@ func (p *parser) decl() Stmt {
 	d.Entities = p.entities(true)
 	p.endStmt()
 	return d
+}
+
+// bindStmt parses bind(c [, name = "x"]) :: entities or /common blocks/.
+func (p *parser) bindStmt() Stmt {
+	s := &AttrStmt{StmtBase: p.base(), Attr: "bind"}
+	p.i++
+	p.expect(LParen)
+	s.Args = p.argExprs()
+	p.expect(RParen)
+	s.DColon = p.accept(DColon)
+	for !p.atEOS() {
+		if p.accept(Slash) {
+			s.Blocks = append(s.Blocks, p.ident().Name)
+			p.expect(Slash)
+		} else {
+			s.Items = append(s.Items, p.entity(false))
+		}
+		if !p.accept(Comma) {
+			break
+		}
+	}
+	p.endStmt()
+	return s
+}
+
+// hasDColon reports a "::" outside parentheses in the rest of the statement.
+func (p *parser) hasDColon() bool {
+	depth := 0
+	for j := p.i; j < p.hi; j++ {
+		switch p.toks[j].Kind {
+		case LParen, LBrack, LParenSlash:
+			depth++
+		case RParen, RBrack, SlashRParen:
+			depth--
+		case DColon:
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *parser) attrStmt(w string) Stmt {
@@ -747,11 +842,23 @@ func (p *parser) entryStmt() Stmt {
 		}
 		p.expect(RParen)
 	}
-	if p.acceptWord("result") {
-		p.expect(LParen)
-		r := p.ident()
-		p.expect(RParen)
-		s.Result = &r
+	for p.tok().Kind == Word {
+		switch p.tok().S {
+		case "result":
+			p.i++
+			p.expect(LParen)
+			r := p.ident()
+			p.expect(RParen)
+			s.Result = &r
+		case "bind":
+			p.i++
+			s.HasBind = true
+			p.expect(LParen)
+			s.Bind = p.argExprs()
+			p.expect(RParen)
+		default:
+			p.fail(p.tok().Pos, "unexpected %s in the entry statement", p.describe(p.tok()))
+		}
 	}
 	p.endStmt()
 	return s
@@ -878,7 +985,14 @@ func (p *parser) procBinding(b StmtBase) Stmt {
 	s.Kind = kind
 	if kind == "procedure" && p.tok().Kind == LParen {
 		p.i++
-		s.Iface = p.ident().Name
+		s.HasIface = true
+		if p.tok().Kind != RParen {
+			if n := p.tok(); n.Kind == Word && isTypeWord(n.S) {
+				s.Iface = PrintTypeSpec(p.typeSpec(true))
+			} else {
+				s.Iface = p.ident().Name
+			}
+		}
 		p.expect(RParen)
 	}
 	for p.accept(Comma) {
@@ -899,6 +1013,8 @@ func (p *parser) procBinding(b StmtBase) Stmt {
 				for p.accept(Comma) {
 					it.Target += "," + p.ident().Name
 				}
+			} else if kind == "procedure" {
+				it.Target = PrintExpr(p.expr()) // "=> null()" for a procedure pointer
 			} else {
 				it.Target = p.ident().Name
 			}

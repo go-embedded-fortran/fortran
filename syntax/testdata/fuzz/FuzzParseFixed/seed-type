@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("type, extends(a) :: b\n integer :: x = 1\ncontains\n procedure :: f => g\nend type\nend\n")

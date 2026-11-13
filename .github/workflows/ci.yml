@@ -40,6 +40,11 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go build ./...
       - run: go test -race -timeout=30m ./...
+      # The parser's bomb tests assert a REFUSAL under a memory limit: GOMEMLIMIT
+      # for the Go heap and, on Linux, ulimit -v for the address space.
+      - name: Parser bomb tests under GOMEMLIMIT and ulimit -v
+        if: matrix.os == 'ubuntu-latest'
+        run: ulimit -v 16000000 && GOMEMLIMIT=256MiB go test -count=1 -timeout=10m ./syntax
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -62,6 +67,9 @@ jobs:
         include:
           - { pkg: ./internal/golden, target: FuzzDecode }
           - { pkg: ./internal/provision, target: FuzzParseContentRange }
+          - { pkg: ./syntax, target: FuzzParseFree }
+          - { pkg: ./syntax, target: FuzzParseFixed }
+          - { pkg: ./syntax, target: FuzzLex }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -159,6 +167,21 @@ jobs:
         timeout-minutes: 75
         continue-on-error: true
         run: '"$RUNNER_TEMP/foracle" corpus --dir "$RUNNER_TEMP/gcc/gcc/testsuite/gfortran.dg" --jobs 4 --out gfortran-dg.tsv'
+      # The parser against the same files: which ones parse, compared with
+      # gfortran -fsyntax-only (pass / fail-only-ours / fail-both, bib §8).
+      - name: Parse floors (syntax package)
+        run: go test -count=1 -v ./syntax -run 'TestCorporaParseFloor'
+        env:
+          FORACLE_CORPORA: ${{ runner.temp }}
+      - name: Parse rate, FCVS and fortran-torture
+        run: |
+          "$RUNNER_TEMP/foracle" parse-rate --dir "$RUNNER_TEMP/lts/Fortran/UnitTests/fcvs21_f95" --jobs 4 --out parse-fcvs.tsv
+          "$RUNNER_TEMP/foracle" parse-rate --dir "$RUNNER_TEMP/gcc/gcc/testsuite/gfortran.fortran-torture" --jobs 4 --out parse-torture.tsv
+          "$RUNNER_TEMP/foracle" parse-rate --dir "$RUNNER_TEMP/lfortran/integration_tests" --jobs 4 --out parse-lfortran.tsv
+      - name: Parse rate, gfortran.dg
+        timeout-minutes: 30
+        continue-on-error: true
+        run: '"$RUNNER_TEMP/foracle" parse-rate --dir "$RUNNER_TEMP/gcc/gcc/testsuite/gfortran.dg" --jobs 4 --errors 20 --out parse-gfortran-dg.tsv'
       - uses: actions/upload-artifact@v7
         if: always()
         with:

@@ -145,12 +145,12 @@ type Limits struct {
 	MaxIncludeDepth  int // nested INCLUDE lines (default 8)
 	MaxContinuations int // continuation lines of one statement (default 255, F2018 6.3.2.6)
 	MaxErrors        int // reported errors before the parse gives up (default 50)
-	MaxStatementToks int // tokens of one statement (default 1<<20)
+	MaxStatementToks int // tokens of one statement (default 1<<18)
 }
 
 // DefaultLimits returns the defaults.
 func DefaultLimits() Limits {
-	return Limits{MaxSourceBytes: 16 << 20, MaxDepth: 200, MaxIncludeDepth: 8, MaxContinuations: 255, MaxErrors: 50, MaxStatementToks: 1 << 20}
+	return Limits{MaxSourceBytes: 16 << 20, MaxDepth: 200, MaxIncludeDepth: 8, MaxContinuations: 255, MaxErrors: 50, MaxStatementToks: 1 << 18}
 }
 
 func (l Limits) fill() Limits {

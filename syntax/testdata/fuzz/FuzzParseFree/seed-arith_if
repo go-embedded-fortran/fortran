@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("      IF (X) 10, 20, 30\n   10 CONTINUE\n   20 CONTINUE\n   30 CONTINUE\n      END\n")

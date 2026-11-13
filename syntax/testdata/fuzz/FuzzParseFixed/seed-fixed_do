@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("      DO 10 I = 1, 10\n   10 CONTINUE\n      END\n")

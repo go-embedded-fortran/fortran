@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("! K1 of bib/fortran.md 4.2: scalar loop, n = 10**8.\n! Line 1: checksum. Line 2: \"time <seconds>\" (cpu_time around the kernel only).\nprogram k1\n  implicit none\n  integer(8) :: i, n\n  real(8) :: s, t0, t1\n  n = 100000000_8\n  s = 0d0\n  call cpu_time(t0)\n  do i = 1, n\n    s = s + 1d0/real(i,8)**2\n  end do\n  call cpu_time(t1)\n  print '(es24.16)', s\n  print '(a,f0.6)', 'time ', t1 - t0\nend program k1\n")

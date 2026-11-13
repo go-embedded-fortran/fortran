@@ -196,6 +196,7 @@ type Dim struct {
 	Lo, Hi Expr
 	Colon  bool // a ':' is present
 	Star   bool // the upper bound is '*'
+	Rank   bool // assumed rank "(..)"
 }
 
 // Attr is an attribute of a declaration (F2018 8.5): Name is dimension,
@@ -240,8 +241,9 @@ type AttrStmt struct {
 	Attr   string
 	Intent string
 	Items  []Entity // names; common blocks of save in Blocks
-	Blocks []string // /name/ items of save
+	Blocks []string // /name/ items of save and bind
 	DColon bool
+	Args   []Expr // bind(c, name=...)
 }
 
 // ParameterStmt is parameter (name = value, ...).
@@ -359,11 +361,12 @@ type TypeDef struct {
 // final, or module procedure.
 type ProcBinding struct {
 	StmtBase
-	Kind   string
-	Iface  string
-	Attrs  []Attr
-	Items  []ProcItem
-	DColon bool
+	Kind     string
+	Iface    string
+	HasIface bool // "procedure(...)", possibly with an empty interface
+	Attrs    []Attr
+	Items    []ProcItem
+	DColon   bool
 }
 
 // ProcItem is "Name => Target" (Target empty for a bare name). For generic,
@@ -372,6 +375,21 @@ type ProcItem struct {
 	Span
 	Name   string
 	Target string
+}
+
+// EnumDef is an enumeration definition (F2018 7.6): enum, bind(c) ...
+// end enum, whose body is Enumerator statements.
+type EnumDef struct {
+	StmtBase
+	Attrs []Attr
+	Body  []Stmt
+}
+
+// Enumerator is "enumerator [::] name [= value], ...".
+type Enumerator struct {
+	StmtBase
+	Items  []Entity
+	DColon bool
 }
 
 // Interface is an interface block (F2018 15.4.3): Generic is "" for an
@@ -388,7 +406,8 @@ type UnitKind uint8
 
 // Program unit kinds (F2018 clause 14).
 const (
-	ProgramUnit UnitKind = iota
+	_ UnitKind = iota // the zero value is not a kind, so dumps show it
+	ProgramUnit
 	ModuleUnit
 	SubmoduleUnit
 	SubroutineUnit
@@ -396,7 +415,7 @@ const (
 	BlockDataUnit
 )
 
-var unitKindNames = [...]string{"program", "module", "submodule", "subroutine", "function", "block data"}
+var unitKindNames = [...]string{"", "program", "module", "submodule", "subroutine", "function", "block data"}
 
 func (k UnitKind) String() string { return unitKindNames[k] }
 
@@ -418,6 +437,7 @@ type Unit struct {
 	Contains    []*Unit
 	HasContains bool
 	EndName     string
+	EndLabel    int // label of the END statement
 	EndPos      Pos
 	Implicit    bool
 }
@@ -533,6 +553,23 @@ type TypeCase struct {
 	Body []Stmt
 }
 
+// SelectRank is a SELECT RANK construct (F2018 11.1.10).
+type SelectRank struct {
+	StmtBase
+	Assoc string
+	Expr  Expr
+	Cases []RankCase
+}
+
+// RankCase is "rank (n)", "rank (*)" or "rank default".
+type RankCase struct {
+	Span
+	Value   Expr // nil for default and for '*'
+	Star    bool
+	Default bool
+	Body    []Stmt
+}
+
 // Where is a WHERE statement or construct (F2018 10.2.3).
 type Where struct {
 	StmtBase
@@ -589,6 +626,21 @@ type ComputedGoto struct {
 	StmtBase
 	Labels []int
 	Expr   Expr
+}
+
+// AssignLabel is the deleted "assign label to var" (Annex B), and
+// AssignedGoto the deleted "go to var [[,] (labels)]".
+type AssignLabel struct {
+	StmtBase
+	Target int
+	Var    Ident
+}
+
+// AssignedGoto is go to var [[,] (l1, l2, ...)].
+type AssignedGoto struct {
+	StmtBase
+	Var    Ident
+	Labels []int
 }
 
 // Call is call proc [(args)]; HasArgs distinguishes "call f" from "call f()".
@@ -654,9 +706,11 @@ type Nullify struct {
 // EntryStmt is entry name [(args)] [result(r)].
 type EntryStmt struct {
 	StmtBase
-	Ident  Ident
-	Params []Ident
-	Result *Ident
+	Ident   Ident
+	Params  []Ident
+	Result  *Ident
+	Bind    []Expr
+	HasBind bool
 }
 
 // BadStmt stands for a statement that failed to parse; an error was reported.

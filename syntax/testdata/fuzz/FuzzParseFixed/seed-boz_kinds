@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("i = z'1F' + b\"101\" + o'7' + 1_8 + 1.0_dp + 1d0 + .5e-3\nend\n")

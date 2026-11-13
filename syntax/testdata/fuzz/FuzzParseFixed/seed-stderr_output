@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("program stderr_output\n  use iso_fortran_env, only: error_unit, output_unit\n  implicit none\n  write (output_unit, '(a)') 'to stdout'\n  write (error_unit, '(a)') 'to stderr'\n  write (error_unit, *) 'list-directed to stderr', 12\n  write (output_unit, '(a,i0)') 'count ', 3\n  write (0, '(a)') 'unit 0 is stderr'\nend program stderr_output\n")
