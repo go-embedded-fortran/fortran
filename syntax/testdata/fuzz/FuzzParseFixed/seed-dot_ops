@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("if (a.eq.b .and. c /= d .or. .not. e) x = a .foo. b\nend\n")

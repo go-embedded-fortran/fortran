@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("program error_stop\n  implicit none\n  integer :: n\n  n = 7\n  print *, 'before error stop'\n  if (n > 5) error stop 7\n  print *, 'never printed'\nend program error_stop\n")

@@ -1,0 +1,968 @@
+Unit {
+  Kind: module
+  Ident: Ident {
+    Name: "shapes"
+  }
+  Body: [
+    ImplicitStmt {
+      None: true
+    }
+    TypeDef {
+      Ident: Ident {
+        Name: "point"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "real"
+          }
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "x"
+              }
+              Init: RealLit {
+                Text: "0.0"
+              }
+            }
+            Entity {
+              Name: Ident {
+                Name: "y"
+              }
+              Init: RealLit {
+                Text: "0.0"
+              }
+            }
+          ]
+          DColon: true
+        }
+      ]
+      EndName: "point"
+    }
+    TypeDef {
+      Ident: Ident {
+        Name: "segment"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "type"
+            Derived: "point"
+          }
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "a"
+              }
+            }
+            Entity {
+              Name: Ident {
+                Name: "b"
+              }
+            }
+          ]
+          DColon: true
+        }
+        Decl {
+          Type: TypeSpec {
+            Name: "character"
+            Len: IntLit {
+              Text: "8"
+            }
+          }
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "label"
+              }
+              Init: StringLit {
+                Value: "seg"
+              }
+            }
+          ]
+          DColon: true
+        }
+      ]
+      EndName: "segment"
+    }
+    TypeDef {
+      Ident: Ident {
+        Name: "stack"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "allocatable"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "items"
+              }
+              Dims: [
+                Dim {
+                  Colon: true
+                }
+              ]
+              HasDims: true
+            }
+          ]
+          DColon: true
+        }
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "top"
+              }
+              Init: IntLit {
+                Text: "0"
+              }
+            }
+          ]
+          DColon: true
+        }
+      ]
+      Bound: [
+        ProcBinding {
+          Kind: "procedure"
+          Items: [
+            ProcItem {
+              Name: "push"
+              Target: "stack_push"
+            }
+          ]
+          DColon: true
+        }
+        ProcBinding {
+          Kind: "procedure"
+          Items: [
+            ProcItem {
+              Name: "size_of"
+              Target: "stack_size"
+            }
+          ]
+          DColon: true
+        }
+      ]
+      EndName: "stack"
+      HasContains: true
+    }
+  ]
+  Contains: [
+    Unit {
+      Kind: subroutine
+      Ident: Ident {
+        Name: "stack_push"
+      }
+      Params: [
+        Ident {
+          Name: "self"
+        }
+        Ident {
+          Name: "v"
+        }
+      ]
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "class"
+            Derived: "stack"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "inout"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "self"
+              }
+            }
+          ]
+          DColon: true
+        }
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "in"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "v"
+              }
+            }
+          ]
+          DColon: true
+        }
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "allocatable"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "tmp"
+              }
+              Dims: [
+                Dim {
+                  Colon: true
+                }
+              ]
+              HasDims: true
+            }
+          ]
+          DColon: true
+        }
+        LogicalIf {
+          Cond: Unary {
+            Op: ".not."
+            X: Index {
+              X: Ident {
+                Name: "allocated"
+              }
+              Args: [
+                Arg {
+                  Value: Component {
+                    X: Ident {
+                      Name: "self"
+                    }
+                    Name: Ident {
+                      Name: "items"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+          Stmt: Allocate {
+            Objects: [
+              Index {
+                X: Component {
+                  X: Ident {
+                    Name: "self"
+                  }
+                  Name: Ident {
+                    Name: "items"
+                  }
+                }
+                Args: [
+                  Arg {
+                    Value: IntLit {
+                      Text: "0"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+        Allocate {
+          Objects: [
+            Index {
+              X: Ident {
+                Name: "tmp"
+              }
+              Args: [
+                Arg {
+                  Value: Binary {
+                    Op: "+"
+                    X: Component {
+                      X: Ident {
+                        Name: "self"
+                      }
+                      Name: Ident {
+                        Name: "top"
+                      }
+                    }
+                    Y: IntLit {
+                      Text: "1"
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+        Assignment {
+          LHS: Index {
+            X: Ident {
+              Name: "tmp"
+            }
+            Args: [
+              Arg {
+                Value: Triplet {
+                  Lo: IntLit {
+                    Text: "1"
+                  }
+                  Hi: Component {
+                    X: Ident {
+                      Name: "self"
+                    }
+                    Name: Ident {
+                      Name: "top"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+          RHS: Index {
+            X: Component {
+              X: Ident {
+                Name: "self"
+              }
+              Name: Ident {
+                Name: "items"
+              }
+            }
+            Args: [
+              Arg {
+                Value: Triplet {
+                  Lo: IntLit {
+                    Text: "1"
+                  }
+                  Hi: Component {
+                    X: Ident {
+                      Name: "self"
+                    }
+                    Name: Ident {
+                      Name: "top"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+        Assignment {
+          LHS: Index {
+            X: Ident {
+              Name: "tmp"
+            }
+            Args: [
+              Arg {
+                Value: Binary {
+                  Op: "+"
+                  X: Component {
+                    X: Ident {
+                      Name: "self"
+                    }
+                    Name: Ident {
+                      Name: "top"
+                    }
+                  }
+                  Y: IntLit {
+                    Text: "1"
+                  }
+                }
+              }
+            ]
+          }
+          RHS: Ident {
+            Name: "v"
+          }
+        }
+        Call {
+          Proc: Ident {
+            Name: "move_alloc"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "tmp"
+              }
+            }
+            Arg {
+              Value: Component {
+                X: Ident {
+                  Name: "self"
+                }
+                Name: Ident {
+                  Name: "items"
+                }
+              }
+            }
+          ]
+          HasArgs: true
+        }
+        Assignment {
+          LHS: Component {
+            X: Ident {
+              Name: "self"
+            }
+            Name: Ident {
+              Name: "top"
+            }
+          }
+          RHS: Binary {
+            Op: "+"
+            X: Component {
+              X: Ident {
+                Name: "self"
+              }
+              Name: Ident {
+                Name: "top"
+              }
+            }
+            Y: IntLit {
+              Text: "1"
+            }
+          }
+        }
+      ]
+      EndName: "stack_push"
+    }
+    Unit {
+      Kind: function
+      Ident: Ident {
+        Name: "stack_size"
+      }
+      Params: [
+        Ident {
+          Name: "self"
+        }
+      ]
+      ResultType: TypeSpec {
+        Name: "integer"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "class"
+            Derived: "stack"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "in"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "self"
+              }
+            }
+          ]
+          DColon: true
+        }
+        Assignment {
+          LHS: Ident {
+            Name: "stack_size"
+          }
+          RHS: Component {
+            X: Ident {
+              Name: "self"
+            }
+            Name: Ident {
+              Name: "top"
+            }
+          }
+        }
+      ]
+      EndName: "stack_size"
+    }
+  ]
+  HasContains: true
+  EndName: "shapes"
+}
+Unit {
+  Kind: program
+  Ident: Ident {
+    Name: "derived_types"
+  }
+  Body: [
+    UseStmt {
+      Module: Ident {
+        Name: "shapes"
+      }
+    }
+    ImplicitStmt {
+      None: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "type"
+        Derived: "point"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "p"
+          }
+        }
+        Entity {
+          Name: Ident {
+            Name: "q"
+          }
+        }
+      ]
+      DColon: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "type"
+        Derived: "segment"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "s"
+          }
+        }
+      ]
+      DColon: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "type"
+        Derived: "stack"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "st"
+          }
+        }
+      ]
+      DColon: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "type"
+        Derived: "point"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "pts"
+          }
+          Dims: [
+            Dim {
+              Hi: IntLit {
+                Text: "3"
+              }
+            }
+          ]
+          HasDims: true
+        }
+      ]
+      DColon: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "integer"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "i"
+          }
+        }
+      ]
+      DColon: true
+    }
+    Assignment {
+      LHS: Ident {
+        Name: "p"
+      }
+      RHS: Index {
+        X: Ident {
+          Name: "point"
+        }
+        Args: [
+          Arg {
+            Value: RealLit {
+              Text: "1.5"
+            }
+          }
+          Arg {
+            Value: RealLit {
+              Text: "2.5"
+            }
+          }
+        ]
+      }
+    }
+    Assignment {
+      LHS: Ident {
+        Name: "q"
+      }
+      RHS: Index {
+        X: Ident {
+          Name: "point"
+        }
+        Args: [
+          Arg {
+            Keyword: "y"
+            Value: RealLit {
+              Text: "4.0"
+            }
+          }
+        ]
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Ident {
+          Name: "p"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Component {
+          X: Ident {
+            Name: "q"
+          }
+          Name: Ident {
+            Name: "x"
+          }
+        }
+        Component {
+          X: Ident {
+            Name: "q"
+          }
+          Name: Ident {
+            Name: "y"
+          }
+        }
+      ]
+    }
+    Assignment {
+      LHS: Ident {
+        Name: "s"
+      }
+      RHS: Index {
+        X: Ident {
+          Name: "segment"
+        }
+        Args: [
+          Arg {
+            Value: Ident {
+              Name: "p"
+            }
+          }
+          Arg {
+            Value: Ident {
+              Name: "q"
+            }
+          }
+          Arg {
+            Value: StringLit {
+              Value: "first"
+            }
+          }
+        ]
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Component {
+          X: Component {
+            X: Ident {
+              Name: "s"
+            }
+            Name: Ident {
+              Name: "a"
+            }
+          }
+          Name: Ident {
+            Name: "x"
+          }
+        }
+        Component {
+          X: Component {
+            X: Ident {
+              Name: "s"
+            }
+            Name: Ident {
+              Name: "b"
+            }
+          }
+          Name: Ident {
+            Name: "y"
+          }
+        }
+        Component {
+          X: Ident {
+            Name: "s"
+          }
+          Name: Ident {
+            Name: "label"
+          }
+        }
+      ]
+    }
+    Assignment {
+      LHS: Component {
+        X: Component {
+          X: Ident {
+            Name: "s"
+          }
+          Name: Ident {
+            Name: "b"
+          }
+        }
+        Name: Ident {
+          Name: "x"
+        }
+      }
+      RHS: Binary {
+        Op: "+"
+        X: Component {
+          X: Component {
+            X: Ident {
+              Name: "s"
+            }
+            Name: Ident {
+              Name: "a"
+            }
+          }
+          Name: Ident {
+            Name: "x"
+          }
+        }
+        Y: RealLit {
+          Text: "10.0"
+        }
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Component {
+          X: Ident {
+            Name: "s"
+          }
+          Name: Ident {
+            Name: "b"
+          }
+        }
+      ]
+    }
+    Do {
+      Var: Ident {
+        Name: "i"
+      }
+      Lo: IntLit {
+        Text: "1"
+      }
+      Hi: IntLit {
+        Text: "3"
+      }
+      HasVar: true
+      Body: [
+        Assignment {
+          LHS: Index {
+            X: Ident {
+              Name: "pts"
+            }
+            Args: [
+              Arg {
+                Value: Ident {
+                  Name: "i"
+                }
+              }
+            ]
+          }
+          RHS: Index {
+            X: Ident {
+              Name: "point"
+            }
+            Args: [
+              Arg {
+                Value: Index {
+                  X: Ident {
+                    Name: "real"
+                  }
+                  Args: [
+                    Arg {
+                      Value: Ident {
+                        Name: "i"
+                      }
+                    }
+                  ]
+                }
+              }
+              Arg {
+                Value: Index {
+                  X: Ident {
+                    Name: "real"
+                  }
+                  Args: [
+                    Arg {
+                      Value: Binary {
+                        Op: "*"
+                        X: Ident {
+                          Name: "i"
+                        }
+                        Y: Ident {
+                          Name: "i"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "pts"
+          }
+          Args: [
+            Arg {
+              Value: IntLit {
+                Text: "2"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Component {
+          X: Ident {
+            Name: "pts"
+          }
+          Name: Ident {
+            Name: "x"
+          }
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Component {
+          X: Ident {
+            Name: "pts"
+          }
+          Name: Ident {
+            Name: "y"
+          }
+        }
+      ]
+    }
+    Call {
+      Proc: Component {
+        X: Ident {
+          Name: "st"
+        }
+        Name: Ident {
+          Name: "push"
+        }
+      }
+      Args: [
+        Arg {
+          Value: IntLit {
+            Text: "7"
+          }
+        }
+      ]
+      HasArgs: true
+    }
+    Call {
+      Proc: Component {
+        X: Ident {
+          Name: "st"
+        }
+        Name: Ident {
+          Name: "push"
+        }
+      }
+      Args: [
+        Arg {
+          Value: IntLit {
+            Text: "8"
+          }
+        }
+      ]
+      HasArgs: true
+    }
+    Call {
+      Proc: Component {
+        X: Ident {
+          Name: "st"
+        }
+        Name: Ident {
+          Name: "push"
+        }
+      }
+      Args: [
+        Arg {
+          Value: IntLit {
+            Text: "9"
+          }
+        }
+      ]
+      HasArgs: true
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Component {
+            X: Ident {
+              Name: "st"
+            }
+            Name: Ident {
+              Name: "size_of"
+            }
+          }
+        }
+        Component {
+          X: Ident {
+            Name: "st"
+          }
+          Name: Ident {
+            Name: "items"
+          }
+        }
+      ]
+    }
+  ]
+  EndName: "derived_types"
+}

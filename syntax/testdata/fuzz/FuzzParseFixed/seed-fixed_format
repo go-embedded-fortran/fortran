@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("      WRITE (6, 10) X\n   10 FORMAT (1X, 5HHELLO, F8.3)\n      END\n")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("where (a > 0) b = 1\nforall (i = 1:n, j = 1:n) a(i,j) = 0\nend\n")

@@ -1,0 +1,114 @@
+Unit {
+  Kind: program
+  Ident: Ident {
+    Name: "hello"
+  }
+  Body: [
+    ImplicitStmt {
+      None: true
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        StringLit {
+          Value: "Hello, Fortran"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        IntLit {
+          Text: "42"
+        }
+        Unary {
+          Op: "-"
+          X: IntLit {
+            Text: "7"
+          }
+        }
+        IntLit {
+          Text: "0"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        RealLit {
+          Text: "1.5"
+        }
+        RealLit {
+          Text: "2.25d0"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        LogicalLit {
+          Value: true
+        }
+        LogicalLit {}
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        StringLit {
+          Value: "a"
+        }
+        StringLit {
+          Value: "bc"
+        }
+        StringLit {
+          Value: "def"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        ComplexLit {
+          Re: RealLit {
+            Text: "1.0"
+          }
+          Im: Unary {
+            Op: "-"
+            X: RealLit {
+              Text: "2.0"
+            }
+          }
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+    }
+    IOStmt {
+      Kind: "write"
+      Controls: [
+        Arg {
+          Value: Asterisk {}
+        }
+        Arg {
+          Value: Asterisk {}
+        }
+      ]
+      HasCtrl: true
+      Items: [
+        StringLit {
+          Value: "write to unit *"
+        }
+      ]
+    }
+  ]
+  EndName: "hello"
+}

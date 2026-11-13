@@ -1,0 +1,866 @@
+Unit {
+  Kind: program
+  Ident: Ident {
+    Name: "arrays_sections"
+  }
+  Body: [
+    ImplicitStmt {
+      None: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "integer"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "v"
+          }
+          Dims: [
+            Dim {
+              Hi: IntLit {
+                Text: "10"
+              }
+            }
+          ]
+          HasDims: true
+        }
+        Entity {
+          Name: Ident {
+            Name: "i"
+          }
+        }
+        Entity {
+          Name: Ident {
+            Name: "m"
+          }
+          Dims: [
+            Dim {
+              Hi: IntLit {
+                Text: "3"
+              }
+            }
+            Dim {
+              Hi: IntLit {
+                Text: "4"
+              }
+            }
+          ]
+          HasDims: true
+        }
+      ]
+      DColon: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "integer"
+      }
+      Attrs: [
+        Attr {
+          Name: "allocatable"
+        }
+      ]
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "w"
+          }
+          Dims: [
+            Dim {
+              Colon: true
+            }
+          ]
+          HasDims: true
+        }
+      ]
+      DColon: true
+    }
+    Do {
+      Var: Ident {
+        Name: "i"
+      }
+      Lo: IntLit {
+        Text: "1"
+      }
+      Hi: IntLit {
+        Text: "10"
+      }
+      HasVar: true
+      Body: [
+        Assignment {
+          LHS: Index {
+            X: Ident {
+              Name: "v"
+            }
+            Args: [
+              Arg {
+                Value: Ident {
+                  Name: "i"
+                }
+              }
+            ]
+          }
+          RHS: Binary {
+            Op: "*"
+            X: Ident {
+              Name: "i"
+            }
+            Y: Ident {
+              Name: "i"
+            }
+          }
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Ident {
+          Name: "v"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "v"
+          }
+          Args: [
+            Arg {
+              Value: Triplet {
+                Lo: IntLit {
+                  Text: "3"
+                }
+                Hi: IntLit {
+                  Text: "6"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "v"
+          }
+          Args: [
+            Arg {
+              Value: Triplet {
+                Stride: IntLit {
+                  Text: "3"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "v"
+          }
+          Args: [
+            Arg {
+              Value: Triplet {
+                Lo: IntLit {
+                  Text: "10"
+                }
+                Hi: IntLit {
+                  Text: "1"
+                }
+                Stride: Unary {
+                  Op: "-"
+                  X: IntLit {
+                    Text: "2"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "v"
+          }
+          Args: [
+            Arg {
+              Value: Triplet {
+                Hi: IntLit {
+                  Text: "4"
+                }
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "v"
+          }
+          Args: [
+            Arg {
+              Value: Triplet {
+                Lo: IntLit {
+                  Text: "8"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "size"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "v"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "lbound"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "v"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "ubound"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "v"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "sum"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "v"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "product"
+          }
+          Args: [
+            Arg {
+              Value: Index {
+                X: Ident {
+                  Name: "v"
+                }
+                Args: [
+                  Arg {
+                    Value: Triplet {
+                      Lo: IntLit {
+                        Text: "1"
+                      }
+                      Hi: IntLit {
+                        Text: "5"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "maxval"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "v"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "minval"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "v"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "maxloc"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "v"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "minloc"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "v"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    Assignment {
+      LHS: Index {
+        X: Ident {
+          Name: "v"
+        }
+        Args: [
+          Arg {
+            Value: Triplet {
+              Lo: IntLit {
+                Text: "2"
+              }
+              Hi: IntLit {
+                Text: "4"
+              }
+            }
+          }
+        ]
+      }
+      RHS: IntLit {
+        Text: "0"
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Ident {
+          Name: "v"
+        }
+      ]
+    }
+    Assignment {
+      LHS: Ident {
+        Name: "v"
+      }
+      RHS: Binary {
+        Op: "+"
+        X: Ident {
+          Name: "v"
+        }
+        Y: IntLit {
+          Text: "1"
+        }
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Ident {
+          Name: "v"
+        }
+      ]
+    }
+    Where {
+      Mask: Binary {
+        Op: ">"
+        X: Ident {
+          Name: "v"
+        }
+        Y: IntLit {
+          Text: "50"
+        }
+      }
+      Single: Assignment {
+        LHS: Ident {
+          Name: "v"
+        }
+        RHS: Unary {
+          Op: "-"
+          X: IntLit {
+            Text: "1"
+          }
+        }
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Ident {
+          Name: "v"
+        }
+      ]
+    }
+    Assignment {
+      LHS: Ident {
+        Name: "m"
+      }
+      RHS: Index {
+        X: Ident {
+          Name: "reshape"
+        }
+        Args: [
+          Arg {
+            Value: ArrayCons {
+              Elems: [
+                ImpliedDo {
+                  Items: [
+                    Ident {
+                      Name: "i"
+                    }
+                  ]
+                  Var: Ident {
+                    Name: "i"
+                  }
+                  Lo: IntLit {
+                    Text: "1"
+                  }
+                  Hi: IntLit {
+                    Text: "12"
+                  }
+                }
+              ]
+            }
+          }
+          Arg {
+            Value: ArrayCons {
+              Elems: [
+                IntLit {
+                  Text: "3"
+                }
+                IntLit {
+                  Text: "4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "m"
+          }
+          Args: [
+            Arg {
+              Value: IntLit {
+                Text: "2"
+              }
+            }
+            Arg {
+              Value: Triplet {}
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "m"
+          }
+          Args: [
+            Arg {
+              Value: Triplet {}
+            }
+            Arg {
+              Value: IntLit {
+                Text: "2"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "m"
+          }
+          Args: [
+            Arg {
+              Value: Triplet {
+                Lo: IntLit {
+                  Text: "2"
+                }
+                Hi: IntLit {
+                  Text: "3"
+                }
+              }
+            }
+            Arg {
+              Value: Triplet {
+                Lo: IntLit {
+                  Text: "2"
+                }
+                Hi: IntLit {
+                  Text: "3"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "shape"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "m"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "size"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "m"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "size"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "m"
+              }
+            }
+            Arg {
+              Value: IntLit {
+                Text: "1"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "size"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "m"
+              }
+            }
+            Arg {
+              Value: IntLit {
+                Text: "2"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    Allocate {
+      Objects: [
+        Index {
+          X: Ident {
+            Name: "w"
+          }
+          Args: [
+            Arg {
+              Value: Triplet {
+                Lo: IntLit {
+                  Text: "0"
+                }
+                Hi: IntLit {
+                  Text: "4"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    Assignment {
+      LHS: Ident {
+        Name: "w"
+      }
+      RHS: ArrayCons {
+        Elems: [
+          IntLit {
+            Text: "10"
+          }
+          IntLit {
+            Text: "20"
+          }
+          IntLit {
+            Text: "30"
+          }
+          IntLit {
+            Text: "40"
+          }
+          IntLit {
+            Text: "50"
+          }
+        ]
+      }
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Ident {
+          Name: "w"
+        }
+        Index {
+          X: Ident {
+            Name: "lbound"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "w"
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "ubound"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "w"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "any"
+          }
+          Args: [
+            Arg {
+              Value: Binary {
+                Op: ">"
+                X: Ident {
+                  Name: "w"
+                }
+                Y: IntLit {
+                  Text: "40"
+                }
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "all"
+          }
+          Args: [
+            Arg {
+              Value: Binary {
+                Op: ">"
+                X: Ident {
+                  Name: "w"
+                }
+                Y: IntLit {
+                  Text: "5"
+                }
+              }
+            }
+          ]
+        }
+        Index {
+          X: Ident {
+            Name: "count"
+          }
+          Args: [
+            Arg {
+              Value: Binary {
+                Op: ">"
+                X: Ident {
+                  Name: "w"
+                }
+                Y: IntLit {
+                  Text: "15"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "cshift"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "w"
+              }
+            }
+            Arg {
+              Value: IntLit {
+                Text: "1"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "eoshift"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "w"
+              }
+            }
+            Arg {
+              Value: Unary {
+                Op: "-"
+                X: IntLit {
+                  Text: "2"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "dot_product"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "w"
+              }
+            }
+            Arg {
+              Value: Ident {
+                Name: "w"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    Allocate {
+      Dealloc: true
+      Objects: [
+        Ident {
+          Name: "w"
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "allocated"
+          }
+          Args: [
+            Arg {
+              Value: Ident {
+                Name: "w"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+  EndName: "arrays_sections"
+}

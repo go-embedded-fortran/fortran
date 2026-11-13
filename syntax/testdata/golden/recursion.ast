@@ -1,0 +1,846 @@
+Unit {
+  Kind: program
+  Ident: Ident {
+    Name: "recursion"
+  }
+  Body: [
+    ImplicitStmt {
+      None: true
+    }
+    Decl {
+      Type: TypeSpec {
+        Name: "integer"
+      }
+      Entities: [
+        Entity {
+          Name: Ident {
+            Name: "i"
+          }
+        }
+      ]
+      DColon: true
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "factorial"
+          }
+          Args: [
+            Arg {
+              Value: IntLit {
+                Text: "10"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        ImpliedDo {
+          Items: [
+            Index {
+              X: Ident {
+                Name: "fib"
+              }
+              Args: [
+                Arg {
+                  Value: Ident {
+                    Name: "i"
+                  }
+                }
+              ]
+            }
+          ]
+          Var: Ident {
+            Name: "i"
+          }
+          Lo: IntLit {
+            Text: "0"
+          }
+          Hi: IntLit {
+            Text: "15"
+          }
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "ackermann"
+          }
+          Args: [
+            Arg {
+              Value: IntLit {
+                Text: "2"
+              }
+            }
+            Arg {
+              Value: IntLit {
+                Text: "3"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    Call {
+      Proc: Ident {
+        Name: "countdown"
+      }
+      Args: [
+        Arg {
+          Value: IntLit {
+            Text: "3"
+          }
+        }
+      ]
+      HasArgs: true
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "gcd"
+          }
+          Args: [
+            Arg {
+              Value: IntLit {
+                Text: "1071"
+              }
+            }
+            Arg {
+              Value: IntLit {
+                Text: "462"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    IOStmt {
+      Kind: "print"
+      Format: Asterisk {}
+      Items: [
+        Index {
+          X: Ident {
+            Name: "depth"
+          }
+          Args: [
+            Arg {
+              Value: IntLit {
+                Text: "5000"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+  Contains: [
+    Unit {
+      Kind: function
+      Ident: Ident {
+        Name: "factorial"
+      }
+      Params: [
+        Ident {
+          Name: "n"
+        }
+      ]
+      Prefix: [
+        "recursive"
+      ]
+      Result: Ident {
+        Name: "r"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "in"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "n"
+              }
+            }
+          ]
+          DColon: true
+        }
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+            Kind: IntLit {
+              Text: "8"
+            }
+          }
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "r"
+              }
+            }
+          ]
+          DColon: true
+        }
+        If {
+          Cond: Binary {
+            Op: "<="
+            X: Ident {
+              Name: "n"
+            }
+            Y: IntLit {
+              Text: "1"
+            }
+          }
+          Then: [
+            Assignment {
+              LHS: Ident {
+                Name: "r"
+              }
+              RHS: IntLit {
+                Text: "1"
+              }
+            }
+          ]
+          Else: [
+            Assignment {
+              LHS: Ident {
+                Name: "r"
+              }
+              RHS: Binary {
+                Op: "*"
+                X: Ident {
+                  Name: "n"
+                }
+                Y: Index {
+                  X: Ident {
+                    Name: "factorial"
+                  }
+                  Args: [
+                    Arg {
+                      Value: Binary {
+                        Op: "-"
+                        X: Ident {
+                          Name: "n"
+                        }
+                        Y: IntLit {
+                          Text: "1"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+          HasElse: true
+        }
+      ]
+      EndName: "factorial"
+    }
+    Unit {
+      Kind: function
+      Ident: Ident {
+        Name: "fib"
+      }
+      Params: [
+        Ident {
+          Name: "n"
+        }
+      ]
+      Prefix: [
+        "recursive"
+      ]
+      Result: Ident {
+        Name: "r"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "in"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "n"
+              }
+            }
+          ]
+          DColon: true
+        }
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "r"
+              }
+            }
+          ]
+          DColon: true
+        }
+        If {
+          Cond: Binary {
+            Op: "<"
+            X: Ident {
+              Name: "n"
+            }
+            Y: IntLit {
+              Text: "2"
+            }
+          }
+          Then: [
+            Assignment {
+              LHS: Ident {
+                Name: "r"
+              }
+              RHS: Ident {
+                Name: "n"
+              }
+            }
+          ]
+          Else: [
+            Assignment {
+              LHS: Ident {
+                Name: "r"
+              }
+              RHS: Binary {
+                Op: "+"
+                X: Index {
+                  X: Ident {
+                    Name: "fib"
+                  }
+                  Args: [
+                    Arg {
+                      Value: Binary {
+                        Op: "-"
+                        X: Ident {
+                          Name: "n"
+                        }
+                        Y: IntLit {
+                          Text: "1"
+                        }
+                      }
+                    }
+                  ]
+                }
+                Y: Index {
+                  X: Ident {
+                    Name: "fib"
+                  }
+                  Args: [
+                    Arg {
+                      Value: Binary {
+                        Op: "-"
+                        X: Ident {
+                          Name: "n"
+                        }
+                        Y: IntLit {
+                          Text: "2"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+          HasElse: true
+        }
+      ]
+      EndName: "fib"
+    }
+    Unit {
+      Kind: function
+      Ident: Ident {
+        Name: "ackermann"
+      }
+      Params: [
+        Ident {
+          Name: "m"
+        }
+        Ident {
+          Name: "n"
+        }
+      ]
+      Prefix: [
+        "recursive"
+      ]
+      Result: Ident {
+        Name: "r"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "in"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "m"
+              }
+            }
+            Entity {
+              Name: Ident {
+                Name: "n"
+              }
+            }
+          ]
+          DColon: true
+        }
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "r"
+              }
+            }
+          ]
+          DColon: true
+        }
+        If {
+          Cond: Binary {
+            Op: "=="
+            X: Ident {
+              Name: "m"
+            }
+            Y: IntLit {
+              Text: "0"
+            }
+          }
+          Then: [
+            Assignment {
+              LHS: Ident {
+                Name: "r"
+              }
+              RHS: Binary {
+                Op: "+"
+                X: Ident {
+                  Name: "n"
+                }
+                Y: IntLit {
+                  Text: "1"
+                }
+              }
+            }
+          ]
+          ElseIfs: [
+            ElseIf {
+              Cond: Binary {
+                Op: "=="
+                X: Ident {
+                  Name: "n"
+                }
+                Y: IntLit {
+                  Text: "0"
+                }
+              }
+              Body: [
+                Assignment {
+                  LHS: Ident {
+                    Name: "r"
+                  }
+                  RHS: Index {
+                    X: Ident {
+                      Name: "ackermann"
+                    }
+                    Args: [
+                      Arg {
+                        Value: Binary {
+                          Op: "-"
+                          X: Ident {
+                            Name: "m"
+                          }
+                          Y: IntLit {
+                            Text: "1"
+                          }
+                        }
+                      }
+                      Arg {
+                        Value: IntLit {
+                          Text: "1"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+          Else: [
+            Assignment {
+              LHS: Ident {
+                Name: "r"
+              }
+              RHS: Index {
+                X: Ident {
+                  Name: "ackermann"
+                }
+                Args: [
+                  Arg {
+                    Value: Binary {
+                      Op: "-"
+                      X: Ident {
+                        Name: "m"
+                      }
+                      Y: IntLit {
+                        Text: "1"
+                      }
+                    }
+                  }
+                  Arg {
+                    Value: Index {
+                      X: Ident {
+                        Name: "ackermann"
+                      }
+                      Args: [
+                        Arg {
+                          Value: Ident {
+                            Name: "m"
+                          }
+                        }
+                        Arg {
+                          Value: Binary {
+                            Op: "-"
+                            X: Ident {
+                              Name: "n"
+                            }
+                            Y: IntLit {
+                              Text: "1"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+          HasElse: true
+        }
+      ]
+      EndName: "ackermann"
+    }
+    Unit {
+      Kind: subroutine
+      Ident: Ident {
+        Name: "countdown"
+      }
+      Params: [
+        Ident {
+          Name: "n"
+        }
+      ]
+      Prefix: [
+        "recursive"
+      ]
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "in"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "n"
+              }
+            }
+          ]
+          DColon: true
+        }
+        IOStmt {
+          Kind: "print"
+          Format: Asterisk {}
+          Items: [
+            StringLit {
+              Value: "n ="
+            }
+            Ident {
+              Name: "n"
+            }
+          ]
+        }
+        LogicalIf {
+          Cond: Binary {
+            Op: ">"
+            X: Ident {
+              Name: "n"
+            }
+            Y: IntLit {
+              Text: "0"
+            }
+          }
+          Stmt: Call {
+            Proc: Ident {
+              Name: "countdown"
+            }
+            Args: [
+              Arg {
+                Value: Binary {
+                  Op: "-"
+                  X: Ident {
+                    Name: "n"
+                  }
+                  Y: IntLit {
+                    Text: "1"
+                  }
+                }
+              }
+            ]
+            HasArgs: true
+          }
+        }
+      ]
+      EndName: "countdown"
+    }
+    Unit {
+      Kind: function
+      Ident: Ident {
+        Name: "gcd"
+      }
+      Params: [
+        Ident {
+          Name: "a"
+        }
+        Ident {
+          Name: "b"
+        }
+      ]
+      Prefix: [
+        "recursive"
+      ]
+      Result: Ident {
+        Name: "g"
+      }
+      ResultType: TypeSpec {
+        Name: "integer"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "in"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "a"
+              }
+            }
+            Entity {
+              Name: Ident {
+                Name: "b"
+              }
+            }
+          ]
+          DColon: true
+        }
+        If {
+          Cond: Binary {
+            Op: "=="
+            X: Ident {
+              Name: "b"
+            }
+            Y: IntLit {
+              Text: "0"
+            }
+          }
+          Then: [
+            Assignment {
+              LHS: Ident {
+                Name: "g"
+              }
+              RHS: Ident {
+                Name: "a"
+              }
+            }
+          ]
+          Else: [
+            Assignment {
+              LHS: Ident {
+                Name: "g"
+              }
+              RHS: Index {
+                X: Ident {
+                  Name: "gcd"
+                }
+                Args: [
+                  Arg {
+                    Value: Ident {
+                      Name: "b"
+                    }
+                  }
+                  Arg {
+                    Value: Index {
+                      X: Ident {
+                        Name: "mod"
+                      }
+                      Args: [
+                        Arg {
+                          Value: Ident {
+                            Name: "a"
+                          }
+                        }
+                        Arg {
+                          Value: Ident {
+                            Name: "b"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+          HasElse: true
+        }
+      ]
+      EndName: "gcd"
+    }
+    Unit {
+      Kind: function
+      Ident: Ident {
+        Name: "depth"
+      }
+      Params: [
+        Ident {
+          Name: "n"
+        }
+      ]
+      Prefix: [
+        "recursive"
+      ]
+      Result: Ident {
+        Name: "d"
+      }
+      ResultType: TypeSpec {
+        Name: "integer"
+      }
+      Body: [
+        Decl {
+          Type: TypeSpec {
+            Name: "integer"
+          }
+          Attrs: [
+            Attr {
+              Name: "intent"
+              Intent: "in"
+            }
+          ]
+          Entities: [
+            Entity {
+              Name: Ident {
+                Name: "n"
+              }
+            }
+          ]
+          DColon: true
+        }
+        If {
+          Cond: Binary {
+            Op: "=="
+            X: Ident {
+              Name: "n"
+            }
+            Y: IntLit {
+              Text: "0"
+            }
+          }
+          Then: [
+            Assignment {
+              LHS: Ident {
+                Name: "d"
+              }
+              RHS: IntLit {
+                Text: "0"
+              }
+            }
+          ]
+          Else: [
+            Assignment {
+              LHS: Ident {
+                Name: "d"
+              }
+              RHS: Binary {
+                Op: "+"
+                X: IntLit {
+                  Text: "1"
+                }
+                Y: Index {
+                  X: Ident {
+                    Name: "depth"
+                  }
+                  Args: [
+                    Arg {
+                      Value: Binary {
+                        Op: "-"
+                        X: Ident {
+                          Name: "n"
+                        }
+                        Y: IntLit {
+                          Text: "1"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+          HasElse: true
+        }
+      ]
+      EndName: "depth"
+    }
+  ]
+  HasContains: true
+  EndName: "recursion"
+}

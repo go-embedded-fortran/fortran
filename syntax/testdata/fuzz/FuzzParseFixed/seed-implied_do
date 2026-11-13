@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("print '(3i4)', (i*i, i = 1, 6)\nread (5, *) (a(i), i = 1, n)\nend\n")

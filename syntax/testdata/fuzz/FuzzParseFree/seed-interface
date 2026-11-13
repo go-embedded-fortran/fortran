@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("interface operator(+)\n module procedure add\nend interface\nend\n")

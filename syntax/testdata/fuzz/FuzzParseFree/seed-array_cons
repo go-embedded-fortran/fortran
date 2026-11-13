@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("a = [integer :: 1, 2, (i, i = 1, 3)]\nb = (/ 1, 2 /)\nend\n")
