@@ -163,6 +163,21 @@ end
 	wantErr(t, "program p\n integer, parameter :: a\nend\n", "has no value")
 }
 
+// A contained procedure named like a use-associated entity of its host is
+// refused, as gfortran refuses it; only a session (Options.Redefine, bib §7)
+// lets the local definition shadow it. Without the option the rule leaked into
+// plain files and gfortran.dg's accepted-only-by-us count rose by one.
+func TestContainedShadowsUseOnlyInSession(t *testing.T) {
+	src := "module m\n contains\n subroutine f()\n end subroutine\nend module\n" +
+		"program p\n use m\n call f\n contains\n subroutine f()\n end subroutine\nend program\n"
+	if _, errs := analyze(t, "t.f90", src, nil); len(errs) == 0 {
+		t.Errorf("plain file: accepted; want a refusal")
+	}
+	if _, errs := analyze(t, "t.f90", src, &Options{Redefine: true}); len(errs) != 0 {
+		t.Errorf("session rule: unexpected errors:\n%v", errs)
+	}
+}
+
 func TestNegative(t *testing.T) {
 	for _, c := range []struct{ name, src, want string }{
 		{"type mismatch", "program p\n integer :: i\n character(len=3) :: s\n i = s\nend\n", "Cannot convert"},

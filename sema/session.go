@@ -156,7 +156,7 @@ func (s *Session) AnalyzeNext(state any, index int, src string) (*CellInfo, any)
 	g := &syntax.File{Name: f.Name, Form: f.Form, Set: f.Set, Units: units}
 	ci.File = g
 
-	opt := &Options{ImplicitNone: !s.opt.ImplicitTyping, Limits: s.opt.Limits, Modules: st.modules}
+	opt := &Options{ImplicitNone: !s.opt.ImplicitTyping, Limits: s.opt.Limits, Modules: st.modules, Redefine: true}
 	info, errs := Analyze(g, opt)
 	ci.Info, ci.Errors = info, errs
 	if len(errs) > 0 {
