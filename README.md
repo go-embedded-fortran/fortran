@@ -133,7 +133,9 @@ published rather than a loaded one. The gap to record is expected to be large
 in our favour for the wrong reason (gfortran's time is mostly process start and
 its middle end, which `-fsyntax-only` does not skip), so the table reports the
 empty-file start time next to the ratio. A first unloaded run replaces this
-paragraph. For scale only, not a measurement: the 8 306 `gfortran.dg` files
+paragraph. Allocation counts are exact under load: parsing the 19 testdata files
+is 4 470 allocations (380 KB) per pass, and parsing the largest FCVS files
+(86 to 118 KB of fixed form) 5 000 to 7 600 allocations (260 to 400 KB). For scale only, not a measurement: the 8 306 `gfortran.dg` files
 parse in 0.6 s of wall time in `TestCorporaParseFloor` (reading, parsing and
 resolving includes, several cores, load 10).
 
