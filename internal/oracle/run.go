@@ -128,6 +128,7 @@ func Run(ctx context.Context, path, dir string, args []string, stdin []byte, lim
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout, cmd.Stderr = out, errw
 	cmd.WaitDelay = 2 * time.Second
+	ownGroup(cmd)
 	err := cmd.Run()
 
 	res := Result{Stdout: out.buf.Bytes(), Stderr: errw.buf.Bytes(), Truncated: out.truncated || errw.truncated, MemoryLimited: limited}

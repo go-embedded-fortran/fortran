@@ -153,7 +153,11 @@ jobs:
         run: '"$RUNNER_TEMP/foracle" corpus --dir "$RUNNER_TEMP/lts/Fortran/UnitTests/fcvs21_f95" --jobs 4 --out fcvs.tsv'
       - name: LFortran integration tests
         run: '"$RUNNER_TEMP/foracle" corpus --dir "$RUNNER_TEMP/lfortran/integration_tests" --jobs 4 --out lfortran.tsv'
+      # 8 306 files: bounded in time, and a runner-side kill must not hide the
+      # three corpora above (the job does not gate, its tsv files are the output).
       - name: gfortran.dg
+        timeout-minutes: 75
+        continue-on-error: true
         run: '"$RUNNER_TEMP/foracle" corpus --dir "$RUNNER_TEMP/gcc/gcc/testsuite/gfortran.dg" --jobs 4 --out gfortran-dg.tsv'
       - uses: actions/upload-artifact@v7
         if: always()

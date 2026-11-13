@@ -262,6 +262,8 @@ func (t *Toolchain) Compile(ctx context.Context, dir string, src []byte, o Compi
 		compiler = t.Flang
 	}
 	cmd := exec.CommandContext(ctx, compiler, o.Args(in, out)...)
+	ownGroup(cmd)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = dir // modules (.mod files) land here, not in the caller's tree
 	// The conda-forge driver finds its assembler and linker driver ("clang")
 	// through PATH: its own directory goes first, so a bare host is enough.

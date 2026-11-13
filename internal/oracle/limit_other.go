@@ -2,7 +2,12 @@
 
 package oracle
 
-import "os"
+import (
+	"os"
+	"os/exec"
+)
+
+func ownGroup(*exec.Cmd) {}
 
 // No address-space limit outside Unix: the helper is never used.
 const (
