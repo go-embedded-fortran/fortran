@@ -1,0 +1,2 @@
+go test fuzz v1
+string("subroutine s(a, n, b, c)\n real :: a(:), c(*)\n integer, intent(out) :: n\n real, pointer, optional :: b(:)\nend\nprogram p\n real :: r(3), q(2, 2)\n real, target :: t(3)\n integer :: k\n call s(r, k, c=q)\n call s(q, 1, b=t)\n call s(a=r, k)\n call s(r, k, r, r, r)\nend\n")

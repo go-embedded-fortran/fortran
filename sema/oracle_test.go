@@ -98,3 +98,33 @@ func TestNegativesAgreeWithGfortran(t *testing.T) {
 		})
 	}
 }
+
+// TestCallCasesAgreeWithGfortran cross-checks the argument association and
+// generic resolution cases (call_test.go) against gfortran, in both directions.
+func TestCallCasesAgreeWithGfortran(t *testing.T) {
+	tc, err := oracle.Locate()
+	if err != nil {
+		t.Skipf("no oracle: %v", err)
+	}
+	neg, pos := sema.CallCases()
+	for _, c := range neg {
+		t.Run(c.Name, func(t *testing.T) {
+			if gfortranAccepts(t, tc.Gfortran, c.Src) {
+				t.Fatalf("gfortran accepts this program: the list is wrong")
+			}
+			if len(ours(t, c.Src)) == 0 {
+				t.Errorf("gfortran refuses, we accept:\n%s", c.Src)
+			}
+		})
+	}
+	for _, c := range pos {
+		t.Run("ok "+c.Name, func(t *testing.T) {
+			if !gfortranAccepts(t, tc.Gfortran, c.Src) {
+				t.Fatalf("gfortran refuses this program: the list is wrong")
+			}
+			if errs := ours(t, c.Src); len(errs) != 0 {
+				t.Errorf("gfortran accepts, we refuse: %v", errs)
+			}
+		})
+	}
+}

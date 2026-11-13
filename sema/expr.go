@@ -1,6 +1,7 @@
 package sema
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 	"strconv"
@@ -253,28 +254,38 @@ func (c *checker) unary(sc *Scope, e *syntax.Unary) TV {
 		tv.Type.Basic = Unknown
 		return tv
 	}
-	if x.Type.Basic == Derived || sc.Lookup("operator("+e.Op+")") != nil {
-		tv.Type = Type{Basic: Unknown}
-		return tv // a defined operation: generic resolution decides
+	defined := func(msg string) TV {
+		r, ok := c.definedOp(sc, e.Pos, e.Op, actual{e: e.X, tv: x, pos: e.X.P()})
+		if !ok {
+			c.errorf(e.Pos, "%s", msg)
+		}
+		if r.Rank == RankUnknown {
+			r.Rank = x.Rank
+		}
+		return r
+	}
+	if x.Type.Basic == Derived {
+		return defined(fmt.Sprintf("Operand of unary operator '%s' at (1) is %s", e.Op, x.Type))
 	}
 	switch e.Op {
 	case "+", "-":
 		if !x.Type.Numeric() {
-			c.errorf(e.Pos, "Operand of unary numeric operator '%s' at (1) is %s", e.Op, x.Type)
-			tv.Type = Type{Basic: Unknown}
-			return tv
+			return defined(fmt.Sprintf("Operand of unary numeric operator '%s' at (1) is %s", e.Op, x.Type))
 		}
 		tv.Type = x.Type
 	case ".not.":
+		if x.Type.Basic == Integer && sc.Lookup("operator(.not.)") != nil {
+			// .not. on an integer is a GNU extension: a defined operation wins
+			if r, _ := c.definedOp(sc, e.Pos, e.Op, actual{e: e.X, tv: x, pos: e.X.P()}); r.Sym != nil {
+				return r
+			}
+		}
 		if x.Type.Basic != Logical && x.Type.Basic != Integer {
-			c.errorf(e.Pos, "Operand of .not. operator at (1) is %s", x.Type)
-			tv.Type = Type{Basic: Unknown}
-			return tv
+			return defined(fmt.Sprintf("Operand of .not. operator at (1) is %s", x.Type))
 		}
 		tv.Type = x.Type
-	default: // a defined unary operator: generic resolution decides
-		tv.Type = Type{Basic: Unknown}
-		return tv
+	default: // a defined unary operator (F2018 10.1.6)
+		return defined(fmt.Sprintf("Operand of defined unary operator '%s' at (1) is %s", e.Op, x.Type))
 	}
 	tv.IsConst = x.constant()
 	if x.Const != nil {
@@ -291,22 +302,34 @@ func (c *checker) unary(sc *Scope, e *syntax.Unary) TV {
 func (c *checker) binary(sc *Scope, e *syntax.Binary) TV {
 	x, y := c.expr(sc, e.X), c.expr(sc, e.Y)
 	tv := TV{Rank: combineRank(x.Rank, y.Rank)}
-	if x.Rank > 0 && y.Rank > 0 && x.Rank != y.Rank {
+	if x.Rank > 0 && y.Rank > 0 && x.Rank != y.Rank && x.Type.Basic != Derived && y.Type.Basic != Derived && sc.Lookup("operator("+e.Op+")") == nil {
 		c.errorf(e.Pos, "Shapes for operands at (1) and (2) are not conformable: ranks %d and %d", x.Rank, y.Rank)
 	}
 	unknown := func() TV { tv.Type = Type{Basic: Unknown}; return tv }
 	if x.Type.Lenient() || y.Type.Lenient() {
 		return unknown()
 	}
-	if x.Type.Basic == Derived || y.Type.Basic == Derived {
-		return unknown() // a defined operator: generic resolution decides
-	}
+	// a defined operation (F2018 10.1.6, 15.4.3.4.2): the generic operator(op)
+	// of the scope selects a specific function, which may also extend an
+	// intrinsic operator
 	bad := func(what string) TV {
-		if sc.Lookup("operator("+e.Op+")") != nil {
-			return unknown() // an extension of the intrinsic operator (F2018 15.4.3.4.2)
+		r, ok := c.definedOp(sc, e.Pos, e.Op, actual{e: e.X, tv: x, pos: e.X.P()}, actual{e: e.Y, tv: y, pos: e.Y.P()})
+		if !ok {
+			c.errorf(e.Pos, "Operands of %s '%s' at (1) are %s/%s", what, e.Op, x.Type, y.Type)
 		}
-		c.errorf(e.Pos, "Operands of %s '%s' at (1) are %s/%s", what, e.Op, x.Type, y.Type)
-		return unknown()
+		if r.Rank == RankUnknown {
+			r.Rank = tv.Rank
+		}
+		return r
+	}
+	if x.Type.Basic == Derived || y.Type.Basic == Derived {
+		return bad("binary operator")
+	}
+	if gnuExt(e.Op, x.Type, y.Type) && sc.Lookup("operator("+e.Op+")") != nil {
+		// a GNU extension of an intrinsic operator: a defined operation wins
+		if r, _ := c.definedOp(sc, e.Pos, e.Op, actual{e: e.X, tv: x, pos: e.X.P()}, actual{e: e.Y, tv: y, pos: e.Y.P()}); r.Sym != nil {
+			return r
+		}
 	}
 	switch e.Op {
 	case "+", "-", "*", "/", "**":
@@ -338,7 +361,7 @@ func (c *checker) binary(sc *Scope, e *syntax.Binary) TV {
 			return bad("comparison operator")
 		}
 		tv.Type = Default(Logical)
-	case ".and.", ".or.", ".eqv.", ".neqv.":
+	case ".and.", ".or.", ".eqv.", ".neqv.", ".xor.":
 		switch {
 		case x.Type.Basic == Logical && y.Type.Basic == Logical:
 			tv.Type = Type{Basic: Logical, Kind: max(x.Type.Kind, y.Type.Kind)}
@@ -348,7 +371,7 @@ func (c *checker) binary(sc *Scope, e *syntax.Binary) TV {
 			return bad("logical operator")
 		}
 	default:
-		return unknown() // ".foo.": defined binary operator
+		return bad("defined binary operator") // ".foo.": F2018 10.1.6
 	}
 	tv.IsConst = x.constant() && y.constant()
 	if x.Const != nil && y.Const != nil && tv.Rank == 0 {
@@ -439,9 +462,18 @@ func (c *checker) indexValue(sc *Scope, e *syntax.Index, base TV) TV {
 		t := base.Type
 		t.Len = -1
 		return TV{Type: t, Rank: base.Rank, Var: base.Var, Sym: base.Sym}
+	case base.Rank > 0 && base.Outer > 0 && base.CompRank > 0 && isComponent(e.X):
+		// s%c(subscripts) with s and c arrays: the subscripts are those of c
+		b := base
+		b.Rank = base.CompRank
+		r := c.subscripts(sc, e, b, "")
+		tv := base
+		tv.Rank, tv.Const, tv.Call, tv.Outer, tv.CompRank = base.Outer+r, nil, false, 0, 0
+		return tv
 	case base.Rank != 0 && base.Rank != RankUnknown:
 		r := c.subscripts(sc, e, base, "")
 		tv := base
+		tv.Outer, tv.CompRank = 0, 0
 		tv.Rank, tv.Const, tv.Call = r, nil, false
 		return tv
 	case base.Type.Basic == Character:
@@ -495,7 +527,8 @@ func (c *checker) indexName(sc *Scope, e *syntax.Index, id *syntax.Ident) TV {
 		}
 		s.Type = t
 		c.info.Uses[id] = s
-		c.args(sc, e.Args)
+		acts, alt := c.actuals(sc, e.Args)
+		c.callCheck(sc, e.Pos, name, c.globals[name], false, acts, alt)
 		return TV{Type: t, Call: true, Sym: s}
 	}
 	c.info.Uses[id] = sym
@@ -573,11 +606,17 @@ func (c *checker) indexName(sc *Scope, e *syntax.Index, id *syntax.Ident) TV {
 		if sym.Flags&FSub != 0 && sym.Flags&FFunction == 0 {
 			c.errorf(id.Pos, "'%s' at (1) is a subroutine, it cannot be used in an expression", name)
 		}
-		c.args(sc, e.Args)
-		return TV{Type: t, Rank: sym.Rank, Call: true, Sym: sym}
+		acts, alt := c.actuals(sc, e.Args)
+		callee, explicit := c.calleeOf(sym)
+		r := c.callCheck(sc, e.Pos, name, callee, explicit, acts, alt)
+		tv := TV{Type: t, Rank: sym.Rank, Call: true, Sym: sym}
+		if r != -3 {
+			tv.Rank = r
+		}
+		return tv
 	case SymGeneric:
-		c.args(sc, e.Args) // resolution by the generic's specifics: see generic.go
-		return c.resolveGeneric(sc, e, sym)
+		acts, alt := c.actuals(sc, e.Args)
+		return c.resolveGeneric(sc, e, sym, acts, alt)
 	case SymType:
 		c.args(sc, e.Args)
 		return TV{Type: Type{Basic: Derived, Der: sym.Der}, Sym: sym}
@@ -637,7 +676,7 @@ func (c *checker) component(sc *Scope, e *syntax.Component) TV {
 			if base.Rank != 0 {
 				r = base.Rank
 			}
-			return TV{Type: comp.Type, Rank: r, Var: base.Var, IsConst: base.IsConst}
+			return TV{Type: comp.Type, Rank: r, Var: base.Var, IsConst: base.IsConst, Outer: base.Rank, CompRank: comp.Rank}
 		}
 		if target, ok := t.Der.FindBound(name); ok {
 			if ps := t.Der.Scope.Lookup(target); ps != nil && ps.Kind == SymProc {
@@ -739,4 +778,18 @@ func (c *checker) doVar(csc, outer *Scope, id *syntax.Ident) {
 		c.errorf(id.Pos, "Index variable '%s' at (1) must be INTEGER, it is %s", id.Name, s.Type)
 	}
 	c.info.Uses[id] = s
+}
+
+// gnuExt reports whether op on the operand types is accepted only as an
+// extension of gfortran: bitwise logical operators on integers, == and /= on
+// logicals (F2018 10.1.5.4 and 10.1.5.5 define them for logical and numeric
+// operands only).
+func gnuExt(op string, x, y Type) bool {
+	switch op {
+	case ".and.", ".or.", ".eqv.", ".neqv.", ".xor.":
+		return x.Basic == Integer && y.Basic == Integer
+	case "==", "/=":
+		return x.Basic == Logical && y.Basic == Logical
+	}
+	return false
 }

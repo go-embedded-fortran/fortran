@@ -41,6 +41,8 @@ const (
 	FFunction // a procedure known to be a function
 	FSub      // a procedure known to be a subroutine
 	FDoVar    // active DO variable
+	FPoly     // declared CLASS(...): polymorphic (F2018 7.3.2.1)
+	FProcDecl // declared by a procedure declaration statement: the interface is explicit
 )
 
 // Dim is one dimension of an array: known bounds when constant.
@@ -84,8 +86,12 @@ type Scope struct {
 	Parent *Scope
 	Names  map[string]*Symbol
 	Order  []*Symbol // declaration order, for deterministic reports
-	Unit   *syntax.Unit
-	Kind   syntax.UnitKind
+	// Procs are the procedures defined in the scope whose name is also that of
+	// a generic of the scope (F2018 15.4.3.4.1: a generic and one of its
+	// specifics may share a name): Names holds the generic.
+	Procs map[string]*Symbol
+	Unit  *syntax.Unit
+	Kind  syntax.UnitKind
 	// Construct is true for BLOCK, ASSOCIATE, FORALL, DO CONCURRENT and
 	// implied-do scopes: implicit symbols are created in the enclosing unit.
 	Construct    bool
@@ -151,6 +157,11 @@ type TV struct {
 	// IsConst is set for a constant expression that was not folded to a
 	// Const (an element or component of a named constant, an array).
 	IsConst bool
+	// Outer and CompRank describe a structure component "s%c": the rank of s
+	// and the declared rank of c. A subscript list that follows applies to c,
+	// and the designator keeps the rank of s (F2018 9.4.3: the rank of a
+	// designator is that of its one part-ref of nonzero rank).
+	Outer, CompRank int
 }
 
 func (t TV) constant() bool { return t.Const != nil || t.IsConst }
@@ -167,6 +178,9 @@ type Info struct {
 	Modules map[string]*Scope
 	// Units are the file's units in source order with their scopes.
 	Units []*UnitInfo
+	// Calls maps a CALL statement to the procedure it invokes: the specific
+	// procedure when the name is generic (F2018 15.5.5.2).
+	Calls map[*syntax.Call]*Symbol
 }
 
 // UnitInfo pairs a program unit with its scope.

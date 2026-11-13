@@ -1,0 +1,2 @@
+go test fuzz v1
+string("elemental function f(a, b)\n real, intent(in) :: a, b\n real :: f\n f = a + b\nend\nsubroutine s(x)\n real :: x(:)\nend\nprogram p\n real :: x(3), y(4, 4)\n external s\n call s(x)\n x = f(x, y)\n x = f(a=x, b=2.0)\nend\n")
