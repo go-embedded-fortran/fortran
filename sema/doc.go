@@ -25,6 +25,11 @@
 //   - 11.1.7  DO variables may not be redefined inside the loop.
 //   - 14.2.2  use association: only, rename, accessibility; 19.3-19.5 scopes,
 //     host association, construct entities.
+//   - 15.4.2.2 explicit interface requirements; 15.4.3.4.1-15.4.3.4.5
+//     generic interfaces, defined operations and assignment, and the
+//     restrictions on generic declarations (C1511, C1512, C1514); 15.5.2
+//     argument association; 15.5.5.2 generic resolution; 15.8.1 elemental
+//     references (call.go).
 //   - 15.6.4 (deleted in Annex B) statement functions.
 //
 // # Leniency

@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
@@ -39,12 +40,13 @@ type checker struct {
 	// deferTyping is set while evaluating array bounds and character lengths
 	// of a declaration: an untyped dummy is not given its implicit type yet.
 	deferTyping bool
-	// definedAssign is set while checking an assignment in a scope where a
-	// defined assignment is visible: the pair of types is then not refused.
-	definedAssign bool
 	// pending generic interfaces: "module procedure" names to resolve once
 	// the host's contained procedures are declared.
 	pending []pendingGeneric
+	// globals are the external procedures defined in the file, by name: a
+	// reference through an implicit interface is checked against them (F2018
+	// 15.4.2.2, 15.5.2).
+	globals map[string]*Symbol
 }
 
 type pendingGeneric struct {
@@ -64,7 +66,8 @@ func Analyze(f *syntax.File, o *Options) (info *Info, errs syntax.ErrorList) {
 		Uses:    map[*syntax.Ident]*Symbol{},
 		Scopes:  map[*syntax.Unit]*Scope{},
 		Modules: map[string]*Scope{},
-	}}
+		Calls:   map[*syntax.Call]*Symbol{},
+	}, globals: map[string]*Symbol{}}
 	if o != nil {
 		c.opt = *o
 	}
@@ -82,6 +85,12 @@ func Analyze(f *syntax.File, o *Options) (info *Info, errs syntax.ErrorList) {
 	if c.lim.MaxDepth <= 0 {
 		c.lim.MaxDepth = d.MaxDepth
 	}
+	if c.lim.MaxSpecifics <= 0 {
+		c.lim.MaxSpecifics = d.MaxSpecifics
+	}
+	if c.lim.MaxActuals <= 0 {
+		c.lim.MaxActuals = d.MaxActuals
+	}
 	defer func() {
 		if r := recover(); r != nil { // a defect of ours must not take the caller down
 			c.errs = append(c.errs, syntax.Error{Msg: fmt.Sprintf("internal error in the semantic analyser: %v", r)})
@@ -93,16 +102,27 @@ func Analyze(f *syntax.File, o *Options) (info *Info, errs syntax.ErrorList) {
 	for n, m := range c.opt.Modules {
 		c.info.Modules[n] = m
 	}
-	for _, u := range f.Units {
+	scs := make([]*Scope, len(f.Units))
+	for i, u := range f.Units {
 		if c.stop {
 			break
 		}
 		sc := c.declareUnit(u, c.root)
-		if u.Kind == syntax.ModuleUnit || u.Kind == syntax.SubmoduleUnit {
+		scs[i] = sc
+		switch u.Kind {
+		case syntax.ModuleUnit, syntax.SubmoduleUnit:
 			c.info.Modules[u.Ident.Name] = sc
+		case syntax.FunctionUnit, syntax.SubroutineUnit:
+			c.globals[u.Ident.Name] = c.procSymbol(u, sc, c.root)
 		}
-		c.execUnit(u, sc)
 	}
+	for i, u := range f.Units {
+		if c.stop || scs[i] == nil {
+			break
+		}
+		c.execUnit(u, scs[i])
+	}
+	c.checkAllGenerics()
 	return c.info, c.errs
 }
 
@@ -186,7 +206,17 @@ func (c *checker) declareContained(host *Scope, cu *syntax.Unit) {
 	psc := c.declareUnit(cu, host)
 	name := cu.Ident.Name
 	sym := host.Names[name]
-	if sym == nil || sym.Kind == SymGeneric || (c.opt.Redefine && sym.Flags&FUsed != 0) {
+	if sym != nil && sym.Kind == SymGeneric && !(c.opt.Redefine && sym.Flags&FUsed != 0) {
+		// a specific of the generic of the same name: the name keeps denoting
+		// the generic, the procedure is reached through its specifics
+		c.nsyms++
+		sp := &Symbol{Name: name, Kind: SymProc, Pos: cu.Pos, Home: host}
+		if host.Procs == nil {
+			host.Procs = map[string]*Symbol{}
+		}
+		host.Procs[name] = sp
+		sym = sp
+	} else if sym == nil || sym.Kind == SymGeneric || (c.opt.Redefine && sym.Flags&FUsed != 0) {
 		// in a session, a use-associated name is shadowed by the local
 		// definition (the redefinition rule, bib §7)
 		sym = c.newSym(host, name, SymProc, cu.Pos)
@@ -391,7 +421,7 @@ func (c *checker) specStmt(sc *Scope, s syntax.Stmt) {
 				sym = c.newSym(sc, it.Name, SymProc, s.Pos)
 			}
 			sym.Kind = SymProc
-			sym.Flags |= fl | FExternal
+			sym.Flags |= fl | FExternal | FProcDecl
 			if sym.Type.Basic == Invalid {
 				sym.Type = Type{Basic: Unknown}
 			}
@@ -639,6 +669,9 @@ func (c *checker) decl(sc *Scope, d *syntax.Decl) {
 		base = c.typeSpec(sc, d.Type)
 	}
 	var fl Flags
+	if d.Type != nil && d.Type.Name == "class" {
+		fl |= FPoly
+	}
 	var intent string
 	var adims []syntax.Dim
 	hasADims, param := false, false
@@ -718,6 +751,7 @@ func (c *checker) decl(sc *Scope, d *syntax.Decl) {
 		}
 		if proc {
 			sym.Kind = SymProc // procedure(iface) :: p
+			sym.Flags |= FProcDecl
 		}
 		switch {
 		case e.HasDims:
@@ -998,7 +1032,11 @@ func (c *checker) iface(sc *Scope, in *syntax.Interface) {
 			} else {
 				ex := sc.Names[s.Name]
 				if ex.Kind == SymVar || ex.Kind == SymProc && ex.Unit == nil {
+					old := *ex
 					*ex = *s // "external f" before its interface body
+					// the attributes given before it stay (optional :: a; the dummy flag)
+					ex.Flags |= old.Flags &^ (FImplicit | FFunction | FSub | FExternal)
+					ex.Intent = old.Intent
 				}
 			}
 		case *syntax.ProcBinding:
@@ -1019,7 +1057,10 @@ func (c *checker) resolvePending(final bool) {
 	for _, p := range c.pending {
 		var left []string
 		for _, n := range p.names {
-			s := p.host.Lookup(n)
+			s := p.host.Procs[n]
+			if s == nil {
+				s = p.host.Lookup(n)
+			}
 			if s == nil || s.Kind != SymProc {
 				if !final {
 					left = append(left, n) // a procedure of an enclosing unit, declared later
@@ -1140,8 +1181,18 @@ func (c *checker) use(sc *Scope, u *syntax.UseStmt) {
 		if s.Origin != nil {
 			cp.Origin = s.Origin
 		}
+		cp.Specifics = slices.Clone(s.Specifics) // a local extension must not write into the module's array
 		cp.Home = sc
 		if old, ok := sc.Names[local]; ok {
+			if old.Flags&FUsed != 0 && old.Kind == SymGeneric && cp.Kind == SymGeneric {
+				// generics of one name from two modules are one generic (F2018 15.4.3.4.1)
+				for _, sp := range cp.Specifics {
+					if !slices.ContainsFunc(old.Specifics, func(x *Symbol) bool { return x == sp || x.Unit != nil && x.Unit == sp.Unit }) {
+						old.Specifics = append(old.Specifics, sp)
+					}
+				}
+				return
+			}
 			if old.Flags&FUsed != 0 && old.Origin == cp.Origin {
 				return // the same entity twice is allowed (F2018 14.2.2)
 			}
@@ -1161,8 +1212,14 @@ func (c *checker) use(sc *Scope, u *syntax.UseStmt) {
 		return s.Flags&FPrivate == 0 && !(mod.DefaultPrivate && s.Flags&FPublic == 0)
 	}
 	if !u.Only {
+		renamed := map[string]bool{} // a renamed entity is no longer known by its own name (F2018 14.2.2)
+		for _, it := range u.Items {
+			if it.Op == "" && it.Remote.Name != "" && it.Local.Name != "" && it.Local.Name != it.Remote.Name {
+				renamed[it.Remote.Name] = true
+			}
+		}
 		for _, s := range mod.Order {
-			if public(s) {
+			if public(s) && !renamed[s.Name] {
 				imp(s.Name, s)
 			}
 		}
@@ -1177,11 +1234,12 @@ func (c *checker) use(sc *Scope, u *syntax.UseStmt) {
 			local = remote
 		}
 		if it.Op != "" {
-			remote = "operator(" + it.Op + ")"
-			if it.Op == "=" {
-				remote = "assignment(=)"
+			// the parser gives the generic spec whole: "operator(+)", and for
+			// a rename the local and the remote spec in Local and Remote
+			remote, local = it.Op, it.Op
+			if it.Op == "rename" {
+				local, remote = it.Local.Name, it.Remote.Name
 			}
-			local = remote
 			if s, ok := mod.Names[remote]; ok {
 				imp(local, s)
 			}

@@ -1,27 +1,10 @@
 package sema
 
 import (
+	"fmt"
+
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
-
-// resolveGeneric types a reference through a generic name. The specific
-// procedure is chosen in PR 2 (F2018 15.5.5.2); until then the result type is
-// the common result type of the specifics when they agree.
-func (c *checker) resolveGeneric(sc *Scope, e *syntax.Index, g *Symbol) TV {
-	tv := TV{Type: Type{Basic: Unknown}, Rank: RankUnknown, Call: true, Sym: g}
-	var t Type
-	for i, s := range g.Specifics {
-		if i == 0 {
-			t = s.Type
-		} else if s.Type != t {
-			return tv
-		}
-	}
-	if len(g.Specifics) > 0 && !t.Lenient() {
-		tv.Type = t
-	}
-	return tv
-}
 
 func (c *checker) execStmts(sc *Scope, body []syntax.Stmt) {
 	for _, s := range body {
@@ -140,11 +123,16 @@ func (c *checker) definable(sc *Scope, e syntax.Expr, tv TV, what string) {
 // character, a derived type to the same type; ranks agree or the right side
 // is a scalar.
 func (c *checker) assignable(pos syntax.Pos, lt Type, lrank int, r TV, what string) {
-	if lt.Lenient() || r.Type.Lenient() {
-		return
+	if msg := c.assignMsg(lt, lrank, r, what); msg != "" {
+		c.errorf(pos, "%s", msg)
 	}
-	if c.definedAssign {
-		return // a defined assignment (assignment(=)) may accept the pair
+}
+
+// assignMsg is the diagnostic of assignable, "" when the intrinsic
+// assignment is valid.
+func (c *checker) assignMsg(lt Type, lrank int, r TV, what string) string {
+	if lt.Lenient() || r.Type.Lenient() {
+		return ""
 	}
 	ok := false
 	switch {
@@ -158,12 +146,12 @@ func (c *checker) assignable(pos syntax.Pos, lt Type, lrank int, r TV, what stri
 		ok = r.Type.Basic == Derived && (lt.Der == r.Type.Der || r.Type.Der == nil || lt.Der == nil || extends(r.Type.Der, lt.Der))
 	}
 	if !ok {
-		c.errorf(pos, "Cannot convert %s to %s at (1) in %s", r.Type, lt, what)
-		return
+		return fmt.Sprintf("Cannot convert %s to %s at (1) in %s", r.Type, lt, what)
 	}
 	if lrank >= 0 && r.Rank >= 0 && lrank != r.Rank && r.Rank != 0 {
-		c.errorf(pos, "Incompatible ranks %d and %d in %s at (1)", lrank, r.Rank, what)
+		return fmt.Sprintf("Incompatible ranks %d and %d in %s at (1)", lrank, r.Rank, what)
 	}
+	return ""
 }
 
 func extends(a, b *DerivedType) bool {
@@ -405,9 +393,12 @@ func (c *checker) assignment(sc *Scope, s *syntax.Assignment) {
 	}
 	c.definable(sc, s.LHS, l, "assignment")
 	if l.Var {
-		c.definedAssign = sc.Lookup("assignment(=)") != nil
-		c.assignable(s.Pos, l.Type, l.Rank, r, "assignment")
-		c.definedAssign = false
+		// the intrinsic assignment, else a defined assignment (F2018 10.2.1.4)
+		if msg := c.assignMsg(l.Type, l.Rank, r, "assignment"); msg != "" {
+			if !c.definedAssignment(sc, s.Pos, actual{e: s.LHS, tv: l, pos: s.LHS.P()}, actual{e: s.RHS, tv: r, pos: s.RHS.P()}) {
+				c.errorf(s.Pos, "%s", msg)
+			}
+		}
 	}
 }
 
@@ -559,33 +550,62 @@ func (c *checker) selectType(sc *Scope, s *syntax.SelectType) {
 }
 
 func (c *checker) call(sc *Scope, s *syntax.Call) {
-	switch p := s.Proc.(type) {
-	case *syntax.Ident:
-		sym := sc.Lookup(p.Name)
-		switch {
-		case sym == nil:
-			if !IsIntrinsicSub(p.Name) && !sc.Opaque {
-				us := sc.unit()
-				n := c.newSym(us, p.Name, SymProc, p.Pos)
-				n.Flags |= FSub | FExternal
-				c.info.Uses[p] = n
-			}
-		default:
-			c.info.Uses[p] = sym
-			switch sym.Kind {
-			case SymVar:
-				if sym.Type.Basic == Invalid && sym.Flags&(FPointer|FAllocatable) == 0 {
-					sym.Kind = SymProc // a dummy procedure used as a subroutine
-					sym.Flags |= FSub
-				}
-			case SymParam, SymType, SymModule:
-				c.errorf(p.Pos, "'%s' at (1) is not a subroutine", p.Name)
-			}
-		}
-	default:
-		c.expr(sc, s.Proc)
+	p, ok := s.Proc.(*syntax.Ident)
+	if !ok {
+		c.expr(sc, s.Proc) // a type-bound procedure: a%m(args)
+		c.args(sc, s.Args)
+		return
 	}
-	c.args(sc, s.Args)
+	sym := sc.Lookup(p.Name)
+	if sym == nil {
+		if IsIntrinsicSub(p.Name) || IsIntrinsicFunc(p.Name) || sc.Opaque { // gfortran has many GNU routines that are both
+			c.args(sc, s.Args)
+			return
+		}
+		us := sc.unit()
+		n := c.newSym(us, p.Name, SymProc, p.Pos)
+		n.Flags |= FSub | FExternal
+		c.info.Uses[p] = n
+		sym = n
+	} else {
+		c.info.Uses[p] = sym
+		switch sym.Kind {
+		case SymVar:
+			if sym.Type.Basic == Invalid && sym.Flags&(FPointer|FAllocatable) == 0 {
+				sym.Kind = SymProc // a dummy procedure used as a subroutine
+				sym.Flags |= FSub
+			}
+		case SymParam, SymType, SymModule:
+			c.errorf(p.Pos, "'%s' at (1) is not a subroutine", p.Name)
+		}
+	}
+	acts, alt := c.actuals(sc, s.Args)
+	switch sym.Kind {
+	case SymProc:
+		if sym.Flags&FFunction != 0 && sym.Flags&FSub == 0 {
+			c.errorf(p.Pos, "'%s' at (1) is a function, it cannot be invoked by CALL", p.Name)
+			return
+		}
+		callee, explicit := c.calleeOf(sym)
+		if !explicit && callee != nil && callee.Flags&FFunction != 0 {
+			c.errorf(p.Pos, "'%s' at (1) is a function, it cannot be invoked by CALL", p.Name)
+			return
+		}
+		c.callCheck(sc, s.Pos, p.Name, callee, explicit, acts, alt)
+		c.info.Calls[s] = sym
+	case SymGeneric:
+		if alt || c.stop {
+			return
+		}
+		best, unsure := c.pickSpecific(sc, sym, p.Name, acts, false)
+		switch {
+		case best != nil:
+			c.callCheck(sc, s.Pos, best.Name, best, true, acts, false)
+			c.info.Calls[s] = best
+		case !unsure && !sc.Opaque && len(specificsOf(sym)) > 0 && !IsIntrinsicSub(p.Name): // the intrinsic of that name stays accessible (F2018 15.4.3.4.5)
+			c.errorf(s.Pos, "There is no specific subroutine for the generic '%s' at (1)", p.Name)
+		}
+	}
 }
 
 func (c *checker) ioStmt(sc *Scope, s *syntax.IOStmt) {

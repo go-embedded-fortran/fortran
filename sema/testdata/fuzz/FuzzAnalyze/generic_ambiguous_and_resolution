@@ -1,0 +1,2 @@
+go test fuzz v1
+string("module m\n interface g\n  module procedure a, b\n end interface\n interface operator(+)\n  module procedure c, d\n end interface\n type t\n  integer :: i\n end type\ncontains\n subroutine a(x)\n  integer :: x\n end subroutine\n subroutine b(y)\n  integer :: y\n end subroutine\n function c(p, q)\n  type(t), intent(in) :: p, q\n  type(t) :: c\n end function\n function d(r, s)\n  type(t), intent(in) :: r, s\n  type(t) :: d\n end function\nend module\nprogram p\n use m\n type(t) :: z\n call g(1)\n z = z + z\nend\n")

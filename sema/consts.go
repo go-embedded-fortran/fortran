@@ -26,11 +26,18 @@ type Limits struct {
 	MaxConstChars int // length of a folded character constant
 	MaxErrors     int
 	MaxDepth      int // nesting of scopes and of expression folding
+	// MaxSpecifics bounds the specific procedures of one generic: the
+	// pairwise ambiguity check of F2018 15.4.3.4.5 is quadratic in it, and
+	// the candidates of a generic reference are the specifics.
+	MaxSpecifics int
+	// MaxActuals bounds the actual arguments of one reference: argument
+	// association (F2018 15.5.2) matches them against the dummy arguments.
+	MaxActuals int
 }
 
 // DefaultLimits are the bounds Analyze applies when Options.Limits is zero.
 func DefaultLimits() Limits {
-	return Limits{MaxSymbols: 200_000, MaxConstChars: 1 << 20, MaxErrors: 100, MaxDepth: 1000}
+	return Limits{MaxSymbols: 200_000, MaxConstChars: 1 << 20, MaxErrors: 100, MaxDepth: 1000, MaxSpecifics: 512, MaxActuals: 4096}
 }
 
 func intRange(kind int) (lo, hi int64, ok bool) {

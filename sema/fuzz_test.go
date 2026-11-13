@@ -53,6 +53,9 @@ func FuzzAnalyze(f *testing.F) {
 		"subroutine s(a, n)\n real :: a(n)\n integer, intent(in) :: n\n n = 1\nend\n",
 		"program p\n character(len=*), parameter :: s = 'ab' // 'cd'\n integer, parameter :: n = len(s) ** 3\nend\n",
 		"program p\n type t\n  type(t), pointer :: next\n end type\n type(t) :: x\n x%next => x\nend\n",
+		"module m\n interface g\n  module procedure a, b\n end interface\ncontains\n subroutine a(x)\n  integer :: x\n end subroutine\n subroutine b(y)\n  integer :: y\n end subroutine\nend module\nprogram p\n use m\n call g(1)\nend\n",
+		"module m\n type t\n  integer :: i\n end type\n interface operator(+)\n  module procedure add\n end interface\n interface assignment(=)\n  module procedure asg\n end interface\ncontains\n function add(a, b)\n  type(t), intent(in) :: a, b\n  type(t) :: add\n end function\n subroutine asg(a, b)\n  type(t), intent(out) :: a\n  integer, intent(in) :: b\n end subroutine\nend module\nprogram p\n use m\n type(t) :: x\n x = 1\n x = x + x\n x = x - x\nend\n",
+		"subroutine s(a, b)\n real :: a(:)\n real, optional, intent(out) :: b\nend\nprogram p\n real :: r(3)\n call s(r, b=1.0)\n call s(a=r)\n call s(1.0, 2.0, 3.0)\nend\n",
 	} {
 		f.Add(s)
 	}

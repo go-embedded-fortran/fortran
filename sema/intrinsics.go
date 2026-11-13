@@ -60,23 +60,24 @@ func init() {
 	def(rSame, pUnknown, false, -1, 1, "merge cshift eoshift transpose reshape pack spread unpack sum product maxval minval norm2 parity iall iany iparity")
 	def(rInt, pElem, true, 1, 1, "int nint floor ceiling idint ifix")
 	def(rInt, pElem, false, 1, 1, "ichar iachar")
-	def(rInt, pScalar, false, -1, 1, "minexponent maxexponent len len_trim digits radix kind precision range exponent bit_size popcnt poppar leadz trailz storage_size selected_int_kind selected_real_kind selected_char_kind selected_logical_kind")
+	def(rInt, pScalar, false, -1, 1, "minexponent maxexponent len len_trim digits radix kind precision range exponent popcnt poppar leadz trailz storage_size selected_int_kind selected_real_kind selected_char_kind selected_logical_kind")
 	def(rInt, pScalar, false, -1, 0, "command_argument_count this_image num_images")
 	def(rInt, pElem, false, -1, 2, "index scan verify")
 	def(rInt, pUnknown, false, -1, 1, "size lbound ubound shape count maxloc minloc findloc")
 	def(rReal, pElem, true, 1, 1, "real float sngl")
 	def(rReal, pElem, true, -1, 1, "dble dfloat dprod")
-	def(rSame, pScalar, false, -1, 1, "epsilon huge tiny")
+	def(rSame, pScalar, false, -1, 1, "epsilon huge tiny bit_size") // bit_size: the kind of its argument (F2018 16.9.30)
 	def(rPromote, pUnknown, false, -1, 2, "dot_product matmul")
 	def(rLogical, pUnknown, false, -1, 1, "all any")
 	def(rLogical, pScalar, false, -1, 1, "associated allocated present is_contiguous extends_type_of same_type_as")
 	def(rLogical, pElem, false, -1, 1, "isnan is_iostat_end is_iostat_eor btest lge lgt lle llt logical out_of_range ieee_is_nan")
-	def(rChar, pElem, false, -1, 1, "char achar adjustl adjustr trim repeat")
+	def(rChar, pElem, false, -1, 1, "adjustl adjustr trim repeat")
+	def(rChar, pElem, false, 1, 1, "char achar")
 	def(rChar, pScalar, false, -1, 0, "new_line")
-	for _, n := range strings.Fields("system_clock random_number random_seed date_and_time cpu_time get_command_argument get_command get_environment_variable move_alloc mvbits execute_command_line flush exit abort sleep fdate getenv getarg gettime") {
+	for _, n := range strings.Fields("system_clock random_number random_seed date_and_time cpu_time get_command_argument get_command get_environment_variable move_alloc mvbits execute_command_line flush exit abort sleep fdate getenv getarg gettime link symlnk rename stat lstat fstat umask perror itime ctime gmtime ltime idate system mclock fgetc fputc fget fput") {
 		intrinsicSubs[n] = true
 	}
-	for _, n := range strings.Fields("loc c_loc c_funloc c_associated c_f_pointer c_f_procpointer time clock etime dtime second rand irand getpid getcwd access cmplx dcmplx imag aimag ieee_value ieee_class ieee_support_datatype null iargc secnds ran srand chdir hostnm signal unlink fnum ttynam kill alarm lnblnk malloc free compiler_version compiler_options acosd asind atand atan2d coshape cobound image_index team_number failed_images stopped_images get_team event_query amax0 amax1 amin0 amin1 max1 min1 dmax1 dmin1 jmax0 jmin0 dabs iabs cabs zabs cdabs dsqrt csqrt cdsqrt zsqrt dexp cexp cdexp zexp dlog clog cdlog zlog alog alog10 dlog10 dsin csin cdsin zsin dcos ccos cdcos zcos dtan dasin dacos datan datan2 dsinh dcosh dtanh isign dsign idim ddim dmod amod dint dnint idnint inint jint int2 int8 jnint ifix dconjg dimag dreal derf derfc dgamma dlgama lgamma getlog lshift rshift int1 sizeof getuid getgid chmod cotan cotand algama imagpart realpart besj0 besj1 besjn besy0 besy1 besyn dbesj0 dbesj1 dbesjn dbesy0 dbesy1 dbesyn transfer maskl maskr rank c_sizeof reduce co_sum co_max co_min co_broadcast co_reduce ieee_selected_real_kind") {
+	for _, n := range strings.Fields("loc c_loc c_funloc c_associated c_f_pointer c_f_procpointer time clock etime dtime second rand irand getpid getcwd access cmplx dcmplx imag aimag ieee_value ieee_class ieee_support_datatype null iargc secnds ran srand chdir hostnm signal unlink fnum ttynam kill alarm lnblnk malloc free compiler_version compiler_options acosd asind atand atan2d coshape cobound image_index team_number failed_images stopped_images get_team event_query amax0 amax1 amin0 amin1 max1 min1 dmax1 dmin1 jmax0 jmin0 dabs iabs cabs zabs cdabs dsqrt csqrt cdsqrt zsqrt dexp cexp cdexp zexp dlog clog cdlog zlog alog alog10 dlog10 dsin csin cdsin zsin dcos ccos cdcos zcos dtan dasin dacos datan datan2 dsinh dcosh dtanh dacosh dasinh datanh isign dsign idim ddim dmod amod dint dnint idnint inint jint int2 int8 jnint ifix dconjg dimag dreal derf derfc dgamma dlgama lgamma getlog lshift rshift int1 sizeof getuid getgid chmod cotan cotand algama imagpart realpart besj0 besj1 besjn besy0 besy1 besyn dbesj0 dbesj1 dbesjn dbesy0 dbesy1 dbesyn transfer maskl maskr rank c_sizeof reduce co_sum co_max co_min co_broadcast co_reduce ieee_selected_real_kind") {
 		if _, ok := intrinsicFuncs[n]; !ok {
 			intrinsicFuncs[n] = intrinsic{res: rUnknown, pol: pUnknown, kindArg: -1}
 		}
@@ -152,6 +153,13 @@ func (c *checker) intrinsicType(name string, in intrinsic, args []argTV) (TV, st
 			if a0.Basic == Complex {
 				tv.Type = Type{Basic: Real, Kind: a0.Kind}
 			}
+		case "bessel_jn", "bessel_yn": // the type of X, the last argument (F2018 16.9.25)
+			if n := len(args); n >= 2 {
+				tv.Type = args[n-1].tv.Type
+				if n == 3 {
+					tv.Rank = 1
+				}
+			}
 		case "max", "min", "sign", "dim", "mod", "modulo", "atan2", "hypot":
 			if len(args) > 1 && a0.Numeric() && args[1].tv.Type.Numeric() && args[1].tv.Type.Basic == a0.Basic {
 				tv.Type.Kind = max(a0.Kind, args[1].tv.Type.Kind)
@@ -177,12 +185,15 @@ func (c *checker) intrinsicType(name string, in intrinsic, args []argTV) (TV, st
 	case rLogical:
 		tv.Type = Type{Basic: Logical, Kind: kindOf(DefaultInt)}
 	case rChar:
-		tv.Type = Type{Basic: Character, Kind: DefaultChar, Len: -1}
+		tv.Type = Type{Basic: Character, Kind: kindOf(DefaultChar), Len: -1}
 		if name == "char" || name == "achar" || name == "new_line" {
 			tv.Type.Len = 1
 		}
 		if name == "adjustl" || name == "adjustr" || name == "trim" && false {
 			tv.Type.Len = a0.Len
+		}
+		if a0.Basic == Character && in.kindArg < 0 {
+			tv.Type.Kind = a0.Kind // adjustl, trim, repeat keep the kind of their argument
 		}
 	case rPromote:
 		tv.Type = a0
@@ -203,14 +214,7 @@ func (c *checker) intrinsicType(name string, in intrinsic, args []argTV) (TV, st
 			if name == "dcmplx" {
 				k = 8
 			} else {
-				k = kindOf(DefaultReal)
-				if !hasKind(args, 2) {
-					for _, a := range args {
-						if a.tv.Type.Basic == Real || a.tv.Type.Basic == Complex {
-							k = max(k, a.tv.Type.Kind)
-						}
-					}
-				}
+				k = kindOf(DefaultReal) // F2018 16.9.55: default kind unless KIND= is given
 			}
 			tv.Type = Type{Basic: Complex, Kind: k}
 		case "loc", "sizeof", "c_sizeof":

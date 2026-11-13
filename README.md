@@ -16,7 +16,7 @@ by hand.
 |---|---|---|
 | M0 oracle harness | `internal/oracle`, `cmd/foracle`, pinned gfortran 15.2.0, golden file, corpus runner, reference column of the gate | **done** |
 | M1 front end, part 1 | lexer (free and fixed form, continuation, `include`), parser for the gate's kernels; **the §4.2 gate**, report published | in progress (syntax done) |
-| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: package `sema` (scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types: PR 1) and the cell splitter, session module and go-notebook-facing analysis (PR 4); generic resolution, argument association and `intent` at calls (PR 2) and shape conformance (PR 3) are not done |
+| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: package `sema` (scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types: PR 1), the cell splitter, session module and go-notebook-facing analysis (PR 4), generic resolution, argument association, explicit-interface requirements and `intent` at calls (PR 2); shape conformance (PR 3) and `eval` on the typed tree are not done |
 | M3 back end | as the gate decides: A = closure compiler over the typed tree, B = lowering to go-embedded-c's IR | planned |
 | M4 runtime | I/O (ported from flang-rt), intrinsics on go-ndarray and go-fft | planned |
 | M5 notebook bridge | values table, `file:line` errors, cells on desktop and playground | planned |
@@ -318,6 +318,52 @@ is recovered into an error and the fuzzer treats it as a failure); its bounds
 (`Limits`: symbols, folded character length, nesting, errors) are refusals,
 asserted by bomb tests.
 
+### Calls (M2, part 2)
+
+Clauses read (J3/18-007r1): 15.4.2.2 (explicit interface), 15.4.3.4.1
+(generic interfaces), 15.4.3.4.2 and 10.1.6 (defined operations), 10.2.1.4
+(defined assignment), 15.4.3.4.5 (restrictions on generic declarations,
+C1511, C1512, C1514), 15.5.2 (argument association: keyword, optional and
+positional; type, kind and rank agreement; pointer and allocatable actuals;
+assumed-shape, explicit-shape and assumed-size dummies; element sequences),
+15.5.2.5 (a pointer dummy with `intent(in)` takes a target), 15.5.2.11
+(sequence association: an actual too small for an explicit-shape dummy),
+15.5.5.2 (generic resolution) and 15.8.1 (elemental references). `sema/call.go`.
+
+- **Generic resolution.** A reference through a generic name selects the one
+  specific whose argument list is consistent with the actuals, looking through
+  the generics of the same name in enclosing scopes and merging those of one name
+  from two modules; none is an error ("There is no specific function for the
+  generic"), the intrinsic of the same name stays accessible. The typed tree
+  names the specific: `TV.Sym` of the reference, and `Info.Calls` for a `call`.
+- **Ambiguity.** Every pair of specifics of a generic is checked against
+  C1514 (1), (2) and (4) and, for `operator(..)` and `assignment(=)`, C1511 and
+  C1512; a pair that is not distinguishable is refused with
+  "Ambiguous interfaces". The pair is judged only when both specifics belong to
+  the scope of the generic (gfortran only warns on a pair that includes a
+  use-associated specific, and refuses a reference).
+- **Argument association.** Count, keywords, missing and duplicate arguments;
+  per argument: type and kind, rank, `pointer`/`allocatable` actuals,
+  procedure versus data object; `intent(out)`/`intent(inout)` actuals must be
+  definable (a constant, an expression, an `intent(in)` dummy is refused);
+  elemental references take array actuals of one rank.
+- **Explicit-interface requirements.** A reference through an implicit
+  interface is refused when it uses a keyword, or when the callee, defined in
+  the same file, has an assumed-shape, assumed-rank, allocatable, pointer,
+  target, value, optional, volatile or polymorphic dummy, an array, pointer or
+  allocatable result, is elemental or has `bind`.
+- **Function versus subroutine.** `call f` on a function and `s(..)` in an
+  expression on a subroutine are refused.
+- **Defined operations and assignment.** Operands of derived type, or of
+  intrinsic types the intrinsic operator does not accept, are resolved through
+  the `operator(op)` generic; no match is the error gfortran gives. An
+  assignment the intrinsic does not accept needs an `assignment(=)` specific.
+
+Bounds are refusals: `Limits.MaxSpecifics` (512 per generic; the ambiguity
+check is quadratic in it) and `Limits.MaxActuals` (4 096 per reference), both
+asserted by bomb tests. Leniency as before: an unknown type (`class(*)`,
+`type(*)`, an opaque module) is never the reason for a refusal.
+
 ### Differential against gfortran 15.2.0
 
 `foracle sema-rate --dir D` parses and analyses every file and compares with
@@ -330,26 +376,40 @@ compiler; a drop of both-accept or a rise of either other class fails it.
 |---|---|---|---|---|---|
 | FCVS | 180 | 179 | 0 | 1 | 0 |
 | gcc `gfortran.fortran-torture` | 314 | 313 | 1 (parser) | 0 | 0 |
-| gcc `gfortran.dg` | 8 306 | 5 742 | 302 (125 parser, 177 analyser) | 1 292 | 970 |
-| `gfortran.dg`, `dg-do run` files | 3 151 | 2 667 | 163 (72 parser, 91 analyser) | 95 | 226 |
+| gcc `gfortran.dg` | 8 306 | 5 750 | 294 (125 parser, 169 analyser) | 1 230 | 1 032 |
+| `gfortran.dg`, `dg-do run` files | 3 151 | 2 674 | 156 | 95 | 226 |
 
-The 1 292 files accepted only by us are the `gfortran.dg` tests written to be
-refused for reasons not checked yet (argument association, interfaces,
-shapes, type-bound procedure rules, `-std` conformance). The refused-only-by-us
-files are defects or gaps of ours; the most frequent first errors of the 177
-analyser refusals are names with no implicit type (32), kind expressions that
+Part 2 (argument association, generic resolution, defined operations) moved
+`gfortran.dg` from 5 742 / 302 / 1 292 to 5 750 / 294 / 1 230 (both accept up,
+refused only by us down, accepted only by us down): it refuses 62 more of the
+files gfortran refuses and, through fixes found on the way (a `use` of an
+operator was silently dropped, generics of one name from two modules were not
+merged, a renamed entity stayed visible under its old name, the result kind of
+`bit_size`, `cmplx`, `char`, `trim` and `bessel_jn`), accepts 8 more that
+gfortran accepts. Three files stay refused only by us because gfortran skips
+the argument checks on a `!GCC$ ATTRIBUTES NO_ARG_CHECK` directive, which the
+lexer drops with the other comments.
+
+The 1 230 files accepted only by us are the `gfortran.dg` tests written to be
+refused for reasons not checked yet (shapes, type-bound procedure rules,
+`-std` conformance). The refused-only-by-us
+files are defects or gaps of ours; the most frequent first errors of the 169
+analyser refusals are names with no implicit type (31), kind expressions that
 need an intrinsic we do not fold (28), derived types used before a definition
 the analyser does not order yet (24), named-constant initialisers that are not
 recognised as constant (16), type-bound members (14) and entities not found in
-a module (12); the list is `foracle sema-rate --errors N`.
+a module (10); the list is `foracle sema-rate --errors N`.
 `sema/oracle_test.go` checks 16 negative programs (type mismatch, undeclared
 under `implicit none`, rank mismatch, `intent(in)` assignment, named constant,
-DO variable, ...) and 5 positive ones against gfortran itself. Ambiguous generics
-are part 2.
+DO variable, ...) and 5 positive ones against gfortran itself, and the 33
+negative and 12 positive programs of part 2 (`sema/call_test.go`: ambiguous
+generics, no specific, argument type, kind, rank, count and keyword,
+`intent(out)` actuals, function versus subroutine, explicit-interface
+requirements, defined operators and assignment, elemental ranks).
 
-`BenchmarkAnalyze` (the 12 programs of `testdata/programs`, one core): 2 104
-allocations and 497 KB per pass, exact; time **not measured: load** (1-min load
-46 when it ran, above the bound of 8), and the comparison with
+`BenchmarkAnalyze` (the 12 programs of `testdata/programs`, one core): 2 389
+allocations and 598 KB per pass, exact (part 1: 2 104 and 497 KB); time **not
+measured: load** (1-min load 24 when it ran, above the bound of 8), and the comparison with
 `gfortran -fsyntax-only` was not run for the same reason.
 
 ### The cell splitter and the session module (bib §7)
@@ -388,15 +448,14 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
 
 ## Not yet
 
-- Semantics not done, of bib §1.1: generic resolution and ambiguity (a generic
-  reference types as `Unknown` unless its specifics agree), argument
-  association and `intent` checks at calls, explicit-interface checks,
-  conformance of shapes (only ranks are compared), `select type` dispatch,
+- Semantics not done, of bib §1.1: conformance of shapes (only ranks are
+  compared), type-bound generics and `pass` (a type-bound reference is not
+  resolved), the `!GCC$ ATTRIBUTES NO_ARG_CHECK` directive, `select type` dispatch,
   derived-type I/O, submodules, `entry` result typing, `common`/`equivalence`
   storage rules, `data` value conversion, the go-notebook adapter and the
   "value from Go into a cell" direction of bib §7. `eval` was **not** moved onto the
-  typed tree (it still walks the syntax tree: the migration comes with part 2,
-  when procedures and arguments are resolved).
+  typed tree (it still walks the syntax tree: the migration follows shape
+  conformance).
 - No general evaluator: package `eval` is the gate's
   prototype and accepts only the kernels' language. The gate's playground home
   (headless browser) is not implemented, and its figures were not published
