@@ -88,7 +88,7 @@ func parseRateCmd() *cobra.Command {
 }
 
 func parseBenchCmd() *cobra.Command {
-	var dir string
+	var dir, gfCache string
 	var n, rounds int
 	c := &cobra.Command{
 		Use: "parse-bench", Short: "parse throughput of the syntax package against gfortran -fsyntax-only on the largest files both accept (one core, interleaved; refused above load 8)", Args: cobra.NoArgs,
@@ -105,7 +105,16 @@ func parseBenchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			recs := parsebench.Rate(ctx, tc, dir, es, 2)
+			var cache map[string]bool
+			if gfCache != "" {
+				f, err := os.Open(gfCache)
+				if err != nil {
+					return err
+				}
+				cache = parsebench.ReadCache(f)
+				f.Close()
+			}
+			recs := parsebench.RateCached(ctx, tc, dir, es, 2, cache)
 			load, _ := oracle.Load1(ctx)
 			rows, err := parsebench.Bench(ctx, tc, dir, es, recs, n, rounds)
 			if err != nil {
@@ -117,6 +126,7 @@ func parseBenchCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&dir, "dir", "", "corpus root")
+	c.Flags().StringVar(&gfCache, "gf-cache", "", "take which files gfortran accepts from an earlier parse-rate --out report instead of running it on every file")
 	c.Flags().IntVar(&n, "top", 5, "number of largest files")
 	c.Flags().IntVar(&rounds, "rounds", 7, "interleaved rounds")
 	return c
