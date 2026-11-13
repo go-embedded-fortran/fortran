@@ -71,6 +71,7 @@ jobs:
           - { pkg: ./syntax, target: FuzzParseFixed }
           - { pkg: ./syntax, target: FuzzLex }
           - { pkg: ./sema, target: FuzzAnalyze }
+          - { pkg: ./sema, target: FuzzSession }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

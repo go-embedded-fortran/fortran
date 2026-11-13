@@ -15,6 +15,10 @@ type Options struct {
 	// Modules are modules known before the file: the session modules of
 	// earlier cells (bib §7), in scope for "use".
 	Modules map[string]*Scope
+	// Redefine is the session's redefinition rule (bib §7): a contained
+	// procedure shadows a use-associated name of its host. Outside a session
+	// the standard forbids it, and so does gfortran.
+	Redefine bool
 }
 
 type checker struct {
@@ -182,7 +186,9 @@ func (c *checker) declareContained(host *Scope, cu *syntax.Unit) {
 	psc := c.declareUnit(cu, host)
 	name := cu.Ident.Name
 	sym := host.Names[name]
-	if sym == nil || sym.Kind == SymGeneric {
+	if sym == nil || sym.Kind == SymGeneric || (c.opt.Redefine && sym.Flags&FUsed != 0) {
+		// in a session, a use-associated name is shadowed by the local
+		// definition (the redefinition rule, bib §7)
 		sym = c.newSym(host, name, SymProc, cu.Pos)
 	} else if placeholder(sym) {
 		sym.Kind = SymProc // "public :: f" before the definition of f
