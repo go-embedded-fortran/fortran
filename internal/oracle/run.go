@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -58,23 +57,22 @@ type Result struct {
 	MemoryLimited bool
 }
 
-// Environment of the re-executed helper that applies the memory limit.
-const (
-	envChildProg = "FORACLE_LIMIT_EXEC_PROG"
-	envChildAS   = "FORACLE_LIMIT_EXEC_AS"
-)
+// Init did the work of a re-executed Go helper that lowered the limits and
+// exec'd the program. That helper is gone (#9): with RLIMIT_AS below the Go
+// runtime's own reservation, any mmap of the runtime between the limit and the
+// exec failed and threw "fatal error: runtime: cannot allocate memory" into
+// what became the program's stderr. The limits are now set by /bin/sh (see
+// limitScript), which has no runtime. Init does nothing; its callers may drop
+// it.
+func Init() {}
 
-var helperReady atomic.Bool
-
-// Init must be called first thing by main and by TestMain of every package
-// that runs programs. In a process started by Run's helper it applies the
-// memory limit and replaces the process by the program, and does not return.
-// Otherwise it enables the helper for later Runs.
-func Init() {
-	if prog := os.Getenv(envChildProg); prog != "" {
-		childMain(prog)
-	}
-	helperReady.Store(true)
+// limitScript lowers the file-size limit (64 MiB) and the address-space limit
+// to as bytes, then replaces the shell by "$0" "$@". A refusal (macOS rejects
+// an address space below the current size) leaves the program unlimited and
+// prints nothing; Result.MemoryLimited reports what is enforced. ulimit -f
+// counts 512-byte blocks and -v KiB (POSIX for -f; dash, bash and zsh for -v).
+func limitScript(as int64) string {
+	return fmt.Sprintf(`ulimit -f %d 2>/dev/null; ulimit -v %d 2>/dev/null; exec "$0" "$@"`, (64<<20)/512, (as+1023)/1024)
 }
 
 // capped is a writer that keeps at most max bytes and fails past them.
@@ -113,18 +111,17 @@ func Run(ctx context.Context, path, dir string, args []string, stdin []byte, lim
 	out, errw := &capped{max: lim.MaxOutput, over: over}, &capped{max: lim.MaxOutput, over: over}
 
 	name, argv := path, args
-	var env []string
 	limited := false
-	if self, err := os.Executable(); err == nil && lim.MemoryBytes > 0 && helperReady.Load() && limitSupported {
-		name, argv = self, args
-		env = append(env, envChildProg+"="+path, envChildAS+"="+strconv.FormatInt(lim.MemoryBytes, 10))
+	if lim.MemoryBytes > 0 && limitSupported {
+		name = "/bin/sh"
+		argv = append([]string{"-c", limitScript(lim.MemoryBytes), path}, args...)
 		limited = limitEnforced
 	}
 	cmd := exec.CommandContext(ctx, name, argv...)
 	cmd.Dir = dir
 	// A fixed environment: the run must not depend on the host's locale or
 	// on GFORTRAN_* variables.
-	cmd.Env = append([]string{"LC_ALL=C", "PATH=" + os.Getenv("PATH")}, env...)
+	cmd.Env = []string{"LC_ALL=C", "PATH=" + os.Getenv("PATH")}
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout, cmd.Stderr = out, errw
 	cmd.WaitDelay = 2 * time.Second
