@@ -2,17 +2,12 @@
 
 package oracle
 
-import (
-	"os"
-	"os/exec"
-)
+import "os/exec"
 
 func ownGroup(*exec.Cmd) {}
 
-// No address-space limit outside Unix: the helper is never used.
+// No address-space limit outside Unix: there is no /bin/sh to set it.
 const (
 	limitSupported = false
 	limitEnforced  = false
 )
-
-func childMain(string) { os.Exit(127) }

@@ -3,11 +3,8 @@
 package oracle
 
 import (
-	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"syscall"
 )
 
@@ -26,30 +23,4 @@ func ownGroup(cmd *exec.Cmd) {
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
-}
-
-// childMain runs in the helper process: it lowers RLIMIT_AS, then becomes the
-// program. It returns only to exit.
-func childMain(prog string) {
-	var as uint64 // 0: no address-space limit
-	if v := os.Getenv(envChildAS); v != "" {
-		n, err := strconv.ParseUint(v, 10, 63)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "foracle: bad %s=%q\n", envChildAS, v)
-			os.Exit(127)
-		}
-		as = n
-	}
-	env := []string{"LC_ALL=C"}
-	if p := os.Getenv("PATH"); p != "" {
-		env = append(env, "PATH="+p)
-	}
-	argv := append([]string{prog}, os.Args[1:]...)
-	// A program may not fill the disk either (64 MiB per file). A refusal of
-	// either limit (macOS rejects an address space below the current size)
-	// leaves the program unlimited; Result.MemoryLimited reports what is
-	// enforced.
-	err := execLimited(prog, argv, env, as, 64<<20)
-	fmt.Fprintf(os.Stderr, "foracle: exec %s: %v\n", prog, err)
-	os.Exit(127)
 }
