@@ -330,7 +330,7 @@ func TestRefusals(t *testing.T) {
 		"section":       "program p\n  implicit none\n  real(8) :: a(4)\n  real(8) :: x\n  x = a(1:2)\nend program p\n",
 		"lower bound":   "program p\n  implicit none\n  real(8), allocatable :: a(:)\n  allocate (a(0:3))\nend program p\n",
 		"unknown call":  "program p\n  implicit none\n  call foo()\nend program p\n",
-		"two units":     "program p\nend program p\nsubroutine s\nend subroutine s\n",
+		"two programs":  "program p\nend program p\nprogram q\nend program q\n",
 		"array minus s": "program p\n  implicit none\n  real(8), allocatable :: a(:)\n  allocate (a(2))\n  a = a - 1d0\nend program p\n",
 	} {
 		t.Run(name, func(t *testing.T) {

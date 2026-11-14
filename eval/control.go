@@ -160,7 +160,7 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 	case counted:
 		var ss *sema.Symbol
 		sy, ss, err = c.symOf(&d.Var)
-		if err != nil || sy.k != kInt || sy.isC || ss == nil {
+		if err != nil || sy.k != kInt || sy.isC || ss == nil || sy.owner != c.cur {
 			return nil, c.errf(d, "the do variable %s must be a declared integer", d.Var.Name)
 		}
 		slot = sy.slot
@@ -192,7 +192,7 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 	// leave handles frame.ctl after the body: it reports whether the loop ends
 	// and whether the signal belongs to an enclosing construct.
 	leave := func(f *frame) (stop bool) {
-		if f.target != "" && f.target != name {
+		if f.ctl == ctlReturn || (f.target != "" && f.target != name) {
 			return true // an outer construct's EXIT or CYCLE
 		}
 		ctl := f.ctl

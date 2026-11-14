@@ -82,11 +82,11 @@ copies are listed in the package documentation (`go doc ./rt`): `F0.d` prints
 `.50`, `E0.d` an E+000 exponent, `G8.1` of 0.95 is `1.`, `I5.8` is refused, `A`
 and `L` accept integers, a repeat count cannot cross kinds on input, and so on.
 `testdata/programs/formatted_output.f90` is reproduced on rt
-(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 7 and
+(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 9 and
 they are byte-identical to their goldens (stdout, stderr, exit status); the
-other 7 use internal procedures, modules and derived types, character
-variables, and arrays of integers or sections (M3-A parts 2 to 4),
-`TestGoldenPrograms` counts the runs and the refusals.
+other 5 use modules and derived types, character variables, and arrays of
+integers or sections (M3-A part 3 and later), `TestGoldenPrograms` counts the
+runs and the refusals.
 
 ### Performance
 
@@ -609,10 +609,20 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
   (named or not), `select case` on integers and logicals, `stop` and `error
   stop` (text and exit status as libgfortran prints them, `RunIO` returns them),
   output of constants of every intrinsic type, implied-do output lists, `write`
-  to unit `error_unit` and `use iso_fortran_env`. Still refused: procedures
-  (internal, module, external), user modules, derived types, character
-  variables and substrings, complex variables, arrays other than real(8) of
-  rank 1 and 2, sections, `where`, internal files and `read`. Resource bounds:
+  to unit `error_unit` and `use iso_fortran_env`. Part 2 (v0.12.0) added
+  procedures: internal subroutines and functions (host association of scalar
+  variables through the frame's static link) and external ones of the same
+  file, with scalar integer, real and logical dummy arguments (copy-in,
+  copy-out for a variable actual that is not `intent(in)`; keyword arguments),
+  `result(r)`, `recursive` (bounded by `MaxCallDepth`, 2^15 nested calls: a
+  deeper call is a run-time error), `return`, and the bit functions (iand,
+  ior, ieor, not, ishft, popcnt, poppar, leadz, trailz, btest, ibset, ibclr).
+  Still refused: user modules, derived types, character
+  variables and substrings, complex variables, array dummy arguments and
+  results, optional arguments, an initialised local variable of a procedure
+  (it is saved between calls), host-associated arrays, arrays other than
+  real(8) of rank 1 and 2, sections, `where`, internal files and `read`.
+  Resource bounds:
   an array of more than `MaxArrayElems` (2^28) elements, a character result of
   more than `MaxStringLen` (2^26) characters and an output list of more than
   `MaxArrayElems` values are refused at run time before anything is allocated.

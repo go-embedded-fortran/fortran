@@ -1,0 +1,2 @@
+go test fuzz v1
+string("program p\n  implicit none\n  integer :: n\n  n = 3\n  call bump(n)\n  print *, n, f(n), g(2)\ncontains\n  subroutine bump(k)\n    integer, intent(inout) :: k\n    k = k + n\n    if (k > 100) return\n  end subroutine bump\n  recursive integer function f(m) result(r)\n    integer, intent(in) :: m\n    r = f(m + 1)\n  end function f\n  real function g(x)\n    integer, intent(in) :: x\n    g = x / 3.0\n  end function g\nend program p\n")

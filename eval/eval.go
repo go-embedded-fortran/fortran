@@ -50,6 +50,10 @@ type frame struct {
 	// target is the construct name they name ("" for the innermost DO).
 	ctl    int
 	target string
+	// up is the frame of the host of the procedure (its static link), depth
+	// the number of activations below this one.
+	up    *frame
+	depth int
 }
 
 // Values of frame.ctl.
@@ -57,6 +61,7 @@ const (
 	ctlNone = iota
 	ctlExit
 	ctlCycle
+	ctlReturn
 )
 
 type (
@@ -74,11 +79,58 @@ type stopSignal struct {
 	quiet bool
 }
 
-// Program is a compiled main program.
+// Program is a compiled file: the main program and the procedures it can call.
 type Program struct {
+	main *procCode
+}
+
+// procCode is a compiled program unit: the layout of its activation record
+// (one slot per scalar variable, array slots), the statements that set up its
+// local arrays and the body. An internal procedure has the main program (its
+// host) as host; its variables are reached through the static link of its
+// frame.
+type procCode struct {
+	name                 string
+	unit                 *syntax.Unit
+	scope                *sema.Scope
+	host                 *procCode
 	nInts, nReals, nArrs int
 	init                 []stmtFn
-	body                 []stmtFn
+	body                 stmtFn
+	params               []*sym
+	intent               []string
+	result               *sym // a function's result variable
+	declared             bool
+}
+
+// MaxCallDepth bounds the nesting of procedure activations: a deeper call is a
+// run-time error (a runaway recursion), decided before another frame is made.
+const MaxCallDepth = 1 << 15
+
+// newFrame makes the activation record of p called from caller (nil for the
+// main program), linked to the frame of its host.
+func (p *procCode) newFrame(caller, up *frame) *frame {
+	f := &frame{
+		ints:  make([]int64, p.nInts),
+		reals: make([]float64, p.nReals),
+		arrs:  make([]*array, p.nArrs),
+		up:    up,
+	}
+	if caller != nil {
+		f.out, f.tab, f.start, f.depth = caller.out, caller.tab, caller.start, caller.depth+1
+		if f.depth > MaxCallDepth {
+			fail(f, "procedure %s: more than %d nested calls", p.name, MaxCallDepth)
+		}
+	}
+	return f
+}
+
+// run executes the setup statements and the body in f.
+func (p *procCode) run(f *frame) {
+	for _, s := range p.init {
+		s(f)
+	}
+	p.body(f)
 }
 
 // Copies is the number of array elements the last Run copied between storage
@@ -104,14 +156,8 @@ func (p *Program) Run(out io.Writer) (Stats, error) { return p.RunIO(out, io.Dis
 // RunIO is Run with a writer for standard error (unit 0, and the text of STOP
 // and ERROR STOP).
 func (p *Program) RunIO(out, stderr io.Writer) (st Stats, err error) {
-	f := &frame{
-		ints:  make([]int64, p.nInts),
-		reals: make([]float64, p.nReals),
-		arrs:  make([]*array, p.nArrs),
-		out:   out,
-		tab:   rt.NewTable(out, stderr, nil, nil),
-		start: time.Now(),
-	}
+	f := p.main.newFrame(nil, nil)
+	f.out, f.tab, f.start = out, rt.NewTable(out, stderr, nil, nil), time.Now()
 	defer func() {
 		f.tab.Flush() // a non-advancing record left open ends at the end of the program
 		if r := recover(); r != nil {
@@ -131,12 +177,7 @@ func (p *Program) RunIO(out, stderr io.Writer) (st Stats, err error) {
 		}
 		st.Copies = f.copied
 	}()
-	for _, s := range p.init {
-		s(f)
-	}
-	for _, s := range p.body {
-		s(f)
-	}
+	p.main.run(f)
 	return
 }
 
@@ -170,6 +211,7 @@ type sym struct {
 	cr    float64
 	rank  int
 	shape []intFn // constant-shape arrays: allocated at start
+	owner *procCode
 }
 
 // ex is a compiled expression.
@@ -206,7 +248,10 @@ type compiler struct {
 	info  *sema.Info
 	scope *sema.Scope
 	syms  map[*sema.Symbol]*sym
-	p     *Program
+	// cur is the program unit being compiled, procs all of them.
+	cur       *procCode
+	procs     map[*syntax.Unit]*procCode
+	externals map[string]*syntax.Unit // the external subroutines and functions of the file
 	// loops are the names of the DO constructs enclosing the statement being
 	// compiled ("" for an unnamed one), innermost last.
 	loops []string
@@ -228,7 +273,7 @@ func (c *compiler) errf(n syntax.Node, format string, a ...any) error {
 // with its first diagnostic. Anything outside the prototype's language is
 // refused with a positioned error.
 func Compile(f *syntax.File, info *sema.Info) (*Program, error) {
-	c := &compiler{file: f, syms: map[*sema.Symbol]*sym{}, p: &Program{}}
+	c := &compiler{file: f, syms: map[*sema.Symbol]*sym{}, procs: map[*syntax.Unit]*procCode{}, externals: map[string]*syntax.Unit{}}
 	if info == nil {
 		var errs syntax.ErrorList
 		if info, errs = sema.Analyze(f, nil); len(errs) > 0 {
@@ -236,22 +281,7 @@ func Compile(f *syntax.File, info *sema.Info) (*Program, error) {
 		}
 	}
 	c.info = info
-	if len(f.Units) != 1 || f.Units[0].Kind != syntax.ProgramUnit {
-		return nil, c.errf(nil, "exactly one main program is supported")
-	}
-	u := f.Units[0]
-	if u.HasContains {
-		return nil, c.errf(u, "internal procedures are not supported")
-	}
-	if c.scope = info.Scopes[u]; c.scope == nil {
-		return nil, c.errf(u, "the program unit was not analysed")
-	}
-	for _, s := range u.Body {
-		if err := c.stmt(s, &c.p.body); err != nil {
-			return nil, err
-		}
-	}
-	return c.p, nil
+	return c.program()
 }
 
 func (c *compiler) stmts(body []syntax.Stmt) ([]stmtFn, error) {
@@ -319,6 +349,12 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 		*out = append(*out, fn)
 	case *syntax.Cycle:
 		fn, err := c.jump(s.Target, ctlCycle, s, "CYCLE")
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.Return:
+		fn, err := c.returnStmt(s)
 		if err != nil {
 			return err
 		}
@@ -418,18 +454,34 @@ func (c *compiler) symOf(id *syntax.Ident) (*sym, *sema.Symbol, error) {
 func (c *compiler) decl(d *syntax.Decl) error {
 	for _, a := range d.Attrs {
 		switch a.Name {
-		case "parameter", "allocatable", "dimension":
+		case "parameter", "allocatable", "dimension", "intent", "value", "external":
 		default:
 			return c.errf(d, "attribute %q is not supported", a.Name)
 		}
 	}
-	for _, e := range d.Entities {
+	for i := range d.Entities {
+		e := &d.Entities[i]
 		ss := c.scope.Names[e.Name.Name]
 		if ss == nil {
 			return c.errf(e, "%s was not analysed", e.Name.Name)
 		}
+		if ss.Kind == sema.SymProc {
+			continue // "integer, external :: f": a procedure, not storage
+		}
+		if err := c.declSym(ss, e, e.Init); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// declSym gives the variable ss of the current program unit its storage; init
+// is its initialisation, nil for none.
+func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) error {
+	{
+		name := ss.Name
 		if _, dup := c.syms[ss]; dup {
-			return c.errf(e, "%s is declared twice", e.Name.Name)
+			return c.errf(e, "%s is declared twice", name)
 		}
 		param := ss.Kind == sema.SymParam
 		if param && ss.Rank != 0 {
@@ -442,8 +494,14 @@ func (c *compiler) decl(d *syntax.Decl) error {
 		if elem == kStr {
 			return c.errf(e, "character variables are not supported yet")
 		}
+		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 || ss.Flags&(sema.FOptional|sema.FPointer|sema.FAllocatable) != 0) {
+			return c.errf(e, "dummy argument %s: only scalar, non-optional dummy arguments are supported yet", name)
+		}
+		if init != nil && c.cur.host != nil || init != nil && c.cur.unit.Kind != syntax.ProgramUnit {
+			return c.errf(e, "%s: an initialised variable of a procedure is saved between calls, which is not supported yet", name)
+		}
 		k := elem
-		s := &sym{k: k, kd: kdOf(ss.Type)}
+		s := &sym{k: k, kd: kdOf(ss.Type), owner: c.cur}
 		switch {
 		case ss.Rank != 0:
 			if k != kReal || ss.Type.Kind != 8 {
@@ -452,8 +510,8 @@ func (c *compiler) decl(d *syntax.Decl) error {
 			if ss.Rank < 0 || ss.Rank > 2 || len(ss.Dims) != ss.Rank {
 				return c.errf(e, "rank %d: only ranks 1 and 2 are supported", ss.Rank)
 			}
-			s.k, s.rank, s.slot = kArr, ss.Rank, c.p.nArrs
-			c.p.nArrs++
+			s.k, s.rank, s.slot = kArr, ss.Rank, c.cur.nArrs
+			c.cur.nArrs++
 			if ss.Flags&sema.FAllocatable == 0 {
 				for _, dm := range ss.Dims {
 					if !dm.LoKnown || dm.Lo != 1 || !dm.HiKnown || dm.Assumed || dm.Deferred {
@@ -462,8 +520,8 @@ func (c *compiler) decl(d *syntax.Decl) error {
 					s.shape = append(s.shape, constInt(dm.Hi).i)
 				}
 				c.syms[ss] = s
-				c.p.init = append(c.p.init, allocFn(s.slot, s.shape))
-				continue
+				c.cur.init = append(c.cur.init, allocFn(s.slot, s.shape))
+				return nil
 			}
 			for _, dm := range ss.Dims {
 				if !dm.Deferred {
@@ -471,16 +529,16 @@ func (c *compiler) decl(d *syntax.Decl) error {
 				}
 			}
 		case k == kInt || k == kLog:
-			s.slot = c.p.nInts
-			c.p.nInts++
+			s.slot = c.cur.nInts
+			c.cur.nInts++
 		default:
-			s.slot = c.p.nReals
-			c.p.nReals++
+			s.slot = c.cur.nReals
+			c.cur.nReals++
 		}
 		c.syms[ss] = s
 		if param {
 			if ss.Const == nil {
-				return c.errf(e, "parameter %s is not a constant expression", e.Name.Name)
+				return c.errf(e, "parameter %s is not a constant expression", name)
 			}
 			s.isC = true
 			if k == kLog {
@@ -490,10 +548,10 @@ func (c *compiler) decl(d *syntax.Decl) error {
 			} else {
 				s.cr = constFloat(ss.Const)
 			}
-			continue
+			return nil
 		}
-		if e.Init != nil {
-			v, err := c.expr(e.Init)
+		if init != nil {
+			v, err := c.expr(init)
 			if err != nil {
 				return err
 			}
@@ -501,7 +559,7 @@ func (c *compiler) decl(d *syntax.Decl) error {
 			if err != nil {
 				return err
 			}
-			c.p.init = append(c.p.init, fn)
+			c.cur.init = append(c.cur.init, fn)
 		}
 	}
 	return nil
@@ -692,6 +750,18 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 	s, _, err := c.symOf(n)
 	if err != nil {
 		return nil, err
+	}
+	if !s.isC {
+		h, err := c.hops(s, n)
+		if err != nil {
+			return nil, err
+		}
+		if h > 0 {
+			if s.k == kArr {
+				return nil, c.errf(n, "array %s of an enclosing unit: host-associated arrays are not supported yet", n.Name)
+			}
+			return hostRead(s, h), nil
+		}
 	}
 	switch {
 	case s.isC && s.k == kInt:
@@ -962,8 +1032,16 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	if !ok {
 		return nil, c.errf(n, "only a name can be subscripted or called")
 	}
-	if c.info.Uses[id] == nil { // not a name of the program: an intrinsic (sema.Analyze resolved it)
+	ss := c.info.Uses[id]
+	if ss == nil { // not a name of the program: an intrinsic (sema.Analyze resolved it)
 		return c.intrinsic(n, id.Name, tv)
+	}
+	if ss.Kind == sema.SymProc || ss.Kind == sema.SymGeneric {
+		// a function of the file; for a generic the analyser resolved the specific
+		if tv.Sym != nil && tv.Sym.Kind == sema.SymProc {
+			ss = tv.Sym
+		}
+		return c.funcCall(n, ss)
 	}
 	s, _, err := c.symOf(id)
 	if err != nil {
@@ -971,6 +1049,9 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	}
 	if s.k != kArr {
 		return nil, c.errf(n, "%s is not an array", id.Name)
+	}
+	if s.owner != c.cur {
+		return nil, c.errf(n, "array %s of an enclosing unit: host-associated arrays are not supported yet", id.Name)
 	}
 	return c.element(n, id.Name, s)
 }
@@ -1052,6 +1133,8 @@ func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, err
 		return nil
 	}
 	switch name {
+	case "iand", "ior", "ieor", "not", "ishft", "popcnt", "leadz", "trailz", "btest", "ibset", "ibclr", "poppar":
+		return c.bitIntrinsic(n, name, args)
 	case "repeat":
 		if err := want(2); err != nil {
 			return nil, err
@@ -1389,17 +1472,20 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 			return nil, c.errf(l, "%s is a parameter", l.Name)
 		}
 		if sy.k == kArr {
+			if sy.owner != c.cur {
+				return nil, c.errf(l, "array %s of an enclosing unit: host-associated arrays are not supported yet", l.Name)
+			}
 			return c.assignArray(s, sy, l.Name, rhs)
 		}
-		return c.store(sy, rhs, s)
+		return c.storeVar(sy, rhs, s)
 	case *syntax.Index:
 		id, ok := l.X.(*syntax.Ident)
 		if !ok {
 			return nil, c.errf(l, "unsupported assignment target")
 		}
 		sy, _, err := c.symOf(id)
-		if err != nil || sy.k != kArr {
-			return nil, c.errf(l, "%s is not an array", id.Name)
+		if err != nil || sy.k != kArr || sy.owner != c.cur {
+			return nil, c.errf(l, "%s is not an array of this unit", id.Name)
 		}
 		if rhs.k == kArr {
 			return nil, c.errf(s, "an array value into an element")
@@ -1509,6 +1595,12 @@ func (c *compiler) assignArray(at syntax.Node, s *sym, name string, rhs *ex) (st
 }
 
 func (c *compiler) call(s *syntax.Call) (stmtFn, error) {
+	if ss := c.info.Calls[s]; ss != nil && ss.Unit != nil {
+		return c.callStmt(s, ss)
+	}
+	if id, ok := s.Proc.(*syntax.Ident); ok && c.externals[id.Name] != nil {
+		return c.callStmt(s, &sema.Symbol{Name: id.Name})
+	}
 	id, ok := s.Proc.(*syntax.Ident)
 	if !ok || id.Name != "cpu_time" || len(s.Args) != 1 {
 		return nil, c.errf(s, "only call cpu_time(t) is supported")
@@ -1518,7 +1610,7 @@ func (c *compiler) call(s *syntax.Call) (stmtFn, error) {
 		return nil, c.errf(s, "cpu_time needs a real variable")
 	}
 	sy, _, err := c.symOf(t)
-	if err != nil || sy.k != kReal || sy.isC {
+	if err != nil || sy.k != kReal || sy.isC || sy.owner != c.cur {
 		return nil, c.errf(s, "cpu_time needs a declared real(8) variable")
 	}
 	slot := sy.slot
@@ -1540,7 +1632,7 @@ func (c *compiler) allocate(a *syntax.Allocate) (stmtFn, error) {
 			return nil, c.errf(o, "allocate needs a name")
 		}
 		sy, _, err := c.symOf(id)
-		if err != nil || sy.k != kArr || sy.shape != nil {
+		if err != nil || sy.k != kArr || sy.shape != nil || sy.owner != c.cur {
 			return nil, c.errf(o, "%s is not an allocatable array", id.Name)
 		}
 		if len(ix.Args) != sy.rank {
