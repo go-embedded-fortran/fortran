@@ -1,0 +1,2 @@
+go test fuzz v1
+string("module m\n  implicit none\n  integer :: n = 1\n  character(len=4) :: tag = 'ab'\ncontains\n  subroutine bump(s)\n    character(*), intent(inout) :: s\n    n = n + 1\n    s = trim(s) // 'x'\n  end subroutine bump\nend module m\nprogram p\n  use m, only: k => n, bump, tag\n  implicit none\n  call bump(tag)\n  print *, k, tag, len_trim(tag), tag < 'b', index(tag, 'x')\nend program p\n")

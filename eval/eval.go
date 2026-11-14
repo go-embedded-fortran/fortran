@@ -54,6 +54,8 @@ type frame struct {
 	// the number of activations below this one.
 	up    *frame
 	depth int
+	mods  []*frame // the frames of the modules
+	strs  []string // character scalars
 }
 
 // Values of frame.ctl.
@@ -79,9 +81,11 @@ type stopSignal struct {
 	quiet bool
 }
 
-// Program is a compiled file: the main program and the procedures it can call.
+// Program is a compiled file: the main program, the modules it uses and the
+// procedures it can call.
 type Program struct {
 	main *procCode
+	mods []*procCode // the modules, in file order: each has a frame for the whole run
 }
 
 // procCode is a compiled program unit: the layout of its activation record
@@ -95,12 +99,17 @@ type procCode struct {
 	scope                *sema.Scope
 	host                 *procCode
 	nInts, nReals, nArrs int
+	nStrs                int
 	init                 []stmtFn
 	body                 stmtFn
 	params               []*sym
 	intent               []string
 	result               *sym // a function's result variable
 	declared             bool
+	// module is set for a module: its frame lives for the whole run (frame.mods
+	// [modIdx]) and the module procedures link to it.
+	module bool
+	modIdx int
 }
 
 // MaxCallDepth bounds the nesting of procedure activations: a deeper call is a
@@ -114,10 +123,11 @@ func (p *procCode) newFrame(caller, up *frame) *frame {
 		ints:  make([]int64, p.nInts),
 		reals: make([]float64, p.nReals),
 		arrs:  make([]*array, p.nArrs),
+		strs:  make([]string, p.nStrs),
 		up:    up,
 	}
 	if caller != nil {
-		f.out, f.tab, f.start, f.depth = caller.out, caller.tab, caller.start, caller.depth+1
+		f.out, f.tab, f.start, f.depth, f.mods = caller.out, caller.tab, caller.start, caller.depth+1, caller.mods
 		if f.depth > MaxCallDepth {
 			fail(f, "procedure %s: more than %d nested calls", p.name, MaxCallDepth)
 		}
@@ -158,6 +168,14 @@ func (p *Program) Run(out io.Writer) (Stats, error) { return p.RunIO(out, io.Dis
 func (p *Program) RunIO(out, stderr io.Writer) (st Stats, err error) {
 	f := p.main.newFrame(nil, nil)
 	f.out, f.tab, f.start = out, rt.NewTable(out, stderr, nil, nil), time.Now()
+	for _, m := range p.mods { // every module frame exists before any module's initialisation runs
+		mf := m.newFrame(nil, nil)
+		mf.out, mf.tab, mf.start = f.out, f.tab, f.start
+		f.mods = append(f.mods, mf)
+	}
+	for _, mf := range f.mods {
+		mf.mods = f.mods
+	}
 	defer func() {
 		f.tab.Flush() // a non-advancing record left open ends at the end of the program
 		if r := recover(); r != nil {
@@ -177,6 +195,11 @@ func (p *Program) RunIO(out, stderr io.Writer) (st Stats, err error) {
 		}
 		st.Copies = f.copied
 	}()
+	for i, m := range p.mods {
+		for _, s := range m.init {
+			s(f.mods[i])
+		}
+	}
 	p.main.run(f)
 	return
 }
@@ -212,6 +235,8 @@ type sym struct {
 	rank  int
 	shape []intFn // constant-shape arrays: allocated at start
 	owner *procCode
+	cs    string // the value of a character named constant
+	clen  int64  // the declared length of a character variable, -1 for an assumed length (character(*))
 }
 
 // ex is a compiled expression.
@@ -249,6 +274,7 @@ type compiler struct {
 	scope *sema.Scope
 	syms  map[*sema.Symbol]*sym
 	// cur is the program unit being compiled, procs all of them.
+	modules   []*procCode
 	cur       *procCode
 	procs     map[*syntax.Unit]*procCode
 	externals map[string]*syntax.Unit // the external subroutines and functions of the file
@@ -362,9 +388,27 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 	case *syntax.Continue:
 	case *syntax.UseStmt:
 		// the intrinsic module iso_fortran_env only supplies named constants,
-		// which the analyser has folded; a user module is part 3
-		if s.Module.Name != "iso_fortran_env" {
-			return c.errf(s, "use of module %s is not supported yet", s.Module.Name)
+		// which the analyser has folded; a module of the file is compiled with
+		// the file and its names resolve through the analyser's Info
+		if s.Module.Name != "iso_fortran_env" && c.info.Modules[s.Module.Name] == nil {
+			return c.errf(s, "use of module %s, which is not defined in this file, is not supported", s.Module.Name)
+		}
+	case *syntax.Interface:
+		// generic names are resolved by the analyser (Info.Calls, TV.Sym)
+		if s.Abstract {
+			return c.errf(s, "abstract interfaces are not supported yet")
+		}
+	case *syntax.AttrStmt:
+		switch s.Attr {
+		case "private", "public", "save":
+		default:
+			return c.errf(s, "the %s statement is not supported yet", s.Attr)
+		}
+	case *syntax.KeywordStmt:
+		switch s.Word {
+		case "private", "public", "save", "contains":
+		default:
+			return c.errf(s, "%q is not supported yet", s.Word)
 		}
 	case *syntax.Call:
 		fn, err := c.call(s)
@@ -444,6 +488,9 @@ func (c *compiler) symOf(id *syntax.Ident) (*sym, *sema.Symbol, error) {
 	if ss == nil {
 		return nil, nil, c.errf(id, "%s is not a variable of the program", id.Name)
 	}
+	if ss.Origin != nil { // a use-associated name stands for the module's entity
+		ss = ss.Origin
+	}
 	s, ok := c.syms[ss]
 	if !ok {
 		return nil, ss, c.errf(id, "%s is not declared", id.Name)
@@ -454,7 +501,7 @@ func (c *compiler) symOf(id *syntax.Ident) (*sym, *sema.Symbol, error) {
 func (c *compiler) decl(d *syntax.Decl) error {
 	for _, a := range d.Attrs {
 		switch a.Name {
-		case "parameter", "allocatable", "dimension", "intent", "value", "external":
+		case "parameter", "allocatable", "dimension", "intent", "value", "external", "private", "public", "save":
 		default:
 			return c.errf(d, "attribute %q is not supported", a.Name)
 		}
@@ -492,12 +539,20 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 			return err
 		}
 		if elem == kStr {
-			return c.errf(e, "character variables are not supported yet")
+			if ss.Rank != 0 {
+				return c.errf(e, "character arrays are not supported yet")
+			}
+			if ss.Type.Len < 0 && ss.Flags&sema.FDummy == 0 {
+				return c.errf(e, "character variable %s: a length that is not a constant (character(len=:), character(len(x))) is not supported yet", name)
+			}
+			if ss.Flags&(sema.FAllocatable|sema.FPointer) != 0 {
+				return c.errf(e, "an allocatable or pointer character variable is not supported yet")
+			}
 		}
 		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 || ss.Flags&(sema.FOptional|sema.FPointer|sema.FAllocatable) != 0) {
 			return c.errf(e, "dummy argument %s: only scalar, non-optional dummy arguments are supported yet", name)
 		}
-		if init != nil && c.cur.host != nil || init != nil && c.cur.unit.Kind != syntax.ProgramUnit {
+		if init != nil && (c.cur.unit.Kind == syntax.SubroutineUnit || c.cur.unit.Kind == syntax.FunctionUnit) {
 			return c.errf(e, "%s: an initialised variable of a procedure is saved between calls, which is not supported yet", name)
 		}
 		k := elem
@@ -531,6 +586,15 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		case k == kInt || k == kLog:
 			s.slot = c.cur.nInts
 			c.cur.nInts++
+		case k == kStr:
+			s.slot, s.clen = c.cur.nStrs, ss.Type.Len
+			c.cur.nStrs++
+			if !param && s.clen >= 0 && ss.Flags&sema.FDummy == 0 {
+				// a character variable is blank until it is assigned
+				blank := strings.Repeat(" ", int(min(s.clen, MaxStringLen)))
+				slot := s.slot
+				c.cur.init = append(c.cur.init, func(f *frame) { f.strs[slot] = blank })
+			}
 		default:
 			s.slot = c.cur.nReals
 			c.cur.nReals++
@@ -541,7 +605,9 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 				return c.errf(e, "parameter %s is not a constant expression", name)
 			}
 			s.isC = true
-			if k == kLog {
+			if k == kStr {
+				s.cs = ss.Const.S
+			} else if k == kLog {
 				s.ci = b2i(ss.Const.B)
 			} else if k == kInt {
 				s.ci = ss.Const.I
@@ -756,7 +822,7 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		if err != nil {
 			return nil, err
 		}
-		if h > 0 {
+		if h != 0 {
 			if s.k == kArr {
 				return nil, c.errf(n, "array %s of an enclosing unit: host-associated arrays are not supported yet", n.Name)
 			}
@@ -770,6 +836,12 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		return e, nil
 	case s.isC && s.k == kLog:
 		return constBool(s.ci != 0), nil
+	case s.isC && s.k == kStr:
+		cs := s.cs
+		return &ex{k: kStr, isC: true, slot: -1, s: func(*frame) string { return cs }}, nil
+	case s.k == kStr:
+		slot := s.slot
+		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return f.strs[slot] }}, nil
 	case s.isC:
 		e := constReal(s.cr)
 		e.kd = s.kd
@@ -820,6 +892,9 @@ func (c *compiler) binary(n *syntax.Binary, tv sema.TV) (*ex, error) {
 	y, err := c.expr(n.Y)
 	if err != nil {
 		return nil, err
+	}
+	if x.k == kStr || y.k == kStr {
+		return c.strBinary(n, x, y)
 	}
 	switch n.Op {
 	case "+", "-", "*", "/", "**":
@@ -1117,8 +1192,8 @@ func bounds(f *frame, name string, dim int, i int64, n int) {
 func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, error) {
 	args := make([]*ex, len(n.Args))
 	for i, a := range n.Args {
-		if a.Keyword != "" || a.Value == nil {
-			return nil, c.errf(n, "keyword arguments are not supported")
+		if a.Value == nil || (a.Keyword != "" && !(name == "index" && a.Keyword == "back" && i == 2)) {
+			return nil, c.errf(n, "keyword arguments of intrinsics are not supported")
 		}
 		v, err := c.expr(a.Value)
 		if err != nil {
@@ -1133,6 +1208,8 @@ func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, err
 		return nil
 	}
 	switch name {
+	case "trim", "len", "len_trim", "adjustl", "adjustr", "index", "ichar", "iachar", "achar", "char":
+		return c.strIntrinsic(n, name, args)
 	case "iand", "ior", "ieor", "not", "ishft", "popcnt", "leadz", "trailz", "btest", "ibset", "ibclr", "poppar":
 		return c.bitIntrinsic(n, name, args)
 	case "repeat":
@@ -1447,6 +1524,12 @@ func (c *compiler) store(s *sym, v *ex, at syntax.Node) (stmtFn, error) {
 	case s.k == kLog && v.k == kLog:
 		fn := v.b
 		return func(f *frame) { f.ints[slot] = b2i(fn(f)) }, nil
+	case s.k == kStr && v.k == kStr:
+		fn, n := v.s, s.clen
+		if n < 0 { // an assumed-length dummy keeps the length it was associated with
+			return func(f *frame) { f.strs[slot] = fitLen(fn(f), int64(len(f.strs[slot]))) }, nil
+		}
+		return func(f *frame) { f.strs[slot] = fitLen(fn(f), n) }, nil
 	case s.k == kReal && v.k != kArr && v.k != kLog:
 		fn := v.asReal().r
 		if s.kd == 4 && v.kd != 4 {

@@ -82,11 +82,12 @@ copies are listed in the package documentation (`go doc ./rt`): `F0.d` prints
 `.50`, `E0.d` an E+000 exponent, `G8.1` of 0.95 is `1.`, `I5.8` is refused, `A`
 and `L` accept integers, a repeat count cannot cross kinds on input, and so on.
 `testdata/programs/formatted_output.f90` is reproduced on rt
-(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 9 and
+(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 10 and
 they are byte-identical to their goldens (stdout, stderr, exit status); the
-other 5 use modules and derived types, character variables, and arrays of
-integers or sections (M3-A part 3 and later), `TestGoldenPrograms` counts the
-runs and the refusals.
+other 4 use derived types, character variables of non-constant length,
+substrings and internal files, and arrays of integers, sections and the array
+intrinsics (M3-A part 4 and later), `TestGoldenPrograms` counts the runs and
+the refusals.
 
 ### Performance
 
@@ -617,8 +618,15 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
   `result(r)`, `recursive` (bounded by `MaxCallDepth`, 2^15 nested calls: a
   deeper call is a run-time error), `return`, and the bit functions (iand,
   ior, ieor, not, ishft, popcnt, poppar, leadz, trailz, btest, ibset, ibclr).
-  Still refused: user modules, derived types, character
-  variables and substrings, complex variables, array dummy arguments and
+  Part 3 (v0.13.0) added modules of the file (variables with initial values and
+  named constants live in a frame for the whole run; module procedures,
+  `use`, `only`, renames, `private`/`public`, generic interfaces as the
+  analyser resolves them) and character scalars (constant-length variables and
+  dummies, `character(*)` dummies, results, `//`, comparisons with blank
+  padding, trim, len, len_trim, adjustl, adjustr, index, ichar, achar, char).
+  Still refused: derived types, character
+  variables of non-constant length, character arrays and substrings, complex
+  variables, array dummy arguments and
   results, optional arguments, an initialised local variable of a procedure
   (it is saved between calls), host-associated arrays, arrays other than
   real(8) of rank 1 and 2, sections, `where`, internal files and `read`.
