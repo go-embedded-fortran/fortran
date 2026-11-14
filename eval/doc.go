@@ -1,9 +1,14 @@
 // Package eval is PROTOTYPE contender A of the back-end gate of bib/fortran.md
 // §4.2: a pure-Go evaluator over the syntax AST.
 //
-// It is the seed of M3-A, not the M3-A evaluator: it accepts exactly the
-// language the four gate kernels need, and refuses everything else with a
-// positioned error. What it accepts:
+// It is the seed of M3-A and grows into the v1 language in parts; what it
+// does not accept it refuses with a positioned error. Part 1 added, to what
+// follows: integer(1|2|4|8), logical and real(4) scalars, relational and
+// logical operators, IF, logical IF, DO WHILE, unbounded DO, EXIT, CYCLE,
+// SELECT CASE (integer, logical), STOP and ERROR STOP (RunIO returns the exit
+// status and writes the text libgfortran prints), constants of every
+// intrinsic type and implied-do lists in output, character values built by
+// REPEAT. The four gate kernels' language, as the prototype had it:
 //
 //   - one main program, implicit none, integer / integer(k) and real(8) /
 //     double precision scalars, integer and real(8) parameters;

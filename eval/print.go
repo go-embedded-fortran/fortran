@@ -6,11 +6,16 @@ import (
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
 
+// item is one output item: it appends the values it stands for (an implied DO
+// or an array stands for several) to the list.
+type item func(*frame, []rt.Val) []rt.Val
+
 // print compiles PRINT and WRITE onto package rt: the formatted and
 // list-directed output of the Fortran runtime (F2018 clauses 12 and 13).
-// The format is a character literal or '*'; the units are '*' and 6 (the
-// cell output) and 0 (standard error, discarded here); the items are
-// character literals and integer and real(8) scalar expressions.
+// The format is a character constant or '*'; the unit is '*' or an integer
+// expression naming unit 6 (standard output) or 0 (standard error); the items
+// are constants of any intrinsic type (the analyser folded them), integer,
+// logical and real scalar expressions, real(8) arrays and implied DO loops.
 func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
 	var unit syntax.Expr
 	var format syntax.Expr
@@ -55,30 +60,38 @@ func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
 	default:
 		return nil, c.errf(s, "%s is not supported by the prototype", s.Kind)
 	}
-	unitNum := 6
+	unitFn := intFn(func(*frame) int64 { return 6 })
 	switch u := unit.(type) {
 	case nil, *syntax.Asterisk:
-	case *syntax.IntLit:
-		n, err := intLit(u)
-		if err != nil || (n != 6 && n != 0) {
-			return nil, c.errf(u, "only units *, 6 and 0 are supported")
-		}
-		unitNum = n
 	default:
-		return nil, c.errf(unit, "only units *, 6 and 0 are supported")
+		tv, err := c.tv(u)
+		if err != nil {
+			return nil, err
+		}
+		if tv.Type.Basic != sema.Integer || tv.Rank != 0 {
+			return nil, c.errf(u, "the unit must be * or a scalar integer expression (internal files are not supported yet)")
+		}
+		if unitFn, err = c.intExpr(u); err != nil {
+			return nil, err
+		}
 	}
 	sp := rt.Spec{NonAdvancing: nonAdv}
 	switch f := format.(type) {
-	case *syntax.Asterisk:
-	case *syntax.StringLit:
-		if _, err := rt.CompileFormat(f.Value); err != nil {
+	case nil, *syntax.Asterisk:
+	default:
+		tv, err := c.tv(f)
+		if err != nil {
+			return nil, err
+		}
+		if tv.Type.Basic != sema.Character || tv.Const == nil {
+			return nil, c.errf(f, "only '*' and a character-constant format are supported")
+		}
+		if _, err := rt.CompileFormat(tv.Const.S); err != nil {
 			return nil, c.errf(f, "%v", err)
 		}
-		sp.Format, sp.HasFormat = f.Value, true
-	default:
-		return nil, c.errf(s, "only '*' and a character-literal format are supported")
+		sp.Format, sp.HasFormat = tv.Const.S, true
 	}
-	items := make([]func(*frame, *rt.Val), len(s.Items))
+	items := make([]item, len(s.Items))
 	for i, it := range s.Items {
 		fn, err := c.printItem(it)
 		if err != nil {
@@ -86,14 +99,15 @@ func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
 		}
 		items[i] = fn
 	}
-	vals := make([]rt.Val, len(items))
 	return func(f *frame) {
-		for i, fn := range items {
-			fn(f, &vals[i])
+		var vals []rt.Val
+		for _, fn := range items {
+			vals = fn(f, vals)
 		}
-		u := f.tab.Get(unitNum)
+		n := int(unitFn(f))
+		u := f.tab.Get(n)
 		if u == nil {
-			fail(f, "Fortran runtime error: unit %d is not connected", unitNum)
+			fail(f, "Fortran runtime error: unit %d is not connected", n)
 		}
 		if err := u.Write(sp, vals); err != nil {
 			fail(f, "Fortran runtime error: %s", err.Msg)
@@ -121,15 +135,51 @@ func (litError) Error() string { return "bad literal" }
 
 var errBadLit error = litError{}
 
-// printItem compiles one output item into a function that fills an rt.Val.
-func (c *compiler) printItem(it syntax.Expr) (func(*frame, *rt.Val), error) {
+// constVal is the I/O value of a constant the analyser folded.
+func (c *compiler) constVal(at syntax.Node, k *sema.Const) (rt.Val, error) {
+	switch k.Type.Basic {
+	case sema.Integer:
+		return rt.Int(k.Type.Kind, k.I), nil
+	case sema.Logical:
+		return rt.Bool(k.Type.Kind, k.B), nil
+	case sema.Real:
+		switch k.Type.Kind {
+		case 4:
+			return rt.Real4(float32(k.F)), nil
+		case 8:
+			return rt.Real8(k.F), nil
+		}
+	case sema.Complex:
+		if k.Type.Kind == 4 || k.Type.Kind == 8 {
+			return rt.Cmplx(k.Type.Kind, real(k.C), imag(k.C)), nil
+		}
+	case sema.Character:
+		if k.Type.Kind == 1 {
+			return rt.Str(k.S), nil
+		}
+	}
+	return rt.Val{}, c.errf(at, "a constant of type %s is not supported", k.Type)
+}
+
+// printItem compiles one output item.
+func (c *compiler) printItem(it syntax.Expr) (item, error) {
 	if sl, ok := it.(*syntax.StringLit); ok {
 		v := rt.Str(sl.Value)
-		return func(_ *frame, d *rt.Val) { *d = v }, nil
+		return func(_ *frame, l []rt.Val) []rt.Val { return append(l, v) }, nil
+	}
+	if ido, ok := it.(*syntax.ImpliedDo); ok {
+		return c.impliedDo(ido)
 	}
 	tv, err := c.tv(it)
 	if err != nil {
 		return nil, err
+	}
+	if tv.Rank == 0 && tv.Const != nil {
+		v, err := c.constVal(it, tv.Const)
+		if err != nil {
+			return nil, err
+		}
+		return func(_ *frame, l []rt.Val) []rt.Val { return append(l, v) }, nil
 	}
 	x, err := c.expr(it)
 	if err != nil {
@@ -138,14 +188,99 @@ func (c *compiler) printItem(it syntax.Expr) (func(*frame, *rt.Val), error) {
 	switch x.k {
 	case kInt:
 		size := tv.Type.Kind
-		if tv.Type.Basic != sema.Integer || size == 0 {
-			size = sema.DefaultInt
-		}
 		fn := x.i
-		return func(f *frame, d *rt.Val) { *d = rt.Int(size, fn(f)) }, nil
+		return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Int(size, fn(f))) }, nil
+	case kLog:
+		size := tv.Type.Kind
+		fn := x.b
+		return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Bool(size, fn(f))) }, nil
 	case kReal:
 		fn := x.r
-		return func(f *frame, d *rt.Val) { *d = rt.Real8(fn(f)) }, nil
+		if tv.Type.Kind == 4 {
+			return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Real4(float32(fn(f)))) }, nil
+		}
+		return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Real8(fn(f))) }, nil
+	case kStr:
+		fn := x.s
+		return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Str(fn(f))) }, nil
+	case kArr:
+		fn := x.a
+		return func(f *frame, l []rt.Val) []rt.Val {
+			for _, v := range fn(f).data { // column-major: the first subscript varies fastest
+				l = append(l, rt.Real8(v))
+			}
+			return l
+		}, nil
 	}
-	return nil, c.errf(it, "array items are not supported in an output list")
+	return nil, c.errf(it, "this output item is not supported")
+}
+
+// implicitDoVar is the storage of an implied-do index: the analyser declared it
+// in a scope of its own (F2018 19.4: its scope is the implied-do), so it gets
+// a slot of its own and the variable of the enclosing scope is not touched.
+func (c *compiler) implicitDoVar(d *syntax.ImpliedDo) (*sym, error) {
+	ss := c.info.Uses[&d.Var]
+	if ss == nil {
+		return nil, c.errf(d, "the implied-do variable %s was not analysed", d.Var.Name)
+	}
+	if s, ok := c.syms[ss]; ok {
+		return s, nil
+	}
+	if ss.Type.Basic != sema.Integer || (ss.Type.Kind != 1 && ss.Type.Kind != 2 && ss.Type.Kind != 4 && ss.Type.Kind != 8) {
+		return nil, c.errf(d, "the implied-do variable %s must be an integer", d.Var.Name)
+	}
+	s := &sym{k: kInt, kd: kdOf(ss.Type), slot: c.p.nInts}
+	c.p.nInts++
+	c.syms[ss] = s
+	return s, nil
+}
+
+// impliedDo compiles (items, v = lo, hi [, step]) in an output list (F2018
+// 12.6.3): the loop variable is an integer variable of the program.
+func (c *compiler) impliedDo(d *syntax.ImpliedDo) (item, error) {
+	sy, err := c.implicitDoVar(d)
+	if err != nil {
+		return nil, err
+	}
+	lo, err := c.intExpr(d.Lo)
+	if err != nil {
+		return nil, err
+	}
+	hi, err := c.intExpr(d.Hi)
+	if err != nil {
+		return nil, err
+	}
+	step := intFn(func(*frame) int64 { return 1 })
+	if d.Step != nil {
+		if step, err = c.intExpr(d.Step); err != nil {
+			return nil, err
+		}
+	}
+	items := make([]item, len(d.Items))
+	for i, it := range d.Items {
+		if items[i], err = c.printItem(it); err != nil {
+			return nil, err
+		}
+	}
+	slot := sy.slot
+	return func(f *frame, l []rt.Val) []rt.Val {
+		a, b, st := lo(f), hi(f), step(f)
+		if st == 0 {
+			fail(f, "implied-do step is zero")
+		}
+		n := (b - a + st) / st
+		if n > MaxArrayElems {
+			fail(f, "implied-do of %d iterations is out of range", n)
+		}
+		v := a
+		for ; n > 0; n-- {
+			f.ints[slot] = v
+			for _, it := range items {
+				l = it(f, l)
+			}
+			v += st
+		}
+		f.ints[slot] = v
+		return l
+	}, nil
 }

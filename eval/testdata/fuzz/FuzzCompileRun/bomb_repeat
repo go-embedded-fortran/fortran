@@ -1,0 +1,2 @@
+go test fuzz v1
+string("program p\n  implicit none\n  integer :: i\n  print *, repeat('ab', 2000000000), (i, i = 1, 3000000000_8)\nend program p\n")

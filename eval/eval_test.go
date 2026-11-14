@@ -326,14 +326,11 @@ end program p
 func TestRefusals(t *testing.T) {
 	for name, src := range map[string]string{
 		"undeclared":    "program p\n  implicit none\n  x = 1\nend program p\n",
-		"if":            "program p\n  implicit none\n  integer :: i\n  if (i == 1) i = 2\nend program p\n",
-		"real default":  "program p\n  implicit none\n  real :: x\nend program p\n",
 		"rank 3":        "program p\n  implicit none\n  real(8) :: a(2,2,2)\nend program p\n",
 		"section":       "program p\n  implicit none\n  real(8) :: a(4)\n  real(8) :: x\n  x = a(1:2)\nend program p\n",
 		"lower bound":   "program p\n  implicit none\n  real(8), allocatable :: a(:)\n  allocate (a(0:3))\nend program p\n",
 		"unknown call":  "program p\n  implicit none\n  call foo()\nend program p\n",
 		"two units":     "program p\nend program p\nsubroutine s\nend subroutine s\n",
-		"real to int":   "program p\n  implicit none\n  integer :: i\n  i = 1d0\nend program p\n",
 		"array minus s": "program p\n  implicit none\n  real(8), allocatable :: a(:)\n  allocate (a(2))\n  a = a - 1d0\nend program p\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -416,7 +413,6 @@ func TestPrintRefusals(t *testing.T) {
 	for name, src := range map[string]string{
 		"bad format":      "program p\n  implicit none\n  print '(i5', 1\nend program p\n",
 		"format variable": "program p\n  implicit none\n  integer :: i\n  print i, 1\nend program p\n",
-		"unit 7":          "program p\n  implicit none\n  write (7, *) 1\nend program p\n",
 		"iostat":          "program p\n  implicit none\n  integer :: ios\n  write (*, *, iostat=ios) 1\nend program p\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -501,11 +497,12 @@ end program p
 // is refused, whatever it looks like.
 func TestKindsComeFromTheAnalyser(t *testing.T) {
 	for name, src := range map[string]string{
-		"real(4) literal":  "program p\n  implicit none\n  real(8) :: x\n  x = 1.5\nend program p\n",
-		"real(4) result":   "program p\n  implicit none\n  real(8) :: x\n  x = real(2)\nend program p\n",
 		"integer(16)":      "program p\n  implicit none\n  integer(16) :: i\nend program p\n",
-		"logical":          "program p\n  implicit none\n  logical :: l\nend program p\n",
+		"real(16)":         "program p\n  implicit none\n  real(16) :: x\nend program p\n",
+		"complex variable": "program p\n  implicit none\n  complex(8) :: c\nend program p\n",
 		"complex constant": "program p\n  implicit none\n  complex(8), parameter :: c = (1d0, 2d0)\nend program p\n",
+		"real(4) array":    "program p\n  implicit none\n  real :: a(3)\nend program p\n",
+		"logical array":    "program p\n  implicit none\n  logical :: a(3)\nend program p\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := compile(t, src)
@@ -530,7 +527,7 @@ func TestGoldenPrograms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ran, refused := 0, 0
+	ran, identical, refused := 0, 0, 0
 	for _, r := range recs {
 		name := strings.TrimSuffix(strings.TrimSuffix(r.Name, ".f90"), "programs/")
 		name = strings.TrimPrefix(name, "programs/")
@@ -548,16 +545,20 @@ func TestGoldenPrograms(t *testing.T) {
 			t.Logf("%s: refused: %v", name, cerr)
 			continue
 		}
-		var out bytes.Buffer
-		if _, rerr := p.Run(&out); rerr != nil {
+		var out, errb bytes.Buffer
+		st, rerr := p.RunIO(&out, &errb)
+		if rerr != nil {
 			refused++
 			t.Logf("%s: run refused: %v", name, rerr)
 			continue
 		}
 		ran++
-		if r.Exit == 0 && out.String() != string(r.Stdout) {
-			t.Errorf("%s: output differs from the oracle's\n got %q\nwant %q", name, out.String(), r.Stdout)
+		if out.String() != string(r.Stdout) || errb.String() != string(r.Stderr) || uint32(st.Exit) != r.Exit {
+			t.Errorf("%s: differs from the oracle's\n stdout %q\n   want %q\n stderr %q\n   want %q\n exit %d want %d",
+				name, out.String(), r.Stdout, errb.String(), r.Stderr, st.Exit, r.Exit)
+			continue
 		}
+		identical++
 	}
-	t.Logf("%d golden programs run and identical, %d refused", ran, refused)
+	t.Logf("%d golden programs run, %d byte-identical (stdout, stderr, exit), %d refused", ran, identical, refused)
 }
