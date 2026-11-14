@@ -321,10 +321,30 @@ times the rounds asked for), and gives up after the stated total wait. The
 report prints the load samples bounding the kept rounds, the rounds discarded
 and the time spent waiting.
 
-**Figures: not run, load.** The development machine was at 1-minute load 10 to
-100 on 2026-11-13, and two full runs on 2026-11-14 stopped after rounds 1 and 2
-when the load rose to 21 and 52.5. No time and no verdict is published here.
-The first unloaded run's table, with its load samples, replaces this paragraph.
+**Figures (2026-11-14, v0.10.0, `foracle gate --wait-load 10h`).** Desktop
+darwin/arm64, one core, 7 interleaved rounds; every kept round is bounded by
+1-minute load samples between 6.2 and 7.9 (`6.7 7.9 7.9 7.7 7.8 7.3 7.4 7.0 7.3
+7.0 6.2`); 3 rounds were discarded for load after 32 minutes of waiting. Seconds,
+median and spread (max-min):
+
+| kernel | A | B-near | B-upper | gfortran -O2 | direct go-ndarray |
+|---|---|---|---|---|---|
+| K1 | 0.5050 +0.0141 | 1.5028 +0.0473 | 0.7010 +0.0741 | 0.0606 +0.0009 | - |
+| K2 | 3.4121 +0.2056 | 3.3757 +0.4956 | 1.6949 +0.0554 | 0.0366 +0.0019 | - |
+| K3L | 2.0977 +0.3126 | 2.2330 +0.2965 | 1.0762 +0.0276 | 0.0194 +0.0002 | - |
+| K3M | 0.0066 +0.0012 | 0.0067 +0.0027 | 0.0071 +0.0015 | 0.0058 +0.0003 | 0.0062 +0.0009 |
+| K4 | 0.0712 +0.0081 | 0.2940 +0.0242 | 0.2728 +0.0676 | 0.0350 +0.0113 | 0.0898 +0.0194 |
+
+Time over gfortran on the loop kernels: K1 A 8.33, B-near 24.79, B-upper 11.56;
+K2 93.31, 92.31, 46.35; K3L 108.06, 115.03, 55.44. Inputs to the rule:
+g(rA) = 43.79, g(rB0) = 64.09, **g(rA)/g(rB0) = 0.683**; K4 A / direct = 0.793,
+K3-matmul A / direct = 1.065.
+
+**Verdict: A first** (between; re-gate after go-embedded-c M3). The desktop
+ratio is at most 2 and both array kernels are within 1.2 of direct go-ndarray,
+but the playground home is not measured (#5), so the rule cannot pick A outright.
+The gap to gfortran on scalar loops (8x to 108x) is an open defect:
+[#17](https://github.com/go-embedded-fortran/fortran/issues/17).
 
 ### Golden programs
 
