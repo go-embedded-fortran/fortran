@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,7 @@ func gateCmd() *cobra.Command {
 	var dir, coracle string
 	var rounds int
 	var smoke, force bool
+	var waitLoad time.Duration
 	c := &cobra.Command{
 		Use:   "gate",
 		Short: "run the back-end decision gate of bib/fortran.md 4.2: contenders A, B-near, B-upper and gfortran on the kernels, then the rule",
@@ -31,7 +33,11 @@ without it.
 
 Needs the B toolchain: go install github.com/go-embedded-c/c/cmd/coracle@v0.2.1,
 then CORACLE_HOME=<dir> coracle toolchain. Refuses at 1-minute load above ` + fmt.Sprint(int(oracle.MaxLoad)) + ` (and
-when the load rises above it during the run), unless --force.
+when the load rises above it during the run), unless --force. With --wait-load D
+it waits instead, polling every ` + gate.PollEvery.String() + `, for at most D in all: a round counts
+only if the load is in limit before and after it, so a round that ends above the
+limit is discarded and run again (at most ` + fmt.Sprint(gate.MaxDiscardFactor) + ` times the rounds asked for).
+The report states the rounds discarded and the time spent waiting.
 
 --smoke runs tiny sizes for correctness only, and prints no time.`,
 		Args: cobra.NoArgs,
@@ -48,7 +54,7 @@ when the load rises above it during the run), unless --force.
 			// more than gfortran's single thread does.
 			defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 			res, err := gate.Run(ctx, gate.Options{
-				Dir: dir, Rounds: rounds, Smoke: smoke, Force: force,
+				Dir: dir, Rounds: rounds, Smoke: smoke, Force: force, WaitLoad: waitLoad,
 				Coracle: coracle, Gfortran: tc, Log: cmd.ErrOrStderr(),
 			})
 			if err != nil {
@@ -63,5 +69,6 @@ when the load rises above it during the run), unless --force.
 	c.Flags().IntVar(&rounds, "rounds", 7, "rounds (the gate's protocol: 7)")
 	c.Flags().BoolVar(&smoke, "smoke", false, "tiny sizes, one round: correctness only, no time is printed")
 	c.Flags().BoolVar(&force, "force", false, "measure even above load "+fmt.Sprint(int(oracle.MaxLoad))+" or when the load is unknown")
+	c.Flags().DurationVar(&waitLoad, "wait-load", 0, "wait up to this long in all for the load to come back to "+fmt.Sprint(int(oracle.MaxLoad))+" instead of refusing; a round ended above it is discarded and run again (0: refuse)")
 	return c
 }

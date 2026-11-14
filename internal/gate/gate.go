@@ -41,8 +41,23 @@ type Options struct {
 	Gfortran *oracle.Toolchain
 	// Load reads the 1-minute load average (oracle.Load1 when nil).
 	Load func(context.Context) (float64, error)
-	Log  io.Writer
+	// WaitLoad, when positive, waits for the load to come back to the limit
+	// instead of refusing: before the first round, and after a round that
+	// ended above the limit, which is discarded and run again. It is the total
+	// time the run may spend waiting; past it the run is refused.
+	WaitLoad time.Duration
+	// Sleep waits between two load readings (a context-aware timer when nil).
+	Sleep func(context.Context, time.Duration) error
+	Log   io.Writer
 }
+
+// PollEvery is the interval between two load readings while waiting.
+const PollEvery = 30 * time.Second
+
+// MaxDiscardFactor bounds the rounds discarded for load: more than
+// MaxDiscardFactor times the rounds asked for refuses the run, since a host
+// that never stays calm for one round will not give a valid table.
+const MaxDiscardFactor = 3
 
 // Cell is the result of one contender on one kernel.
 type Cell struct {
@@ -72,9 +87,13 @@ type Result struct {
 	Exact   []float64
 	Bound   []float64
 	Cells   map[string]map[string]*Cell // kernel ID -> contender -> cell
-	Load    []float64                   // 1-minute load samples: before round 1 and after every round
-	Inputs  Inputs
-	Verdict Verdict
+	Load    []float64                   // 1-minute load samples bounding the kept rounds: before round 1, after each kept round, and the reading that ended each wait
+	// Discarded counts the rounds thrown away because the load ended them
+	// above the limit (--wait-load); Waited is the time spent waiting.
+	Discarded int
+	Waited    time.Duration
+	Inputs    Inputs
+	Verdict   Verdict
 	// Decided is false for a smoke run: correctness only, no verdict.
 	Decided bool
 }
@@ -97,22 +116,12 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 	if o.Log == nil {
 		o.Log = io.Discard
 	}
-	res := &Result{Smoke: o.Smoke, Rounds: o.Rounds, Kernels: Kernels(), Cells: map[string]map[string]*Cell{}}
-	sample := func() error {
-		l, err := o.Load(ctx)
-		if err != nil {
-			if o.Force || o.Smoke {
-				return nil
-			}
-			return fmt.Errorf("gate: the load average is unknown (%v); --force measures anyway", err)
-		}
-		res.Load = append(res.Load, l)
-		if l > oracle.MaxLoad && !o.Force && !o.Smoke {
-			return fmt.Errorf("gate: 1-minute load %.1f is above %.0f: not measuring, and figures taken at this load are not valid (--force overrides)", l, oracle.MaxLoad)
-		}
-		return nil
+	if o.Sleep == nil {
+		o.Sleep = sleepCtx
 	}
-	if err := sample(); err != nil {
+	res := &Result{Smoke: o.Smoke, Rounds: o.Rounds, Kernels: Kernels(), Cells: map[string]map[string]*Cell{}}
+	w := &loadWatch{o: o, res: res}
+	if err := w.calm(ctx); err != nil {
 		return nil, err
 	}
 	clang, err := LocateClang(ctx, o.Coracle)
@@ -158,8 +167,16 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 			slots = append(slots, slot{ki, r})
 		}
 	}
-	// Interleaved rounds: in every round, every kernel, every contender.
-	for round := 1; round <= o.Rounds; round++ {
+	// Interleaved rounds: in every round, every kernel, every contender. A
+	// round's times are kept only once the load reading after it is in limit.
+	type measured struct {
+		c              *Cell
+		cs             string
+		secs, copySecs float64
+		copies         int64
+	}
+	one := func(round int) (func(), error) {
+		var got []measured
 		for _, sl := range slots {
 			k := res.Kernels[sl.ki]
 			cs, secs, copySecs, copies, err := sl.r.run(ctx)
@@ -174,16 +191,20 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 				c = &Cell{}
 				res.Cells[k.ID][sl.r.contender] = c
 			}
-			c.Seconds = append(c.Seconds, secs)
-			if copySecs > 0 {
-				c.CopySeconds = append(c.CopySeconds, copySecs)
+			got = append(got, measured{c, cs, secs, copySecs, copies})
+		}
+		return func() {
+			for _, m := range got {
+				m.c.Seconds = append(m.c.Seconds, m.secs)
+				if m.copySecs > 0 {
+					m.c.CopySeconds = append(m.c.CopySeconds, m.copySecs)
+				}
+				m.c.Checksum, m.c.Copies = m.cs, m.copies
 			}
-			c.Checksum, c.Copies = cs, copies
-		}
-		fmt.Fprintf(o.Log, "round %d/%d done\n", round, o.Rounds)
-		if err := sample(); err != nil {
-			return nil, err
-		}
+		}, nil
+	}
+	if err := w.rounds(ctx, one); err != nil {
+		return nil, err
 	}
 	if o.Smoke {
 		return res, nil
@@ -325,6 +346,9 @@ func (r *Result) Report(w io.Writer) {
 	}
 	fmt.Fprintf(w, "# gate of bib/fortran.md 4.2: desktop %s, %d rounds interleaved, one core; seconds, median and spread (max-min)\n", hostName(), r.Rounds)
 	fmt.Fprintf(w, "# 1-minute load samples: %s\n", fmtLoads(r.Load))
+	if r.Discarded > 0 || r.Waited > 0 {
+		fmt.Fprintf(w, "# rounds discarded for load: %d; time spent waiting for the load: %s\n", r.Discarded, r.Waited)
+	}
 	names := []string{CA, CB0, CB2, CGF, CDire}
 	fmt.Fprintf(w, "%-4s", "")
 	for _, n := range names {
