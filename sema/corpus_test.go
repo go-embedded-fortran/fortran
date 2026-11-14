@@ -30,8 +30,8 @@ var floors = []struct {
 }{
 	{"FCVS", []string{"lts/Fortran/UnitTests/fcvs21_f95", "llvm-test-suite/Fortran/UnitTests/fcvs21_f95"}, "gf-fcvs.tsv", false, 180, 179, 0, 1},
 	{"gfortran.fortran-torture", []string{"gcc/gcc/testsuite/gfortran.fortran-torture"}, "gf-torture.tsv", false, 314, 313, 1, 0},
-	{"gfortran.dg", []string{"gcc/gcc/testsuite/gfortran.dg"}, "gf-dg.tsv", false, 8306, 5750, 294, 1230},
-	{"gfortran.dg (dg-do run)", []string{"gcc/gcc/testsuite/gfortran.dg"}, "gf-dg.tsv", true, 3151, 2674, 156, 95},
+	{"gfortran.dg", []string{"gcc/gcc/testsuite/gfortran.dg"}, "gf-dg.tsv", false, 8306, 5753, 291, 1202},
+	{"gfortran.dg (dg-do run)", []string{"gcc/gcc/testsuite/gfortran.dg"}, "gf-dg.tsv", true, 3151, 2675, 155, 95},
 }
 
 func TestCorporaDifferentialFloor(t *testing.T) {

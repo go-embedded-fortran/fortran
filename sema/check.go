@@ -47,6 +47,9 @@ type checker struct {
 	// reference through an implicit interface is checked against them (F2018
 	// 15.4.2.2, 15.5.2).
 	globals map[string]*Symbol
+	// where are the masks of the WHERE constructs being checked, innermost
+	// last: the assignments of their bodies conform with them.
+	where []TV
 }
 
 type pendingGeneric struct {
@@ -535,6 +538,10 @@ func (c *checker) parameterItem(sc *Scope, e *syntax.Entity) {
 // setParam gives a named constant its value: the initialisation expression
 // must be a constant expression (F2018 10.1.12) convertible to the type.
 func (c *checker) setParam(sc *Scope, sym *Symbol, t Type, tv TV, pos syntax.Pos) {
+	c.initShape(pos, sym, tv)
+	if sym.Rank == 1 && tv.Values != nil {
+		sym.Values = tv.Values
+	}
 	if t.Lenient() || tv.Type.Lenient() || t.Basic == Derived {
 		return // derived-type constants are typed but not folded
 	}
@@ -771,6 +778,7 @@ func (c *checker) decl(sc *Scope, d *syntax.Decl) {
 		case e.Init != nil && !e.PtrInit:
 			tv := c.expr(sc, e.Init)
 			c.assignable(e.Pos, sym.Type, sym.Rank, tv, "initialization")
+			c.initShape(e.Pos, sym, tv)
 			sym.Flags |= FSave
 		case e.Init != nil:
 			c.expr(sc, e.Init)
@@ -784,17 +792,22 @@ func (c *checker) decl(sc *Scope, d *syntax.Decl) {
 // setDims records the array spec of a symbol (F2018 8.5.8): explicit-shape
 // bounds are constant or, in a procedure, specification expressions.
 func (c *checker) setDims(sc *Scope, sym *Symbol, dims []syntax.Dim) {
-	sym.Dims = nil
+	sym.Dims, sym.Rank = c.arraySpec(sc, dims)
+}
+
+// arraySpec evaluates an array spec: the dimensions with their constant bounds
+// and the rank (-1 for an assumed-rank spec, F2018 8.5.8.7).
+func (c *checker) arraySpec(sc *Scope, dims []syntax.Dim) ([]Dim, int) {
+	var out []Dim
 	for i := range dims {
 		d := &dims[i]
 		if d.Rank {
-			sym.Rank = -1
-			return
+			return nil, -1
 		}
 		var dm Dim
 		switch {
 		case d.Star && d.Lo == nil:
-			dm.Assumed = true
+			dm.Assumed, dm.Lo, dm.LoKnown = true, 1, true
 		case d.Colon && d.Lo == nil && d.Hi == nil:
 			dm.Deferred = true
 		default:
@@ -817,9 +830,9 @@ func (c *checker) setDims(sc *Scope, sym *Symbol, dims []syntax.Dim) {
 				dm.Deferred, dm.AssumedShape = true, true
 			}
 		}
-		sym.Dims = append(sym.Dims, dm)
+		out = append(out, dm)
 	}
-	sym.Rank = len(sym.Dims)
+	return out, len(out)
 }
 
 func (c *checker) boundValue(sc *Scope, e syntax.Expr) (int64, bool) {
@@ -931,19 +944,7 @@ func (c *checker) typeDef(sc *Scope, td *syntax.TypeDef) {
 					dims, hasADims = e.Dims, true
 				}
 				if hasADims {
-					comp.Rank = len(dims)
-					for j := range dims {
-						if dims[j].Rank {
-							comp.Rank = -1
-						} else {
-							if dims[j].Lo != nil {
-								c.expr(sc, dims[j].Lo)
-							}
-							if dims[j].Hi != nil {
-								c.expr(sc, dims[j].Hi)
-							}
-						}
-					}
+					comp.Dims, comp.Rank = c.arraySpec(sc, dims)
 				}
 				if e.Init != nil && !e.PtrInit {
 					c.expr(sc, e.Init)

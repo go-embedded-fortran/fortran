@@ -65,6 +65,8 @@ type Symbol struct {
 	Flags  Flags
 	Intent string // in, out, inout, "" when absent
 	Const  *Const // value of a named constant when folded
+	// Values are the elements of a rank-1 integer named constant (reshape).
+	Values []int64
 	Pos    syntax.Pos
 	Unit   *syntax.Unit // procedure or module definition
 	Scope  *Scope       // the scope of a module or procedure
@@ -162,6 +164,15 @@ type TV struct {
 	// and the designator keeps the rank of s (F2018 9.4.3: the rank of a
 	// designator is that of its one part-ref of nonzero rank).
 	Outer, CompRank int
+	// Shape is the extent of each dimension of an array expression: >= 0 when
+	// known at compile time, -1 when not (shape.go); nil when nothing is known.
+	Shape []int64
+	// Dims are the declared bounds of a whole-array designator (a variable, a
+	// named constant or a component), nil for any other expression.
+	Dims []Dim
+	// Values are the elements of a rank-1 integer constant array, when all of
+	// them are constants (the SHAPE argument of reshape).
+	Values []int64
 }
 
 func (t TV) constant() bool { return t.Const != nil || t.IsConst }

@@ -101,12 +101,18 @@ func TestNegativesAgreeWithGfortran(t *testing.T) {
 
 // TestCallCasesAgreeWithGfortran cross-checks the argument association and
 // generic resolution cases (call_test.go) against gfortran, in both directions.
-func TestCallCasesAgreeWithGfortran(t *testing.T) {
+func TestCallCasesAgreeWithGfortran(t *testing.T) { casesAgree(t, sema.CallCases) }
+
+// TestShapeCasesAgreeWithGfortran does the same for the shape conformance
+// cases (shape_test.go).
+func TestShapeCasesAgreeWithGfortran(t *testing.T) { casesAgree(t, sema.ShapeCases) }
+
+func casesAgree(t *testing.T, cases func() (neg, pos []sema.Case)) {
 	tc, err := oracle.Locate()
 	if err != nil {
 		t.Skipf("no oracle: %v", err)
 	}
-	neg, pos := sema.CallCases()
+	neg, pos := cases()
 	for _, c := range neg {
 		t.Run(c.Name, func(t *testing.T) {
 			if gfortranAccepts(t, tc.Gfortran, c.Src) {

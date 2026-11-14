@@ -129,6 +129,7 @@ type Component struct {
 	Name    string
 	Type    Type
 	Rank    int
+	Dims    []Dim
 	Pointer bool
 	Alloc   bool
 }
