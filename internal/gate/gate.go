@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-embedded-fortran/fortran/eval"
 	"github.com/go-embedded-fortran/fortran/internal/oracle"
+	"github.com/go-embedded-fortran/fortran/sema"
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
 
@@ -236,7 +237,12 @@ func runnersFor(ctx context.Context, o Options, k Kernel, s Size, clang *Clang, 
 	if perr != nil {
 		return nil, fmt.Errorf("parse: %w", perr)
 	}
-	prog, err := eval.Compile(file)
+	// the evaluator consumes the typed tree: the analyser runs once, here
+	info, errs := sema.Analyze(file, nil)
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("analyse %s: %w", k.Stem, errs)
+	}
+	prog, err := eval.Compile(file, info)
 	if err != nil {
 		return nil, err
 	}

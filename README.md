@@ -16,7 +16,7 @@ by hand.
 |---|---|---|
 | M0 oracle harness | `internal/oracle`, `cmd/foracle`, pinned gfortran 15.2.0, golden file, corpus runner, reference column of the gate | **done** |
 | M1 front end, part 1 | lexer (free and fixed form, continuation, `include`), parser for the gate's kernels; **the §4.2 gate**, report published | in progress (syntax done) |
-| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: package `sema` (scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types: PR 1), the cell splitter, session module and go-notebook-facing analysis (PR 4), generic resolution, argument association, explicit-interface requirements and `intent` at calls (PR 2), shape conformance (PR 3); `eval` on the typed tree is not done |
+| M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: package `sema` (scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types: PR 1), the cell splitter, session module and go-notebook-facing analysis (PR 4), generic resolution, argument association, explicit-interface requirements and `intent` at calls (PR 2), shape conformance (PR 3), and `eval` consumes the typed tree; the playground side of the gate and the remaining semantics (see "Not yet") are open |
 | M3 back end | as the gate decides: A = closure compiler over the typed tree, B = lowering to go-embedded-c's IR | planned |
 | M4 runtime | I/O (ported from flang-rt), intrinsics on go-ndarray and go-fft | planned |
 | M5 notebook bridge | values table, `file:line` errors, cells on desktop and playground | planned |
@@ -202,7 +202,7 @@ tests of the rule are table-driven with the edge cases at exactly 5, 2 and 1.2.
 
 | contender | what it is |
 |---|---|
-| **A** | package `eval` (**prototype**, the seed of M3-A): the `syntax` AST compiled once into closures over typed slots (integer and real slots, no boxing in arithmetic); `real(8)` arrays of rank 1 and 2, column-major, bounds-checked; whole-array expressions and `matmul` are handed to go-ndarray v0.40.3. It accepts exactly the gate kernels' language and refuses the rest with a positioned error. |
+| **A** | package `eval` (**prototype**, the seed of M3-A): the `syntax` AST and its typed tree (`sema.Info`: every type, kind, rank, constant value and resolved name comes from the analyser, `eval` keeps only storage slots) compiled once into closures over typed slots (integer and real slots, no boxing in arithmetic); `real(8)` arrays of rank 1 and 2, column-major, bounds-checked; whole-array expressions and `matmul` are handed to go-ndarray v0.40.3. It accepts exactly the gate kernels' language and refuses the rest with a positioned error. |
 | **B-near**, **B-upper** | the C transliterations in `testdata/gate/c/` (line for line, same checksums, same formulas) compiled by clang 23.1.4 to `wasm32-wasip1` at `-O0` and `-O2`, run on wazero v1.12.0 (the version go-embedded-c pins). The array kernels (`matmul`, `a = b*c + d`) call the Go library through a host import, so the operands are copied out of linear memory and the result back inside the timed region, as bib §4.2 says; the copy cost alone is reported next to it. |
 | **gfortran** | 15.2.0 `-O2`, native: the reference. |
 | **direct** | go-ndarray called straight from Go, no evaluator, no copy: the baseline of A's array kernels. |
@@ -500,8 +500,9 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
   resolved), the `!GCC$ ATTRIBUTES NO_ARG_CHECK` directive, `select type` dispatch,
   derived-type I/O, submodules, `entry` result typing, `common`/`equivalence`
   storage rules, `data` value conversion, the go-notebook adapter and the
-  "value from Go into a cell" direction of bib §7. `eval` was **not** moved onto the
-  typed tree (it still walks the syntax tree).
+  "value from Go into a cell" direction of bib §7. `eval` consumes the typed tree (see
+  "The gate"): a program the analyser refuses is refused by `eval.Compile`, and
+  `eval` no longer parses literals, folds constants or reads type specs.
 - No general evaluator: package `eval` is the gate's
   prototype and accepts only the kernels' language. The gate's playground home
   (headless browser) is not implemented, and its figures were not published
