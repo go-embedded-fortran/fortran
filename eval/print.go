@@ -229,8 +229,8 @@ func (c *compiler) implicitDoVar(d *syntax.ImpliedDo) (*sym, error) {
 	if ss.Type.Basic != sema.Integer || (ss.Type.Kind != 1 && ss.Type.Kind != 2 && ss.Type.Kind != 4 && ss.Type.Kind != 8) {
 		return nil, c.errf(d, "the implied-do variable %s must be an integer", d.Var.Name)
 	}
-	s := &sym{k: kInt, kd: kdOf(ss.Type), slot: c.p.nInts}
-	c.p.nInts++
+	s := &sym{k: kInt, kd: kdOf(ss.Type), slot: c.cur.nInts, owner: c.cur}
+	c.cur.nInts++
 	c.syms[ss] = s
 	return s, nil
 }
