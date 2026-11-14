@@ -1,0 +1,2 @@
+go test fuzz v1
+string("(F1048576.1048576)")

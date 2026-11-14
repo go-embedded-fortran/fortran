@@ -1,0 +1,2 @@
+go test fuzz v1
+string("(EN12.6,ES0.0,G0.17E0)")

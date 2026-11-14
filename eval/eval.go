@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-ndarray/ndarray"
 
+	"github.com/go-embedded-fortran/fortran/rt"
 	"github.com/go-embedded-fortran/fortran/sema"
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
@@ -41,6 +42,7 @@ type frame struct {
 	reals  []float64
 	arrs   []*array
 	out    io.Writer
+	tab    *rt.Table // the I/O units of the Fortran runtime
 	start  time.Time
 	copied int64
 }
@@ -74,9 +76,11 @@ func (p *Program) Run(out io.Writer) (st Stats, err error) {
 		reals: make([]float64, p.nReals),
 		arrs:  make([]*array, p.nArrs),
 		out:   out,
+		tab:   rt.NewTable(out, io.Discard, nil, nil),
 		start: time.Now(),
 	}
 	defer func() {
+		f.tab.Flush() // a non-advancing record left open ends at the end of the program
 		if r := recover(); r != nil {
 			if e, ok := r.(*Error); ok {
 				err = e
