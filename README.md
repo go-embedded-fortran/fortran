@@ -256,7 +256,7 @@ is provisioned.
 | `foracle golden` | regenerates `testdata/programs.golden` from the 14 programs in `testdata/programs/` |
 | `foracle corpus --dir D` | compiles and runs every `.f90 .f95 .f03 .f08` (free form) and `.f .for` (fixed form) file below D; one line per file: path, outcome, exit status, detail |
 | `foracle bench` | the reference column of the §4.2 gate: the four kernels of `testdata/gate/` (five programs: K3 as loops and as `matmul`) with gfortran `-O2`, 7 rounds, median and spread; refuses above 1-minute load 8 |
-| `foracle gate [--smoke]` | the whole §4.2 gate: the contenders on the kernels, checksum bounds, the decision rule (see "The gate"); refuses above 1-minute load 8 |
+| `foracle gate [--smoke] [--wait-load D]` | the whole §4.2 gate: the contenders on the kernels, checksum bounds, the decision rule (see "The gate"); refuses above 1-minute load 8, or with `--wait-load` waits up to D and reruns a round the load spoiled |
 | `foracle parse-rate --dir D` | parses every Fortran file below D with the `syntax` package and compares with `gfortran -fsyntax-only` (see "The parser") |
 | `foracle parse-bench --dir D` | parse throughput against `gfortran -fsyntax-only` on the largest files both accept; refused above load 8 |
 | `foracle toolchain --home H [--flang]` | installs the pinned toolchain |
@@ -314,11 +314,17 @@ answer B or "A first"**; the output says so. The browser lane is
 no verdict, and is what CI runs (`gate-smoke`, linux and macOS): a shared runner
 is never at a load the gate accepts.
 
+On a shared host, `foracle gate --wait-load 8h` waits for the load instead of
+refusing: it polls every 30 s, keeps a round only if the load is at or below 8
+before and after it, discards and reruns a round that ends above it (at most 3
+times the rounds asked for), and gives up after the stated total wait. The
+report prints the load samples bounding the kept rounds, the rounds discarded
+and the time spent waiting.
+
 **Figures: not run, load.** The development machine was at 1-minute load 10 to
-100 on 2026-11-13, above the gate's limit of 8, and `foracle gate` refuses to
-measure there (and discards a run whose load rises above 8 during it): no time
-and no verdict is published here. The first unloaded run's table, with its load
-samples, replaces this paragraph.
+100 on 2026-11-13, and two full runs on 2026-11-14 stopped after rounds 1 and 2
+when the load rose to 21 and 52.5. No time and no verdict is published here.
+The first unloaded run's table, with its load samples, replaces this paragraph.
 
 ### Golden programs
 
