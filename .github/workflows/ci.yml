@@ -44,7 +44,7 @@ jobs:
       # for the Go heap and, on Linux, ulimit -v for the address space.
       - name: Parser bomb tests under GOMEMLIMIT and ulimit -v
         if: matrix.os == 'ubuntu-latest'
-        run: ulimit -v 16000000 && GOMEMLIMIT=256MiB go test -count=1 -timeout=10m ./syntax ./sema
+        run: ulimit -v 16000000 && GOMEMLIMIT=256MiB go test -count=1 -timeout=10m ./syntax ./sema ./rt
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -72,6 +72,8 @@ jobs:
           - { pkg: ./syntax, target: FuzzLex }
           - { pkg: ./sema, target: FuzzAnalyze }
           - { pkg: ./sema, target: FuzzSession }
+          - { pkg: ./rt, target: FuzzFormat }
+          - { pkg: ./rt, target: FuzzInput }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

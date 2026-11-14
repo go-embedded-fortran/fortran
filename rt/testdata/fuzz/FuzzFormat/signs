@@ -1,0 +1,2 @@
+go test fuzz v1
+string("(-1PE10.3,+2P,SP,SS,BZ,BN,RU,RD,RZ,RN,RC,RP,DC,DP)")

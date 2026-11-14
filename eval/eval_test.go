@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/go-ndarray/ndarray"
 
+	"github.com/go-embedded-fortran/fortran/internal/golden"
 	"github.com/go-embedded-fortran/fortran/sema"
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
@@ -375,18 +377,68 @@ end program p
 	}
 }
 
-func TestParseFormat(t *testing.T) {
-	for _, bad := range []string{"es24.16", "(i5)", "(es24)", "(f0.x)", "(es24.16,)"} {
-		if _, err := parseFormat(bad); err == nil {
-			t.Errorf("%q accepted", bad)
-		}
+// print and write are package rt: formats are checked when the program is
+// compiled, and the output is the Fortran runtime's (gfortran's, byte for byte;
+// package rt proves that against the oracle).
+func TestPrintOnRT(t *testing.T) {
+	out, _ := run(t, `program p
+  implicit none
+  integer :: i
+  integer(8) :: j
+  real(8) :: x
+  i = 42
+  j = 7_8
+  x = 1d0/3d0
+  print *, i, j, x, 'text'
+  print '(i5,1x,f8.3,1x,es12.4)', i, x, x
+  print '(3(i2,1x))', 1, 2, 3, 4
+  write (*, '(a,i0)') 'n=', i
+  write (*, *) x
+  write (6, '(1pe12.4)') x
+  write (*, '(a)', advance='no') 'no newline'
+end program p
+`)
+	want := "" +
+		"          42                    7  0.33333333333333331      text\n" +
+		"   42    0.333   3.3333E-01\n" +
+		" 1  2  3\n" +
+		" 4\n" +
+		"n=42\n" +
+		"  0.33333333333333331     \n" +
+		"  3.3333E-01\n" +
+		"no newline\n"
+	if out != want {
+		t.Errorf("got\n%q\nwant\n%q", out, want)
 	}
-	e, err := parseFormat("(a, f0.6, ES12.3)")
-	if err != nil || len(e) != 3 || e[1] != (edit{'f', 0, 6}) || e[2] != (edit{'e', 12, 3}) {
-		t.Errorf("%v %v", e, err)
+}
+
+func TestPrintRefusals(t *testing.T) {
+	for name, src := range map[string]string{
+		"bad format":      "program p\n  implicit none\n  print '(i5', 1\nend program p\n",
+		"format variable": "program p\n  implicit none\n  integer :: i\n  print i, 1\nend program p\n",
+		"unit 7":          "program p\n  implicit none\n  write (7, *) 1\nend program p\n",
+		"iostat":          "program p\n  implicit none\n  integer :: ios\n  write (*, *, iostat=ios) 1\nend program p\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, perr := syntax.Parse("t.f90", []byte(src), nil)
+			if perr != nil {
+				t.Fatalf("parse: %v", perr)
+			}
+			if _, err := Compile(f, nil); err == nil {
+				t.Fatal("accepted")
+			}
+		})
 	}
-	if got := (edit{'e', 24, 16}).real(1.0 / 3); got != "  3.3333333333333331E-01" {
-		t.Errorf("%q", got)
+}
+
+func TestPrintRuntimeError(t *testing.T) {
+	p, err := compile(t, "program p\n  implicit none\n  real(8) :: x\n  x = 1d0\n  print '(i5)', x\nend program p\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := p.Run(&out); err == nil || !strings.Contains(err.Error(), "may not be used with a REAL") {
+		t.Errorf("err = %v", err)
 	}
 }
 
@@ -463,4 +515,49 @@ func TestKindsComeFromTheAnalyser(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGoldenPrograms runs every golden program (testdata/programs, the
+// oracle's recorded stdout in testdata/programs.golden) that the prototype
+// accepts and compares the output byte for byte; the others are refused with a
+// positioned error and counted, never skipped silently.
+func TestGoldenPrograms(t *testing.T) {
+	data, err := os.ReadFile("../testdata/programs.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := golden.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran, refused := 0, 0
+	for _, r := range recs {
+		name := strings.TrimSuffix(strings.TrimSuffix(r.Name, ".f90"), "programs/")
+		name = strings.TrimPrefix(name, "programs/")
+		src, err := os.ReadFile("../testdata/programs/" + name + ".f90")
+		if err != nil {
+			t.Fatalf("%s: %v", r.Name, err)
+		}
+		f, perr := syntax.Parse(name+".f90", src, nil)
+		if perr != nil {
+			t.Fatalf("%s: parse: %v", name, perr)
+		}
+		p, cerr := Compile(f, nil)
+		if cerr != nil {
+			refused++
+			t.Logf("%s: refused: %v", name, cerr)
+			continue
+		}
+		var out bytes.Buffer
+		if _, rerr := p.Run(&out); rerr != nil {
+			refused++
+			t.Logf("%s: run refused: %v", name, rerr)
+			continue
+		}
+		ran++
+		if r.Exit == 0 && out.String() != string(r.Stdout) {
+			t.Errorf("%s: output differs from the oracle's\n got %q\nwant %q", name, out.String(), r.Stdout)
+		}
+	}
+	t.Logf("%d golden programs run and identical, %d refused", ran, refused)
 }

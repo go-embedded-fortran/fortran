@@ -1,109 +1,151 @@
 package eval
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
-
+	"github.com/go-embedded-fortran/fortran/rt"
+	"github.com/go-embedded-fortran/fortran/sema"
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
 
-// An edit descriptor of the formats the prototype knows.
-type edit struct {
-	kind byte // 'a', 'f', 'e' (es)
-	w, d int
-}
-
-// parseFormat reads a character format such as "(es24.16)" or "(a,f0.6)": a
-// list of the a, fW.D and esW.D descriptors.
-func parseFormat(s string) ([]edit, error) {
-	s = strings.TrimSpace(s)
-	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
-		return nil, fmt.Errorf("format %q is not a parenthesised list", s)
-	}
-	var out []edit
-	for _, d := range strings.Split(s[1:len(s)-1], ",") {
-		d = strings.ToLower(strings.TrimSpace(d))
-		var e edit
-		var rest string
-		switch {
-		case d == "a":
-			out = append(out, edit{kind: 'a'})
-			continue
-		case strings.HasPrefix(d, "es"):
-			e.kind, rest = 'e', d[2:]
-		case strings.HasPrefix(d, "f"):
-			e.kind, rest = 'f', d[1:]
-		default:
-			return nil, fmt.Errorf("edit descriptor %q is not supported", d)
-		}
-		ws, ds, ok := strings.Cut(rest, ".")
-		w, err1 := strconv.Atoi(ws)
-		dd, err2 := strconv.Atoi(ds)
-		if !ok || err1 != nil || err2 != nil || w < 0 || dd < 0 || w > 1<<16 || dd > 1<<10 {
-			return nil, fmt.Errorf("edit descriptor %q is malformed", d)
-		}
-		e.w, e.d = w, dd
-		out = append(out, e)
-	}
-	return out, nil
-}
-
-func (e edit) real(v float64) string {
-	var s string
-	if e.kind == 'e' {
-		s = strconv.FormatFloat(v, 'E', e.d, 64)
-	} else {
-		s = strconv.FormatFloat(v, 'f', e.d, 64)
-	}
-	if len(s) < e.w {
-		s = strings.Repeat(" ", e.w-len(s)) + s
-	}
-	return s
-}
-
+// print compiles PRINT and WRITE onto package rt: the formatted and
+// list-directed output of the Fortran runtime (F2018 clauses 12 and 13).
+// The format is a character literal or '*'; the units are '*' and 6 (the
+// cell output) and 0 (standard error, discarded here); the items are
+// character literals and integer and real(8) scalar expressions.
 func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
-	if s.Kind != "print" {
-		return nil, c.errf(s, "only print is supported")
+	var unit syntax.Expr
+	var format syntax.Expr
+	nonAdv := false
+	switch s.Kind {
+	case "print":
+		format = s.Format
+	case "write":
+		pos := 0
+		for _, a := range s.Controls {
+			switch a.Keyword {
+			case "":
+				switch pos {
+				case 0:
+					unit = a.Value
+				case 1:
+					format = a.Value
+				default:
+					return nil, c.errf(s, "too many positional controls")
+				}
+				pos++
+			case "unit":
+				unit = a.Value
+			case "fmt":
+				format = a.Value
+			case "advance":
+				lit, ok := a.Value.(*syntax.StringLit)
+				if !ok {
+					return nil, c.errf(a.Value, "advance= must be a character literal")
+				}
+				switch lit.Value {
+				case "no", "NO", "No":
+					nonAdv = true
+				case "yes", "YES", "Yes":
+				default:
+					return nil, c.errf(a.Value, "advance=%q is not supported", lit.Value)
+				}
+			default:
+				return nil, c.errf(a.Value, "the %s= specifier is not supported", a.Keyword)
+			}
+		}
+	default:
+		return nil, c.errf(s, "%s is not supported by the prototype", s.Kind)
 	}
-	lit, ok := s.Format.(*syntax.StringLit)
-	if !ok {
-		return nil, c.errf(s, "only a character-literal format is supported")
+	unitNum := 6
+	switch u := unit.(type) {
+	case nil, *syntax.Asterisk:
+	case *syntax.IntLit:
+		n, err := intLit(u)
+		if err != nil || (n != 6 && n != 0) {
+			return nil, c.errf(u, "only units *, 6 and 0 are supported")
+		}
+		unitNum = n
+	default:
+		return nil, c.errf(unit, "only units *, 6 and 0 are supported")
 	}
-	eds, err := parseFormat(lit.Value)
-	if err != nil {
-		return nil, c.errf(s, "%v", err)
+	sp := rt.Spec{NonAdvancing: nonAdv}
+	switch f := format.(type) {
+	case *syntax.Asterisk:
+	case *syntax.StringLit:
+		if _, err := rt.CompileFormat(f.Value); err != nil {
+			return nil, c.errf(f, "%v", err)
+		}
+		sp.Format, sp.HasFormat = f.Value, true
+	default:
+		return nil, c.errf(s, "only '*' and a character-literal format are supported")
 	}
-	if len(eds) != len(s.Items) {
-		return nil, c.errf(s, "%d edit descriptors for %d items (format reversion is not supported)", len(eds), len(s.Items))
-	}
-	parts := make([]func(*frame) string, len(eds))
+	items := make([]func(*frame, *rt.Val), len(s.Items))
 	for i, it := range s.Items {
-		e := eds[i]
-		if sl, ok := it.(*syntax.StringLit); ok && e.kind == 'a' {
-			v := sl.Value
-			parts[i] = func(*frame) string { return v }
-			continue
-		}
-		if e.kind == 'a' {
-			return nil, c.errf(it, "the a descriptor needs a character literal")
-		}
-		x, err := c.expr(it)
+		fn, err := c.printItem(it)
 		if err != nil {
 			return nil, err
 		}
-		if x.k != kReal {
-			return nil, c.errf(it, "the f and es descriptors need a real(8) value")
-		}
-		r := x.r
-		parts[i] = func(f *frame) string { return e.real(r(f)) }
+		items[i] = fn
 	}
+	vals := make([]rt.Val, len(items))
 	return func(f *frame) {
-		var b strings.Builder
-		for _, p := range parts {
-			b.WriteString(p(f))
+		for i, fn := range items {
+			fn(f, &vals[i])
 		}
-		b.WriteByte('\n')
-		fmt.Fprint(f.out, b.String())
+		u := f.tab.Get(unitNum)
+		if u == nil {
+			fail(f, "Fortran runtime error: unit %d is not connected", unitNum)
+		}
+		if err := u.Write(sp, vals); err != nil {
+			fail(f, "Fortran runtime error: %s", err.Msg)
+		}
 	}, nil
+}
+
+func intLit(l *syntax.IntLit) (int, error) {
+	n := 0
+	for _, ch := range l.Text {
+		if ch < '0' || ch > '9' {
+			return 0, errBadLit
+		}
+		n = n*10 + int(ch-'0')
+		if n > 1<<20 {
+			return 0, errBadLit
+		}
+	}
+	return n, nil
+}
+
+type litError struct{}
+
+func (litError) Error() string { return "bad literal" }
+
+var errBadLit error = litError{}
+
+// printItem compiles one output item into a function that fills an rt.Val.
+func (c *compiler) printItem(it syntax.Expr) (func(*frame, *rt.Val), error) {
+	if sl, ok := it.(*syntax.StringLit); ok {
+		v := rt.Str(sl.Value)
+		return func(_ *frame, d *rt.Val) { *d = v }, nil
+	}
+	tv, err := c.tv(it)
+	if err != nil {
+		return nil, err
+	}
+	x, err := c.expr(it)
+	if err != nil {
+		return nil, err
+	}
+	switch x.k {
+	case kInt:
+		size := tv.Type.Kind
+		if tv.Type.Basic != sema.Integer || size == 0 {
+			size = sema.DefaultInt
+		}
+		fn := x.i
+		return func(f *frame, d *rt.Val) { *d = rt.Int(size, fn(f)) }, nil
+	case kReal:
+		fn := x.r
+		return func(f *frame, d *rt.Val) { *d = rt.Real8(fn(f)) }, nil
+	}
+	return nil, c.errf(it, "array items are not supported in an output list")
 }

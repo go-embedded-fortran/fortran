@@ -11,6 +11,20 @@ Linked into the binaries (go.mod)
   Apache-2.0)
 
 ------------------------------------------------------------------------------
+Ported into the source (package rt)
+
+- LLVM flang-rt, llvmorg-23.1.4 (Apache License 2.0 with LLVM Exceptions,
+  Copyright (c) the LLVM Project contributors): the algorithms of
+  flang-rt/lib/runtime/edit-output.cpp, edit-input.cpp, io-stmt.cpp
+  (list-directed) and flang-rt/include/flang-rt/runtime/format-implementation.h
+  are ported to Go in rt/real.go, rt/output.go, rt/control.go, rt/format.go,
+  rt/input.go and rt/listin.go. Each of those files carries a header naming
+  what it is ported from, the tag and the licence (SPDX-License-Identifier:
+  Apache-2.0 WITH LLVM-exception), and what was changed. The licence text is at
+  https://llvm.org/LICENSE.txt; the LLVM exception (the run-time exception to
+  section 4 of the Apache License) applies to the ported code.
+
+------------------------------------------------------------------------------
 Downloaded or run, never committed, linked or redistributed
 
 - gfortran 15.2.0 (GPL-3.0-or-later with the GCC Runtime Library Exception for
