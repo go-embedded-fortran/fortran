@@ -280,8 +280,6 @@ end program p
 func TestPart1Refusals(t *testing.T) {
 	for name, src := range map[string]string{
 		"exit outside a loop": "program p\n  implicit none\n  exit\nend program p\n",
-		"character variable":  "program p\n  implicit none\n  character(len=3) :: s\nend program p\n",
-		"user module":         "module m\nend module m\nprogram p\n  use m\n  implicit none\nend program p\n",
 		"do concurrent":       "program p\n  implicit none\n  integer :: i\n  do concurrent (i = 1:3)\n  end do\nend program p\n",
 		"select on real":      "program p\n  implicit none\n  real :: x\n  x = 1.0\n  select case (x)\n  end select\nend program p\n",
 	} {

@@ -21,6 +21,7 @@ func (c *compiler) program() (*Program, error) {
 			main = u
 		case syntax.SubroutineUnit, syntax.FunctionUnit:
 			c.externals[u.Ident.Name] = u
+		case syntax.ModuleUnit:
 		default:
 			return nil, c.errf(u, "a %s is not supported yet", u.Kind)
 		}
@@ -35,6 +36,10 @@ func (c *compiler) program() (*Program, error) {
 			return c.errf(u, "the program unit was not analysed")
 		}
 		p := &procCode{name: u.Ident.Name, unit: u, scope: sc, host: host}
+		if u.Kind == syntax.ModuleUnit {
+			p.module, p.modIdx = true, len(c.modules)
+			c.modules = append(c.modules, p)
+		}
 		c.procs[u] = p
 		order = append(order, p)
 		for _, cu := range u.Contains {
@@ -44,12 +49,21 @@ func (c *compiler) program() (*Program, error) {
 		}
 		return nil
 	}
+	// modules first, in file order (a module is defined before it is used),
+	// then the main program, then the external procedures
+	for _, u := range c.file.Units {
+		if u.Kind == syntax.ModuleUnit {
+			if err := add(u, nil); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if err := add(main, nil); err != nil {
 		return nil, err
 	}
 	pmain := c.procs[main]
 	for _, u := range c.file.Units {
-		if u != main {
+		if u != main && u.Kind != syntax.ModuleUnit {
 			if err := add(u, nil); err != nil {
 				return nil, err
 			}
@@ -65,7 +79,7 @@ func (c *compiler) program() (*Program, error) {
 			return nil, err
 		}
 	}
-	return &Program{main: pmain}, nil
+	return &Program{main: pmain, mods: c.modules}, nil
 }
 
 func (c *compiler) enter(p *procCode) {
@@ -98,8 +112,8 @@ func (c *compiler) declareProc(p *procCode) error {
 			}
 		}
 		s := c.syms[ss]
-		if s.isC || s.k == kArr || s.k == kStr {
-			return c.errf(p.unit, "dummy argument %s: only scalar integer, real and logical dummy arguments are supported yet", name.Name)
+		if s.isC || s.k == kArr {
+			return c.errf(p.unit, "dummy argument %s: only scalar integer, real, logical and character dummy arguments are supported yet", name.Name)
 		}
 		p.params = append(p.params, s)
 		p.intent = append(p.intent, ss.Intent)
@@ -115,8 +129,8 @@ func (c *compiler) declareProc(p *procCode) error {
 				}
 			}
 			s := c.syms[ss]
-			if s.isC || s.k == kArr || s.k == kStr {
-				return c.errf(p.unit, "function %s: only scalar integer, real and logical results are supported yet", p.name)
+			if s.isC || s.k == kArr {
+				return c.errf(p.unit, "function %s: only scalar integer, real, logical and character results are supported yet", p.name)
 			}
 			p.result = s
 		}
@@ -131,7 +145,7 @@ func (c *compiler) declareProc(p *procCode) error {
 // isSpec reports a specification statement, compiled by declareProc.
 func isSpec(s syntax.Stmt) bool {
 	switch s.(type) {
-	case *syntax.Decl, *syntax.ImplicitStmt, *syntax.UseStmt:
+	case *syntax.Decl, *syntax.ImplicitStmt, *syntax.UseStmt, *syntax.Interface, *syntax.AttrStmt, *syntax.KeywordStmt:
 		return true
 	}
 	return false
@@ -158,6 +172,12 @@ func (c *compiler) compileProc(p *procCode) error {
 // hops is the number of static links between the unit being compiled and the
 // unit that owns the variable s.
 func (c *compiler) hops(s *sym, at syntax.Node) (int, error) {
+	if s.owner == c.cur {
+		return 0, nil
+	}
+	if s.owner.module {
+		return -1 - s.owner.modIdx, nil // a module variable: the module's frame
+	}
 	n := 0
 	for p := c.cur; p != nil; p = p.host {
 		if p == s.owner {
@@ -168,8 +188,12 @@ func (c *compiler) hops(s *sym, at syntax.Node) (int, error) {
 	return 0, c.errf(at, "a variable of another program unit")
 }
 
-// hop follows n static links.
+// hop reaches the frame of a variable's owner: n static links up for n >= 0,
+// the frame of module -1-n for n < 0.
 func (f *frame) hop(n int) *frame {
+	if n < 0 {
+		return f.mods[-1-n]
+	}
 	for ; n > 0; n-- {
 		f = f.up
 	}
@@ -180,6 +204,8 @@ func (f *frame) hop(n int) *frame {
 func hostRead(s *sym, n int) *ex {
 	slot := s.slot
 	switch s.k {
+	case kStr:
+		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return f.hop(n).strs[slot] }}
 	case kInt:
 		return &ex{k: kInt, kd: s.kd, slot: -1, i: func(f *frame) int64 { return f.hop(n).ints[slot] }}
 	case kLog:
@@ -201,6 +227,16 @@ func (c *compiler) hostStore(s *sym, v *ex, n int, at syntax.Node) (stmtFn, erro
 	case s.k == kLog && v.k == kLog:
 		fn := v.b
 		return func(f *frame) { x := fn(f); f.hop(n).ints[slot] = b2i(x) }, nil
+	case s.k == kStr && v.k == kStr:
+		fn, ln := v.s, s.clen
+		return func(f *frame) {
+			x, h := fn(f), f.hop(n)
+			if ln < 0 {
+				h.strs[slot] = fitLen(x, int64(len(h.strs[slot])))
+			} else {
+				h.strs[slot] = fitLen(x, ln)
+			}
+		}, nil
 	case s.k == kReal && (v.k == kReal || v.k == kInt):
 		fn := v.asReal().r
 		return func(f *frame) {
@@ -280,9 +316,11 @@ func (c *compiler) invoker(at syntax.Node, p *procCode, args []syntax.Arg) (func
 		}
 	}
 	// the static link of the callee: the frame of its host, found from here
-	n := -1
-	if p.host != nil {
-		n = 0
+	n, hasUp := 0, p.host != nil
+	switch {
+	case p.host != nil && p.host.module:
+		n = -1 - p.host.modIdx
+	case p.host != nil:
 		for h := c.cur; h != p.host; h = h.host {
 			if h == nil {
 				return nil, c.errf(at, "%s is an internal procedure of another unit", p.name)
@@ -303,7 +341,7 @@ func (c *compiler) invoker(at syntax.Node, p *procCode, args []syntax.Arg) (func
 	}
 	return func(f *frame) *frame {
 		var up *frame
-		if n >= 0 {
+		if hasUp {
 			up = f.hop(n)
 		}
 		cf := p.newFrame(f, up)
@@ -333,6 +371,13 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	slot := ps.slot
 	var b binding
 	switch ps.k {
+	case kStr:
+		fn, n := v.s, ps.clen
+		if n < 0 { // character(*): the dummy takes the length of the actual
+			b.set = func(f, cf *frame) { cf.strs[slot] = fn(f) }
+		} else {
+			b.set = func(f, cf *frame) { cf.strs[slot] = fitLen(fn(f), n) }
+		}
 	case kInt:
 		fn := v.i
 		b.set = func(f, cf *frame) { cf.ints[slot] = fn(f) }
@@ -355,6 +400,10 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	var tmp int
 	var read *ex
 	switch ps.k {
+	case kStr:
+		tmp = c.cur.nStrs
+		c.cur.nStrs++
+		read = &ex{k: kStr, slot: -1, s: func(f *frame) string { return f.strs[tmp] }}
 	case kInt:
 		tmp = c.cur.nInts
 		c.cur.nInts++
@@ -375,6 +424,8 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	switch ps.k {
 	case kReal:
 		b.back = func(f, cf *frame) { f.reals[tmp] = cf.reals[slot]; st(f) }
+	case kStr:
+		b.back = func(f, cf *frame) { f.strs[tmp] = cf.strs[slot]; st(f) }
 	default:
 		b.back = func(f, cf *frame) { f.ints[tmp] = cf.ints[slot]; st(f) }
 	}
@@ -388,7 +439,7 @@ func (c *compiler) storeVar(s *sym, v *ex, at syntax.Node) (stmtFn, error) {
 	if err != nil {
 		return nil, err
 	}
-	if n > 0 {
+	if n != 0 {
 		return c.hostStore(s, v, n, at)
 	}
 	return c.store(s, v, at)
@@ -426,6 +477,8 @@ func (c *compiler) funcCall(n *syntax.Index, ss *sema.Symbol) (*ex, error) {
 	r := p.result
 	slot := r.slot
 	switch r.k {
+	case kStr:
+		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return run(f).strs[slot] }}, nil
 	case kInt:
 		return &ex{k: kInt, kd: r.kd, slot: -1, i: func(f *frame) int64 { return run(f).ints[slot] }}, nil
 	case kLog:
