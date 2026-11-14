@@ -401,6 +401,12 @@ func (p *parser) whereStmt() Stmt {
 		p.enter()
 		w.Single = p.stmt()
 		p.leave()
+		// R1041: where-stmt is WHERE (mask-expr) where-assignment-stmt.
+		switch w.Single.(type) {
+		case *Assignment, *BadStmt, nil:
+		default:
+			p.fail(w.Single.P(), "a WHERE statement holds an assignment, not another statement")
+		}
 		return w
 	}
 	p.done()
@@ -443,6 +449,13 @@ func (p *parser) forallStmt() Stmt {
 		p.enter()
 		f.Single = p.stmt()
 		p.leave()
+		// R1055: forall-stmt is FORALL concurrent-header
+		// forall-assignment-stmt, an assignment or a pointer assignment.
+		switch f.Single.(type) {
+		case *Assignment, *PointerAssign, *BadStmt, nil:
+		default:
+			p.fail(f.Single.P(), "a FORALL statement holds an assignment or a pointer assignment, not another statement")
+		}
 		return f
 	}
 	p.done()
