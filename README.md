@@ -82,9 +82,11 @@ copies are listed in the package documentation (`go doc ./rt`): `F0.d` prints
 `.50`, `E0.d` an E+000 exponent, `G8.1` of 0.95 is `1.`, `I5.8` is refused, `A`
 and `L` accept integers, a repeat count cannot cross kinds on input, and so on.
 `testdata/programs/formatted_output.f90` is reproduced on rt
-(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` can run none yet
-(they use real(4), procedures, `stop` and modules: M3), `TestGoldenPrograms`
-counts the refusals.
+(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 7 and
+they are byte-identical to their goldens (stdout, stderr, exit status); the
+other 7 use internal procedures, modules and derived types, character
+variables, and arrays of integers or sections (M3-A parts 2 to 4),
+`TestGoldenPrograms` counts the runs and the refusals.
 
 ### Performance
 
@@ -271,7 +273,7 @@ tests of the rule are table-driven with the edge cases at exactly 5, 2 and 1.2.
 
 | contender | what it is |
 |---|---|
-| **A** | package `eval` (**prototype**, the seed of M3-A): the `syntax` AST and its typed tree (`sema.Info`: every type, kind, rank, constant value and resolved name comes from the analyser, `eval` keeps only storage slots) compiled once into closures over typed slots (integer and real slots, no boxing in arithmetic); `real(8)` arrays of rank 1 and 2, column-major, bounds-checked; whole-array expressions and `matmul` are handed to go-ndarray v0.40.3. It accepts exactly the gate kernels' language and refuses the rest with a positioned error. |
+| **A** | package `eval` (**prototype**, the seed of M3-A): the `syntax` AST and its typed tree (`sema.Info`: every type, kind, rank, constant value and resolved name comes from the analyser, `eval` keeps only storage slots) compiled once into closures over typed slots (integer and real slots, no boxing in arithmetic); `real(8)` arrays of rank 1 and 2, column-major, bounds-checked; whole-array expressions and `matmul` are handed to go-ndarray v0.40.3. It accepts the gate kernels' language and, since M3-A part 1, the scalar kinds and control flow listed under "Not yet", and refuses the rest with a positioned error. |
 | **B-near**, **B-upper** | the C transliterations in `testdata/gate/c/` (line for line, same checksums, same formulas) compiled by clang 23.1.4 to `wasm32-wasip1` at `-O0` and `-O2`, run on wazero v1.12.0 (the version go-embedded-c pins). The array kernels (`matmul`, `a = b*c + d`) call the Go library through a host import, so the operands are copied out of linear memory and the result back inside the timed region, as bib §4.2 says; the copy cost alone is reported next to it. |
 | **gfortran** | 15.2.0 `-O2`, native: the reference. |
 | **direct** | go-ndarray called straight from Go, no evaluator, no copy: the baseline of A's array kernels. |
@@ -598,8 +600,23 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
   "value from Go into a cell" direction of bib §7. `eval` consumes the typed tree (see
   "The gate"): a program the analyser refuses is refused by `eval.Compile`, and
   `eval` no longer parses literals, folds constants or reads type specs.
-- No general evaluator: package `eval` is the gate's
-  prototype and accepts only the kernels' language. The gate's playground home
+- No complete evaluator: package `eval` grows from the gate's prototype into the
+  v1 language in parts (M3-A, bib §10 row M3). Part 1 (v0.11.0) added the kinds
+  (integer(1|2|4|8), logical, real(4), real(8); real(4) is rounded to single
+  precision after each operation, integer(1|2) arithmetic wraps and a store
+  into an integer wraps to its kind), relational and logical operators, IF
+  constructs and logical IF, `do while`, unbounded `do`, `exit` and `cycle`
+  (named or not), `select case` on integers and logicals, `stop` and `error
+  stop` (text and exit status as libgfortran prints them, `RunIO` returns them),
+  output of constants of every intrinsic type, implied-do output lists, `write`
+  to unit `error_unit` and `use iso_fortran_env`. Still refused: procedures
+  (internal, module, external), user modules, derived types, character
+  variables and substrings, complex variables, arrays other than real(8) of
+  rank 1 and 2, sections, `where`, internal files and `read`. Resource bounds:
+  an array of more than `MaxArrayElems` (2^28) elements, a character result of
+  more than `MaxStringLen` (2^26) characters and an output list of more than
+  `MaxArrayElems` values are refused at run time before anything is allocated.
+  The gate's playground home
   (headless browser) is not implemented, and its figures were not published
   (see "The gate").
 - Not parsed yet, of bib §1.1: submodule procedure bodies (`module procedure

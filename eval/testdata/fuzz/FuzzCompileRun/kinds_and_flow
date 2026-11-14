@@ -1,0 +1,2 @@
+go test fuzz v1
+string("program p\n  use iso_fortran_env, only: int8, real32\n  implicit none\n  integer(int8) :: a\n  real(real32) :: s\n  logical :: l\n  a = 100\n  s = 1.0_real32 / 3.0_real32\n  l = a + a < 0 .and. s > 0\n  select case (a)\n  case (:50)\n    print *, 'low'\n  case default\n    print *, a, s, l, tiny(s), repeat('x', 3)\n  end select\n  if (l) stop 'done'\nend program p\n")

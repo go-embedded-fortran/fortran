@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/go-ndarray/ndarray"
@@ -38,21 +39,40 @@ type array struct {
 
 // frame is the activation record: one slice per slot type.
 type frame struct {
-	ints   []int64
+	ints   []int64 // integer and logical (0 or 1) slots
 	reals  []float64
 	arrs   []*array
 	out    io.Writer
 	tab    *rt.Table // the I/O units of the Fortran runtime
 	start  time.Time
 	copied int64
+	// ctl is set by EXIT and CYCLE and cleared by the construct they leave;
+	// target is the construct name they name ("" for the innermost DO).
+	ctl    int
+	target string
 }
+
+// Values of frame.ctl.
+const (
+	ctlNone = iota
+	ctlExit
+	ctlCycle
+)
 
 type (
 	intFn  func(*frame) int64
 	realFn func(*frame) float64
+	boolFn func(*frame) bool
 	arrFn  func(*frame) *array
 	stmtFn func(*frame)
 )
+
+// stopSignal is the unwinding of STOP and ERROR STOP (F2018 11.4).
+type stopSignal struct {
+	code  int    // the exit status, when the stop code is an integer
+	text  string // "STOP ..." / "ERROR STOP ..." on standard error, "" for none
+	quiet bool
+}
 
 // Program is a compiled main program.
 type Program struct {
@@ -66,27 +86,48 @@ type Program struct {
 // matmul). It is zero for a program that makes no such call.
 type Stats struct {
 	Copies int64
+	// Exit is the exit status of the program: 0, or the code of a STOP or
+	// ERROR STOP (modulo 256, as the operating system reports it); 1 for an
+	// ERROR STOP without a code.
+	Exit int
 }
 
-// Run executes the program, printing to out. A bounds violation or a
-// non-conformable whole-array operation is returned as an *Error.
-func (p *Program) Run(out io.Writer) (st Stats, err error) {
+// MaxArrayElems bounds the number of elements of one array: a larger extent is
+// refused at run time, before anything is allocated.
+const MaxArrayElems = 1 << 28
+
+// Run executes the program, printing to out; standard error is discarded. A
+// bounds violation or a non-conformable whole-array operation is returned as an
+// *Error.
+func (p *Program) Run(out io.Writer) (Stats, error) { return p.RunIO(out, io.Discard) }
+
+// RunIO is Run with a writer for standard error (unit 0, and the text of STOP
+// and ERROR STOP).
+func (p *Program) RunIO(out, stderr io.Writer) (st Stats, err error) {
 	f := &frame{
 		ints:  make([]int64, p.nInts),
 		reals: make([]float64, p.nReals),
 		arrs:  make([]*array, p.nArrs),
 		out:   out,
-		tab:   rt.NewTable(out, io.Discard, nil, nil),
+		tab:   rt.NewTable(out, stderr, nil, nil),
 		start: time.Now(),
 	}
 	defer func() {
 		f.tab.Flush() // a non-advancing record left open ends at the end of the program
 		if r := recover(); r != nil {
-			if e, ok := r.(*Error); ok {
-				err = e
-				return
+			switch r := r.(type) {
+			case *Error:
+				err = r
+			case *stopSignal:
+				if r.text != "" && !r.quiet {
+					io.WriteString(stderr, r.text+"\n")
+				}
+				st.Exit = r.code & 0xff
+				st.Copies = f.copied
+			default:
+				panic(r)
 			}
-			panic(r)
+			return
 		}
 		st.Copies = f.copied
 	}()
@@ -111,10 +152,18 @@ const (
 	kInt kind = iota + 1
 	kReal
 	kArr
+	kLog
+	kStr // a character scalar value (an expression; there are no character variables yet)
 )
+
+type strFn func(*frame) string
+
+// MaxStringLen bounds a character value built at run time (REPEAT, //).
+const MaxStringLen = 1 << 26
 
 type sym struct {
 	k     kind
+	kd    int // the kind parameter of an integer, real or logical variable
 	slot  int
 	isC   bool // a parameter
 	ci    int64
@@ -128,7 +177,13 @@ type ex struct {
 	k kind
 	i intFn
 	r realFn
+	b boolFn
+	s strFn
 	a arrFn
+	// kd is the kind parameter of an integer or real value (0 for 8 or none):
+	// a real(4) result is rounded to single precision after each operation, an
+	// integer(1|2|4) result wraps.
+	kd int
 
 	isC  bool
 	ci   int64
@@ -152,6 +207,12 @@ type compiler struct {
 	scope *sema.Scope
 	syms  map[*sema.Symbol]*sym
 	p     *Program
+	// loops are the names of the DO constructs enclosing the statement being
+	// compiled ("" for an unnamed one), innermost last.
+	loops []string
+	// jumped is set when an EXIT or CYCLE is compiled: the blocks that contain
+	// it check frame.ctl.
+	jumped bool
 }
 
 func (c *compiler) errf(n syntax.Node, format string, a ...any) error {
@@ -226,6 +287,49 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 			return err
 		}
 		*out = append(*out, fn)
+	case *syntax.If:
+		fn, err := c.ifConstruct(s)
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.LogicalIf:
+		fn, err := c.logicalIf(s)
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.Select:
+		fn, err := c.selectCase(s)
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.Stop:
+		fn, err := c.stop(s)
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.Exit:
+		fn, err := c.jump(s.Target, ctlExit, s, "EXIT")
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.Cycle:
+		fn, err := c.jump(s.Target, ctlCycle, s, "CYCLE")
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.Continue:
+	case *syntax.UseStmt:
+		// the intrinsic module iso_fortran_env only supplies named constants,
+		// which the analyser has folded; a user module is part 3
+		if s.Module.Name != "iso_fortran_env" {
+			return c.errf(s, "use of module %s is not supported yet", s.Module.Name)
+		}
 	case *syntax.Call:
 		fn, err := c.call(s)
 		if err != nil {
@@ -252,28 +356,41 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 
 // ---- declarations ----
 
-// kindOf is the evaluator's class of a value of the analyser's type t: the
-// prototype has integers (held as int64, whatever their kind up to 8), real(8)
-// scalars and real(8) arrays.
+// kindOf is the evaluator's class of a value of the analyser's type t: integers
+// (held as int64, wrapped to their kind), logicals (held as 0 or 1 in an
+// integer slot), real(4) and real(8) scalars (both held as float64, the first
+// rounded to single precision after each operation) and real(8) arrays.
 func (c *compiler) kindOf(at syntax.Node, t sema.Type, rank int) (kind, error) {
 	var k kind
 	switch {
-	case t.Basic == sema.Integer && t.Kind <= 8:
+	case t.Basic == sema.Integer && (t.Kind == 1 || t.Kind == 2 || t.Kind == 4 || t.Kind == 8):
 		k = kInt
-	case t.Basic == sema.Real && t.Kind == 8:
+	case t.Basic == sema.Logical && (t.Kind == 1 || t.Kind == 2 || t.Kind == 4 || t.Kind == 8):
+		k = kLog
+	case t.Basic == sema.Real && (t.Kind == 4 || t.Kind == 8):
 		k = kReal
+	case t.Basic == sema.Character && t.Kind == 1 && rank == 0:
+		return kStr, nil
 	case t.Basic == sema.Real:
-		return 0, c.errf(at, "real(%d) is not supported: only real(8)", t.Kind)
+		return 0, c.errf(at, "real(%d) is not supported: only real(4) and real(8)", t.Kind)
 	default:
 		return 0, c.errf(at, "type %s is not supported", t)
 	}
 	if rank != 0 {
-		if rank == sema.RankUnknown || k != kReal {
+		if rank == sema.RankUnknown || k != kReal || t.Kind != 8 {
 			return 0, c.errf(at, "only real(8) arrays are supported")
 		}
 		return kArr, nil
 	}
 	return k, nil
+}
+
+// kd is the kind parameter an ex carries: 0 for real(8), integer(8), logical.
+func kdOf(t sema.Type) int {
+	if t.Kind == 8 {
+		return 0
+	}
+	return t.Kind
 }
 
 // tv is the analyser's annotation of an expression.
@@ -322,11 +439,14 @@ func (c *compiler) decl(d *syntax.Decl) error {
 		if err != nil {
 			return err
 		}
+		if elem == kStr {
+			return c.errf(e, "character variables are not supported yet")
+		}
 		k := elem
-		s := &sym{k: k}
+		s := &sym{k: k, kd: kdOf(ss.Type)}
 		switch {
 		case ss.Rank != 0:
-			if k != kReal {
+			if k != kReal || ss.Type.Kind != 8 {
 				return c.errf(e, "only real(8) variable arrays are supported")
 			}
 			if ss.Rank < 0 || ss.Rank > 2 || len(ss.Dims) != ss.Rank {
@@ -350,7 +470,7 @@ func (c *compiler) decl(d *syntax.Decl) error {
 					return c.errf(e, "an allocatable array is declared with (:,...)")
 				}
 			}
-		case k == kInt:
+		case k == kInt || k == kLog:
 			s.slot = c.p.nInts
 			c.p.nInts++
 		default:
@@ -363,7 +483,9 @@ func (c *compiler) decl(d *syntax.Decl) error {
 				return c.errf(e, "parameter %s is not a constant expression", e.Name.Name)
 			}
 			s.isC = true
-			if k == kInt {
+			if k == kLog {
+				s.ci = b2i(ss.Const.B)
+			} else if k == kInt {
 				s.ci = ss.Const.I
 			} else {
 				s.cr = constFloat(ss.Const)
@@ -397,7 +519,7 @@ func allocFn(slot int, shape []intFn) stmtFn {
 }
 
 func newArray(f *frame, rank, n1, n2 int) *array {
-	if n1 < 0 || n2 < 0 || n1 > 1<<31 || n2 > 1<<31 || (n2 > 0 && n1 > (1<<40)/n2) {
+	if n1 < 0 || n2 < 0 || n1 > MaxArrayElems || n2 > MaxArrayElems || (n2 > 0 && n1 > MaxArrayElems/n2) {
 		fail(f, "array extent (%d,%d) is out of range", n1, n2)
 	}
 	var nd *ndarray.Array
@@ -474,18 +596,65 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 	}
 	var e *ex
 	if tv.Rank == 0 && tv.Const != nil {
-		if want == kInt {
+		switch want {
+		case kInt:
 			e = constInt(tv.Const.I)
-		} else {
+		case kLog:
+			e = constBool(tv.Const.B)
+		case kStr:
+			s := tv.Const.S
+			e = &ex{k: kStr, isC: true, slot: -1, s: func(*frame) string { return s }}
+		default:
 			e = constReal(constFloat(tv.Const))
 		}
+		e.kd = kdOf(tv.Type)
 	} else if e, err = c.expr1(n, tv); err != nil {
 		return nil, err
+	} else {
+		e = fit(e, tv.Type)
 	}
 	if e.k != want || (want == kArr && e.rank != tv.Rank) {
 		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
 	}
 	return e, nil
+}
+
+func constBool(v bool) *ex {
+	return &ex{k: kLog, isC: true, ci: b2i(v), slot: -1, b: func(*frame) bool { return v }}
+}
+
+func b2i(v bool) int64 {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+// fit rounds a real(4) value to single precision and wraps an integer(1|2|4)
+// value to its kind (gfortran wraps), unless the expression is already of that
+// kind (a variable, an operand-free result, an earlier fit).
+func fit(e *ex, t sema.Type) *ex {
+	kd := kdOf(t)
+	if kd == 0 || e.kd == kd || e.isC {
+		return e
+	}
+	switch {
+	case e.k == kReal && t.Basic == sema.Real:
+		fr := e.r
+		return &ex{k: kReal, kd: kd, slot: -1, r: func(f *frame) float64 { return float64(float32(fr(f))) }}
+	case e.k == kInt && t.Basic == sema.Integer:
+		fi := e.i
+		// integer(4) arithmetic is not wrapped between operations (that would
+		// slow every index expression); a store into an integer(4) variable
+		// wraps (see narrow)
+		switch kd {
+		case 1:
+			return &ex{k: kInt, kd: kd, slot: -1, i: func(f *frame) int64 { return int64(int8(fi(f))) }}
+		case 2:
+			return &ex{k: kInt, kd: kd, slot: -1, i: func(f *frame) int64 { return int64(int16(fi(f))) }}
+		}
+	}
+	return e
 }
 
 func (c *compiler) expr1(n syntax.Expr, tv sema.TV) (*ex, error) {
@@ -504,6 +673,11 @@ func (c *compiler) expr1(n syntax.Expr, tv sema.TV) (*ex, error) {
 			return x, nil
 		case "-":
 			return c.negate(n, x)
+		case ".not.":
+			if x.k == kLog {
+				b := x.b
+				return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return !b(f) }}, nil
+			}
 		}
 		return nil, c.errf(n, "operator %q is not supported", n.Op)
 	case *syntax.Binary:
@@ -521,15 +695,24 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 	}
 	switch {
 	case s.isC && s.k == kInt:
-		return constInt(s.ci), nil
+		e := constInt(s.ci)
+		e.kd = s.kd
+		return e, nil
+	case s.isC && s.k == kLog:
+		return constBool(s.ci != 0), nil
 	case s.isC:
-		return constReal(s.cr), nil
+		e := constReal(s.cr)
+		e.kd = s.kd
+		return e, nil
 	case s.k == kInt:
 		slot := s.slot
-		return &ex{k: kInt, slot: slot, i: func(f *frame) int64 { return f.ints[slot] }}, nil
+		return &ex{k: kInt, kd: s.kd, slot: slot, i: func(f *frame) int64 { return f.ints[slot] }}, nil
+	case s.k == kLog:
+		slot := s.slot
+		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.ints[slot] != 0 }}, nil
 	case s.k == kReal:
 		slot := s.slot
-		return &ex{k: kReal, slot: slot, r: func(f *frame) float64 { return f.reals[slot] }}, nil
+		return &ex{k: kReal, kd: s.kd, slot: slot, r: func(f *frame) float64 { return f.reals[slot] }}, nil
 	}
 	slot, name := s.slot, n.Name
 	return &ex{k: kArr, slot: -1, rank: s.rank, v: s, a: func(f *frame) *array {
@@ -570,6 +753,10 @@ func (c *compiler) binary(n *syntax.Binary, tv sema.TV) (*ex, error) {
 	}
 	switch n.Op {
 	case "+", "-", "*", "/", "**":
+	case "==", "/=", "<", "<=", ">", ">=":
+		return c.relational(n, x, y)
+	case ".and.", ".or.", ".eqv.", ".neqv.":
+		return c.logical(n, x, y)
 	default:
 		return nil, c.errf(n, "operator %q is not supported", n.Op)
 	}
@@ -628,7 +815,7 @@ func (c *compiler) intBinary(n *syntax.Binary, x, y *ex) (*ex, error) {
 			return a(f) / d
 		}
 	default:
-		return nil, c.errf(n, "integer ** is not supported")
+		fn = func(f *frame) int64 { return ipow(a(f), b(f)) }
 	}
 	return &ex{k: kInt, slot: -1, i: fn}, nil
 }
@@ -865,20 +1052,227 @@ func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, err
 		return nil
 	}
 	switch name {
-	case "real", "dble":
-		// the analyser typed the result: real(x, 8) and dble(x) are real(8),
-		// real(x) is real(4) and is refused by kindOf before this point
-		if name == "real" {
-			if len(args) != 2 {
-				return nil, c.errf(n, "real(x, 8) is the only supported conversion")
-			}
-		} else if err := want(1); err != nil {
+	case "repeat":
+		if err := want(2); err != nil {
 			return nil, err
 		}
-		if args[0].k == kArr {
-			return nil, c.errf(n, "%s of an array is not supported", name)
+		if args[0].k != kStr || args[1].k != kInt {
+			return nil, c.errf(n, "repeat needs a character and an integer")
+		}
+		s, k := args[0].s, args[1].i
+		return &ex{k: kStr, slot: -1, s: func(f *frame) string {
+			str, cnt := s(f), k(f)
+			if cnt < 0 {
+				fail(f, "repeat: negative count %d", cnt)
+			}
+			if cnt > 0 && int64(len(str)) > MaxStringLen/cnt {
+				fail(f, "repeat: the result is longer than %d characters", MaxStringLen)
+			}
+			return strings.Repeat(str, int(cnt))
+		}}, nil
+	case "fraction", "exponent", "scale", "spacing":
+		if len(args) < 1 || args[0].k != kReal {
+			return nil, c.errf(n, "%s needs a real argument", name)
+		}
+		a, p := args[0].r, 53
+		if args[0].kd == 4 {
+			p = 24
+		}
+		switch name {
+		case "fraction":
+			return &ex{k: kReal, slot: -1, r: func(f *frame) float64 { m, _ := math.Frexp(a(f)); return m }}, nil
+		case "exponent":
+			return &ex{k: kInt, slot: -1, i: func(f *frame) int64 {
+				x := a(f)
+				if x == 0 || math.IsInf(x, 0) || math.IsNaN(x) {
+					return 0
+				}
+				_, e := math.Frexp(x)
+				return int64(e)
+			}}, nil
+		case "scale":
+			if err := want(2); err != nil {
+				return nil, err
+			}
+			if args[1].k != kInt {
+				return nil, c.errf(n, "scale needs an integer exponent")
+			}
+			e := args[1].i
+			return &ex{k: kReal, slot: -1, r: func(f *frame) float64 {
+				return math.Ldexp(a(f), int(max(-1<<20, min(1<<20, e(f)))))
+			}}, nil
+		}
+		minE := -1021 // tiny = 2**(minexponent-1)
+		if p == 24 {
+			minE = -125
+		}
+		return &ex{k: kReal, slot: -1, r: func(f *frame) float64 {
+			x := a(f)
+			if x == 0 {
+				return math.Ldexp(1, minE-1)
+			}
+			_, e := math.Frexp(x)
+			return math.Ldexp(1, max(e-p, minE-1))
+		}}, nil
+	case "tiny", "huge", "epsilon":
+		// inquiries about a real type: the argument is only evaluated for its
+		// type (F2018 16.8.1), the value is a constant of the type
+		if len(args) != 1 || args[0].k != kReal {
+			return nil, c.errf(n, "%s needs a real argument", name)
+		}
+		var v float64
+		switch {
+		case name == "tiny" && args[0].kd == 4:
+			v = float64(math.Float32frombits(0x00800000))
+		case name == "tiny":
+			v = math.Float64frombits(0x0010000000000000)
+		case name == "huge" && args[0].kd == 4:
+			v = math.MaxFloat32
+		case name == "huge":
+			v = math.MaxFloat64
+		case args[0].kd == 4:
+			v = float64(math.Float32frombits(0x34000000))
+		default:
+			v = math.Float64frombits(0x3cb0000000000000)
+		}
+		e := constReal(v)
+		e.kd = args[0].kd
+		return e, nil
+	case "real", "dble":
+		// the analyser typed the result (real(x) is real(4), real(x, k) and
+		// dble(x) are real(k)); expr rounds a real(4) result
+		if len(args) < 1 || len(args) > 2 || args[0].k == kArr || args[0].k == kLog {
+			return nil, c.errf(n, "%s of this argument is not supported", name)
 		}
 		return args[0].asReal(), nil
+	case "int", "nint", "floor", "ceiling":
+		if len(args) < 1 || len(args) > 2 || args[0].k == kArr || args[0].k == kLog {
+			return nil, c.errf(n, "%s of this argument is not supported", name)
+		}
+		if args[0].k == kInt {
+			return args[0], nil
+		}
+		a := args[0].r
+		var conv func(float64) float64
+		switch name {
+		case "int":
+			conv = math.Trunc
+		case "nint":
+			conv = roundHalfAway
+		case "floor":
+			conv = math.Floor
+		default:
+			conv = math.Ceil
+		}
+		kd := kdOf(tv.Type)
+		return &ex{k: kInt, kd: kd, slot: -1, i: func(f *frame) int64 { return narrow(kd, int64(conv(a(f)))) }}, nil
+	case "aint", "anint", "exp", "log", "sin", "cos", "tan", "atan", "log10":
+		if len(args) != 1 || args[0].k != kReal {
+			return nil, c.errf(n, "%s needs one real argument", name)
+		}
+		a := args[0].r
+		var g func(float64) float64
+		switch name {
+		case "aint":
+			g = math.Trunc
+		case "anint":
+			g = roundHalfAway
+		case "exp":
+			g = math.Exp
+		case "log":
+			g = math.Log
+		case "log10":
+			g = math.Log10
+		case "sin":
+			g = math.Sin
+		case "cos":
+			g = math.Cos
+		case "tan":
+			g = math.Tan
+		default:
+			g = math.Atan
+		}
+		return &ex{k: kReal, slot: -1, r: func(f *frame) float64 { return g(a(f)) }}, nil
+	case "sign":
+		if err := want(2); err != nil {
+			return nil, err
+		}
+		if args[0].k == kInt && args[1].k == kInt {
+			a, b := args[0].i, args[1].i
+			return &ex{k: kInt, slot: -1, i: func(f *frame) int64 {
+				x, y := a(f), b(f)
+				if x < 0 {
+					x = -x
+				}
+				if y < 0 {
+					return -x
+				}
+				return x
+			}}, nil
+		}
+		if args[0].k != kReal || args[1].k != kReal {
+			return nil, c.errf(n, "sign needs two integers or two reals")
+		}
+		a, b := args[0].r, args[1].r
+		return &ex{k: kReal, slot: -1, r: func(f *frame) float64 { return math.Copysign(a(f), b(f)) }}, nil
+	case "modulo":
+		if err := want(2); err != nil {
+			return nil, err
+		}
+		if args[0].k != kInt || args[1].k != kInt {
+			return nil, c.errf(n, "only modulo of two integers is supported")
+		}
+		a, b := args[0].i, args[1].i
+		return &ex{k: kInt, slot: -1, i: func(f *frame) int64 {
+			x, d := a(f), b(f)
+			if d == 0 {
+				fail(f, "modulo by zero")
+			}
+			r := x % d
+			if r != 0 && (r < 0) != (d < 0) {
+				r += d
+			}
+			return r
+		}}, nil
+	case "min", "max":
+		if len(args) < 2 {
+			return nil, c.errf(n, "%s takes at least two arguments", name)
+		}
+		isMax := name == "max"
+		if tv.Type.Basic == sema.Integer {
+			fns := make([]intFn, len(args))
+			for i, a := range args {
+				if a.k != kInt {
+					return nil, c.errf(n, "%s of mixed types is not supported", name)
+				}
+				fns[i] = a.i
+			}
+			return &ex{k: kInt, slot: -1, i: func(f *frame) int64 {
+				m := fns[0](f)
+				for _, g := range fns[1:] {
+					if v := g(f); (isMax && v > m) || (!isMax && v < m) {
+						m = v
+					}
+				}
+				return m
+			}}, nil
+		}
+		fns := make([]realFn, len(args))
+		for i, a := range args {
+			if a.k != kReal {
+				return nil, c.errf(n, "%s of mixed types is not supported", name)
+			}
+			fns[i] = a.r
+		}
+		return &ex{k: kReal, slot: -1, r: func(f *frame) float64 {
+			m := fns[0](f)
+			for _, g := range fns[1:] {
+				if v := g(f); (isMax && v > m) || (!isMax && v < m) {
+					m = v
+				}
+			}
+			return m
+		}}, nil
 	case "mod":
 		if err := want(2); err != nil {
 			return nil, err
@@ -953,17 +1347,31 @@ func (c *compiler) store(s *sym, v *ex, at syntax.Node) (stmtFn, error) {
 	slot := s.slot
 	switch {
 	case s.k == kInt && v.k == kInt:
+		kd := s.kd
 		if v.isC {
-			k := v.ci
+			k := narrow(kd, v.ci)
 			return func(f *frame) { f.ints[slot] = k }, nil
 		}
 		fn := v.i
+		if kd != 0 && v.kd != kd {
+			return func(f *frame) { f.ints[slot] = narrow(kd, fn(f)) }, nil
+		}
 		return func(f *frame) { f.ints[slot] = fn(f) }, nil
-	case s.k == kReal && v.k != kArr:
+	case s.k == kInt && v.k == kReal:
+		// intrinsic assignment converts as INT does (F2018 10.2.1.3)
+		fn, kd := v.r, s.kd
+		return func(f *frame) { f.ints[slot] = narrow(kd, int64(fn(f))) }, nil
+	case s.k == kLog && v.k == kLog:
+		fn := v.b
+		return func(f *frame) { f.ints[slot] = b2i(fn(f)) }, nil
+	case s.k == kReal && v.k != kArr && v.k != kLog:
 		fn := v.asReal().r
+		if s.kd == 4 && v.kd != 4 {
+			return func(f *frame) { f.reals[slot] = float64(float32(fn(f))) }, nil
+		}
 		return func(f *frame) { f.reals[slot] = fn(f) }, nil
 	}
-	return nil, c.errf(at, "this assignment is not supported (a real into an integer variable, or an array into a scalar)")
+	return nil, c.errf(at, "this assignment is not supported (an array into a scalar, or a type the evaluator does not convert)")
 }
 
 func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
@@ -1097,57 +1505,6 @@ func (c *compiler) assignArray(at syntax.Node, s *sym, name string, rhs *ex) (st
 		if matmul {
 			f.copied += int64(len(r.data))
 		}
-	}, nil
-}
-
-func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
-	if d.While != nil || d.Concurrent || !d.HasVar || d.Mask != nil {
-		return nil, c.errf(d, "only counted do loops are supported")
-	}
-	sy, _, err := c.symOf(&d.Var)
-	if err != nil || sy.k != kInt || sy.isC {
-		return nil, c.errf(d, "the do variable %s must be a declared integer", d.Var.Name)
-	}
-	lo, err := c.intExpr(d.Lo)
-	if err != nil {
-		return nil, err
-	}
-	hi, err := c.intExpr(d.Hi)
-	if err != nil {
-		return nil, err
-	}
-	step := intFn(func(*frame) int64 { return 1 })
-	if d.Step != nil {
-		if step, err = c.intExpr(d.Step); err != nil {
-			return nil, err
-		}
-	}
-	body, err := c.stmts(d.Body)
-	if err != nil {
-		return nil, err
-	}
-	slot := sy.slot
-	run := func(f *frame) {
-		for _, s := range body {
-			s(f)
-		}
-	}
-	if len(body) == 1 {
-		run = body[0]
-	}
-	return func(f *frame) {
-		l, h, st := lo(f), hi(f), step(f)
-		if st == 0 {
-			fail(f, "do step is zero")
-		}
-		n := (h - l + st) / st
-		v := l
-		for ; n > 0; n-- {
-			f.ints[slot] = v
-			run(f)
-			v += st
-		}
-		f.ints[slot] = v
 	}, nil
 }
 
