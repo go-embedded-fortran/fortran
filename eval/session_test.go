@@ -235,3 +235,20 @@ func TestHostAssociatedArray(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// A cell that runs again (the kernel re-runs a stale cell in the live session)
+// defines a new version: the cells after it see the newest, and a name defined
+// twice is not ambiguous.
+func TestSessionRerunShadows(t *testing.T) {
+	s := NewSession(SessionOptions{})
+	mustRun(t, s, "integer :: n = 1\n")
+	mustRun(t, s, "integer :: n = 2\n")
+	if got := mustRun(t, s, "print *, n\n"); strings.TrimSpace(got) != "2" {
+		t.Fatalf("n = %q, want 2", got)
+	}
+	mustRun(t, s, "module m\n  integer :: v = 10\nend module\n")
+	mustRun(t, s, "module m\n  integer :: v = 20\nend module\n")
+	if got := mustRun(t, s, "use m\nprint *, v\n"); strings.TrimSpace(got) != "20" {
+		t.Fatalf("v = %q, want 20", got)
+	}
+}
