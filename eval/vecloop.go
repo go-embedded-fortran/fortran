@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"math"
 	"sync/atomic"
 
 	"github.com/go-embedded-fortran/fortran/sema"
@@ -27,7 +28,7 @@ const (
 	vecChunk  = 256 // iterations per strip
 	vecMin    = 8   // fewer iterations run the ordinary loop
 	vecLeaves = 12
-	vecNodes  = 24
+	vecNodes  = 40
 )
 
 // disableVec turns the kernels off (the tests compare both paths); vecHits counts
@@ -44,6 +45,11 @@ type vsub struct {
 	off int64
 	fn  intFn
 	src syntax.Expr
+	// a dependent subscript may also add (osign 1) or subtract (osign -1) an
+	// invariant integer expression: DO variable + off + osign*ofn(f).
+	ofn   intFn
+	osign int64
+	osrc  syntax.Expr
 }
 
 type vleaf struct {
@@ -58,18 +64,32 @@ type vleaf struct {
 
 // vnode is one operation of the right-hand side, in evaluation order.
 type vnode struct {
-	op   byte // 'e' element, 'k' scalar, 'n' negation, '+' '-' '*' '/'
+	// op: 'e' element, 'k' scalar, 'v' the DO variable (plus ioff) as a real,
+	// 'n' negation, '+' '-' '*' '/', 'q' x**val for a constant integer, 'p'
+	// x**y, 'm' min, 'M' max, 's' sqrt, 'a' abs, 'g' g(x).
+	op   byte
 	a, b int
 	leaf int
+	ioff int64
+	g    func(float64) float64
 	val  float64
 	fn   realFn // 'k': read once at the start (nil: val)
 	buf  int
 }
 
 type vecKernel struct {
-	leaves []vleaf // leaves[0] is the target
+	leaves []vleaf // array form: leaves[0] is the target
 	nodes  []vnode
+	root   int
 	nbuf   int
+	red    *vacc // reduction form: s = s + E
+}
+
+// vacc is the accumulator of a reduction: the real(8) scalar s of "s = s + E" or
+// "s = s - E", read once and written back once.
+type vacc struct {
+	slot, h int
+	neg     bool
 }
 
 // vop is the value of a node over a strip: a scalar or a slice.
@@ -88,6 +108,7 @@ type vstate struct {
 type vecBuild struct {
 	c      *compiler
 	loop   *sym
+	acc    *sym // the accumulator of a reduction: no operand may read it
 	leaves []vleaf
 	nodes  []vnode
 	nbuf   int
@@ -102,6 +123,9 @@ func (c *compiler) vecLoop(d *syntax.Do, loop *sym) *vecKernel {
 	if !ok {
 		return nil
 	}
+	if id, ok := as.LHS.(*syntax.Ident); ok {
+		return c.vecReduce(as, id, loop)
+	}
 	l, ok := as.LHS.(*syntax.Index)
 	if !ok {
 		return nil
@@ -112,10 +136,56 @@ func (c *compiler) vecLoop(d *syntax.Do, loop *sym) *vecKernel {
 		return nil
 	}
 	b.leaves = append(b.leaves, *t)
-	if _, ok := b.real(as.RHS); !ok {
+	root, ok := b.real(as.RHS)
+	if !ok {
 		return nil
 	}
-	return &vecKernel{leaves: b.leaves, nodes: b.nodes, nbuf: b.nbuf}
+	return &vecKernel{leaves: b.leaves, nodes: b.nodes, root: root, nbuf: b.nbuf}
+}
+
+// vecReduce compiles "s = s + E", "s = E + s" and "s = s - E" for a real(8)
+// scalar s that E does not read. The additions run in iteration order, so the sum
+// is the ordinary loop's, bit for bit.
+func (c *compiler) vecReduce(as *syntax.Assignment, id *syntax.Ident, loop *sym) *vecKernel {
+	s, _, err := c.symOf(id)
+	if err != nil || s.k != kReal || s.kd != 0 || s.isC || s.ga || s == loop {
+		return nil
+	}
+	bin, ok := as.RHS.(*syntax.Binary)
+	if !ok || (bin.Op != "+" && bin.Op != "-") {
+		return nil
+	}
+	isS := func(x syntax.Expr) bool {
+		i, ok := x.(*syntax.Ident)
+		if !ok {
+			return false
+		}
+		t, _, err := c.symOf(i)
+		return err == nil && t == s
+	}
+	var e syntax.Expr
+	switch {
+	case isS(bin.X):
+		e = bin.Y
+	case bin.Op == "+" && isS(bin.Y):
+		e = bin.X
+	default:
+		return nil
+	}
+	if tv, err := c.tv(as.RHS); err != nil || tv.Type.Basic != sema.Real || kdOf(tv.Type) != 0 {
+		return nil
+	}
+	h, err := c.hops(s, id)
+	if err != nil {
+		return nil
+	}
+	b := &vecBuild{c: c, loop: loop, acc: s}
+	root, ok := b.real(e)
+	if !ok {
+		return nil
+	}
+	return &vecKernel{leaves: b.leaves, nodes: b.nodes, root: root, nbuf: b.nbuf,
+		red: &vacc{slot: s.slot, h: h, neg: bin.Op == "-"}}
 }
 
 func (b *vecBuild) node(n vnode) int {
@@ -123,12 +193,8 @@ func (b *vecBuild) node(n vnode) int {
 		return -1
 	}
 	n.buf = -1
-	switch n.op {
-	case 'n', '+', '-', '*', '/':
+	if n.op != 'k' { // 'e' needs a gather buffer when the stride is not 1
 		n.buf = b.nbuf
-		b.nbuf++
-	case 'e':
-		n.buf = b.nbuf // a gather buffer when the stride is not 1
 		b.nbuf++
 	}
 	b.nodes = append(b.nodes, n)
@@ -162,7 +228,17 @@ func (b *vecBuild) leaf(n *syntax.Index) (*vleaf, bool) {
 		if err != nil || e.k != kInt {
 			return nil, false
 		}
+		off, osrc, osign, ofn, vok := int64(0), syntax.Expr(nil), int64(0), intFn(nil), false
+		if !(e.aff && e.avs == b.loop.slot) {
+			off, osrc, osign, ofn, vok = b.depVar(a.Value)
+		}
 		switch {
+		case vok:
+			if lf.dim != 0 {
+				return nil, false
+			}
+			lf.dim = i + 1
+			lf.sub[i] = vsub{dep: true, off: off, ofn: ofn, osign: osign, osrc: osrc}
 		case e.aff && e.avs == b.loop.slot:
 			if lf.dim != 0 {
 				return nil, false
@@ -175,7 +251,7 @@ func (b *vecBuild) leaf(n *syntax.Index) (*vleaf, bool) {
 			return nil, false
 		}
 	}
-	if len(b.leaves) > 0 { // not the target: it may only be the target's own element
+	if b.acc == nil && len(b.leaves) > 0 { // not the target: it may only be the target's own element
 		t := &b.leaves[0]
 		if lf.sv == t.sv && lf.h == t.h {
 			if lf.dim == 0 || lf.dim != t.dim || !b.sameSubs(lf, t) {
@@ -187,6 +263,57 @@ func (b *vecBuild) leaf(n *syntax.Index) (*vleaf, bool) {
 	return lf, true
 }
 
+// depVar recognises DO variable (plus a constant) plus or minus an invariant
+// integer expression: i+m, m+i, i-m, (i-1)+m. The invariant part is evaluated
+// once per loop.
+func (b *vecBuild) depVar(n syntax.Expr) (off int64, osrc syntax.Expr, osign int64, ofn intFn, ok bool) {
+	for {
+		p, isP := n.(*syntax.Paren)
+		if !isP {
+			break
+		}
+		n = p.X
+	}
+	bin, isB := n.(*syntax.Binary)
+	if !isB || (bin.Op != "+" && bin.Op != "-") {
+		return 0, nil, 0, nil, false
+	}
+	dep := func(x syntax.Expr) (int64, bool) {
+		e, err := b.c.expr(x)
+		if err != nil || e.k != kInt || !e.aff || e.avs != b.loop.slot {
+			return 0, false
+		}
+		return e.avo, true
+	}
+	inv := func(x syntax.Expr) (intFn, bool) {
+		if !b.pureInv(x) {
+			return nil, false
+		}
+		e, err := b.c.expr(x)
+		if err != nil || e.k != kInt {
+			return nil, false
+		}
+		return e.i, true
+	}
+	sign := int64(1)
+	if bin.Op == "-" {
+		sign = -1
+	}
+	if o, ok := dep(bin.X); ok {
+		if fn, ok := inv(bin.Y); ok {
+			return o, bin.Y, sign, fn, true
+		}
+	}
+	if bin.Op == "+" {
+		if o, ok := dep(bin.Y); ok {
+			if fn, ok := inv(bin.X); ok {
+				return o, bin.X, 1, fn, true
+			}
+		}
+	}
+	return 0, nil, 0, nil, false
+}
+
 func (b *vecBuild) sameSubs(x, y *vleaf) bool {
 	for i := 0; i < x.rank; i++ {
 		p, q := x.sub[i], y.sub[i]
@@ -194,7 +321,7 @@ func (b *vecBuild) sameSubs(x, y *vleaf) bool {
 			return false
 		}
 		if p.dep {
-			if p.off != q.off {
+			if p.off != q.off || p.osign != q.osign || (p.osign != 0 && !b.sameExpr(p.osrc, q.osrc)) {
 				return false
 			}
 		} else if !b.sameExpr(p.src, q.src) {
@@ -254,7 +381,13 @@ func (b *vecBuild) pureInv(n syntax.Expr) bool {
 func (b *vecBuild) real(n syntax.Expr) (int, bool) {
 	c := b.c
 	tv, err := c.tv(n)
-	if err != nil || tv.Rank != 0 || tv.Type.Basic != sema.Real || kdOf(tv.Type) != 0 {
+	if err != nil || tv.Rank != 0 {
+		return 0, false
+	}
+	if tv.Type.Basic == sema.Integer {
+		return b.intAsReal(n)
+	}
+	if tv.Type.Basic != sema.Real || kdOf(tv.Type) != 0 {
 		return 0, false
 	}
 	if tv.Const != nil {
@@ -293,8 +426,33 @@ func (b *vecBuild) real(n syntax.Expr) (int, bool) {
 			}
 			i := b.node(vnode{op: n.Op[0], a: x, b: y})
 			return i, i >= 0
+		case "**":
+			ye, err := c.expr(n.Y)
+			if err != nil {
+				return 0, false
+			}
+			x, ok := b.real(n.X)
+			if !ok {
+				return 0, false
+			}
+			if ye.k == kInt && ye.isC { // as powInt: x, x*x or Pow(x, k)
+				if ye.ci == 1 {
+					return x, true
+				}
+				i := b.node(vnode{op: 'q', a: x, val: float64(ye.ci)})
+				return i, i >= 0
+			}
+			y, ok := b.real(n.Y)
+			if !ok {
+				return 0, false
+			}
+			i := b.node(vnode{op: 'p', a: x, b: y})
+			return i, i >= 0
 		}
 	case *syntax.Ident:
+		if s, _, err := c.symOf(n); b.acc != nil && err == nil && s == b.acc {
+			return 0, false
+		}
 		e, err := c.expr(n)
 		if err != nil || e.k != kReal || e.kd != 0 || e.rank != 0 || e.r == nil {
 			return 0, false
@@ -302,6 +460,9 @@ func (b *vecBuild) real(n syntax.Expr) (int, bool) {
 		i := b.node(vnode{op: 'k', fn: e.r})
 		return i, i >= 0
 	case *syntax.Index:
+		if id, ok := n.X.(*syntax.Ident); ok && c.info.Uses[id] == nil {
+			return b.intrinsic(n, id.Name)
+		}
 		lf, ok := b.leaf(n)
 		if !ok || len(b.leaves) >= vecLeaves {
 			return 0, false
@@ -311,6 +472,95 @@ func (b *vecBuild) real(n syntax.Expr) (int, bool) {
 		return i, i >= 0
 	}
 	return 0, false
+}
+
+// intAsReal adds the integer expression n converted to real(8): a constant, the
+// DO variable plus a constant, or an invariant expression.
+func (b *vecBuild) intAsReal(n syntax.Expr) (int, bool) {
+	e, err := b.c.expr(n)
+	if err != nil || e.k != kInt {
+		return 0, false
+	}
+	var i int
+	switch {
+	case e.isC:
+		i = b.node(vnode{op: 'k', val: float64(e.ci)})
+	case e.aff && e.avs == b.loop.slot:
+		i = b.node(vnode{op: 'v', ioff: e.avo})
+	case b.pureInv(n):
+		fi := e.i
+		i = b.node(vnode{op: 'k', fn: func(f *frame) float64 { return float64(fi(f)) }})
+	default:
+		return 0, false
+	}
+	return i, i >= 0
+}
+
+// intrinsic adds the nodes of a call of an elemental real intrinsic whose
+// evaluation is the one eval.intrinsicWith compiles.
+func (b *vecBuild) intrinsic(n *syntax.Index, name string) (int, bool) {
+	for _, a := range n.Args {
+		if a.Keyword != "" || a.Value == nil {
+			return 0, false
+		}
+		if _, sec := a.Value.(*syntax.Triplet); sec {
+			return 0, false
+		}
+	}
+	args := make([]int, 0, len(n.Args))
+	arg := func(k int) bool {
+		x, ok := b.real(n.Args[k].Value)
+		args = append(args, x)
+		return ok
+	}
+	var nd vnode
+	switch name {
+	case "real", "dble":
+		if len(n.Args) < 1 || len(n.Args) > 2 || !arg(0) {
+			return 0, false
+		}
+		return args[0], true // the analyser typed the result real(8)
+	case "sqrt", "abs":
+		if len(n.Args) != 1 || !arg(0) {
+			return 0, false
+		}
+		nd = vnode{op: 's', a: args[0]}
+		if name == "abs" {
+			nd.op = 'a'
+		}
+	case "aint", "anint", "exp", "log", "log10", "sin", "cos", "tan", "atan":
+		if len(n.Args) != 1 || !arg(0) {
+			return 0, false
+		}
+		g := map[string]func(float64) float64{
+			"aint": math.Trunc, "anint": roundHalfAway, "exp": math.Exp, "log": math.Log,
+			"log10": math.Log10, "sin": math.Sin, "cos": math.Cos, "tan": math.Tan, "atan": math.Atan,
+		}[name]
+		nd = vnode{op: 'g', a: args[0], g: g}
+	case "min", "max":
+		if len(n.Args) < 2 || !arg(0) {
+			return 0, false
+		}
+		op := byte('m')
+		if name == "max" {
+			op = 'M'
+		}
+		acc := args[0]
+		for k := 1; k < len(n.Args); k++ {
+			if !arg(k) {
+				return 0, false
+			}
+			acc = b.node(vnode{op: op, a: acc, b: args[k]})
+			if acc < 0 {
+				return 0, false
+			}
+		}
+		return acc, true
+	default:
+		return 0, false
+	}
+	i := b.node(nd)
+	return i, i >= 0
 }
 
 // run executes iterations l .. l+n-1, or returns false having changed nothing.
@@ -329,6 +579,13 @@ func (k *vecKernel) run(f *frame, l, n int64, bud *budget) bool {
 			s := &lf.sub[d]
 			if s.dep {
 				lo := l + s.off - 1
+				if s.ofn != nil {
+					v := s.ofn(f)
+					if v > 1<<40 || v < -(1<<40) {
+						return false
+					}
+					lo += s.osign * v
+				}
 				if lo < 0 || lo+n-1 >= int64(ext[d]) {
 					return false
 				}
@@ -350,7 +607,7 @@ func (k *vecKernel) run(f *frame, l, n int64, bud *budget) bool {
 			stride = a.n1
 		}
 		st[i] = vstate{a: a, base: int(base), stride: stride}
-		if i > 0 && !lf.same {
+		if k.red == nil && i > 0 && !lf.same {
 			t := st[0].a
 			if a == t || (len(a.data) > 0 && len(t.data) > 0 && &a.data[0] == &t.data[0]) {
 				return false
@@ -374,8 +631,12 @@ func (k *vecKernel) run(f *frame, l, n int64, bud *budget) bool {
 		}
 	}
 	var res [vecNodes]vop
-	root := len(k.nodes) - 1
+	root := k.root
 	tg := &st[0]
+	var acc float64
+	if k.red != nil {
+		acc = f.at(k.red.h).reals[k.red.slot]
+	}
 	for off := 0; off < int(n); off += vecChunk {
 		m := vecChunk
 		if r := int(n) - off; r < m {
@@ -412,11 +673,76 @@ func (k *vecKernel) run(f *frame, l, n int64, bud *budget) bool {
 					b[t] = -v
 				}
 				res[i] = vop{v: b}
+			case 'v':
+				b := f.vs[nd.buf*vecChunk : nd.buf*vecChunk+m]
+				v := l + nd.ioff + int64(off)
+				for t := range b {
+					b[t] = float64(v + int64(t))
+				}
+				res[i] = vop{v: b}
+			case 's', 'a', 'g', 'q':
+				x := res[nd.a]
+				if x.sc {
+					res[i] = vop{s: vun(nd, x.s), sc: true}
+					continue
+				}
+				b := f.vs[nd.buf*vecChunk : nd.buf*vecChunk+m]
+				xv := x.v[:len(b)]
+				switch nd.op {
+				case 's':
+					for t := range b {
+						b[t] = math.Sqrt(xv[t])
+					}
+				case 'a':
+					for t := range b {
+						b[t] = math.Abs(xv[t])
+					}
+				case 'g':
+					g := nd.g
+					for t := range b {
+						b[t] = g(xv[t])
+					}
+				default:
+					if nd.val == 2 {
+						for t := range b {
+							b[t] = xv[t] * xv[t]
+						}
+					} else {
+						k := nd.val
+						for t := range b {
+							b[t] = math.Pow(xv[t], k)
+						}
+					}
+				}
+				res[i] = vop{v: b}
+			case 'm', 'M', 'p':
+				res[i] = vgen(nd.op, f.vs[nd.buf*vecChunk:nd.buf*vecChunk+m], res[nd.a], res[nd.b])
 			default:
 				res[i] = vbin(nd.op, f.vs[nd.buf*vecChunk:nd.buf*vecChunk+m], res[nd.a], res[nd.b])
 			}
 		}
 		r := res[root]
+		if k.red != nil {
+			switch {
+			case r.sc && k.red.neg:
+				for t := 0; t < m; t++ {
+					acc -= r.s
+				}
+			case r.sc:
+				for t := 0; t < m; t++ {
+					acc += r.s
+				}
+			case k.red.neg:
+				for _, v := range r.v {
+					acc -= v
+				}
+			default:
+				for _, v := range r.v {
+					acc += v
+				}
+			}
+			continue
+		}
 		if tg.stride == 1 {
 			d := tg.a.data[tg.base+off : tg.base+off+m]
 			if r.sc {
@@ -437,6 +763,9 @@ func (k *vecKernel) run(f *frame, l, n int64, bud *budget) bool {
 				p += tg.stride
 			}
 		}
+	}
+	if k.red != nil {
+		f.at(k.red.h).reals[k.red.slot] = acc
 	}
 	return true
 }
@@ -514,6 +843,65 @@ func vbin(op byte, d []float64, x, y vop) vop {
 			for t := range d {
 				d[t] = xv[t] / yv[t]
 			}
+		}
+	}
+	return vop{v: d}
+}
+
+// vun is the unary node nd applied to the scalar x.
+func vun(nd *vnode, x float64) float64 {
+	switch nd.op {
+	case 's':
+		return math.Sqrt(x)
+	case 'a':
+		return math.Abs(x)
+	case 'g':
+		return nd.g(x)
+	}
+	if nd.val == 2 {
+		return x * x
+	}
+	return math.Pow(x, nd.val)
+}
+
+// vscalar2 is min, max or x**y of two scalars, as eval compiles them: max keeps
+// the first operand unless the next is greater, min unless it is smaller.
+func vscalar2(op byte, x, y float64) float64 {
+	switch op {
+	case 'm':
+		if y < x {
+			return y
+		}
+		return x
+	case 'M':
+		if y > x {
+			return y
+		}
+		return x
+	}
+	return math.Pow(x, y)
+}
+
+// vgen is min, max or x**y over a strip.
+func vgen(op byte, d []float64, x, y vop) vop {
+	if x.sc && y.sc {
+		return vop{s: vscalar2(op, x.s, y.s), sc: true}
+	}
+	switch {
+	case y.sc:
+		xv := x.v[:len(d)]
+		for t := range d {
+			d[t] = vscalar2(op, xv[t], y.s)
+		}
+	case x.sc:
+		yv := y.v[:len(d)]
+		for t := range d {
+			d[t] = vscalar2(op, x.s, yv[t])
+		}
+	default:
+		xv, yv := x.v[:len(d)], y.v[:len(d)]
+		for t := range d {
+			d[t] = vscalar2(op, xv[t], yv[t])
 		}
 	}
 	return vop{v: d}

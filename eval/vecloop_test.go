@@ -57,7 +57,7 @@ func TestStripKernelsAgree(t *testing.T) {
     end do
   end do
 `
-	const tail = `  print '(es24.16)', sum(a), sum(b), sum(c), sum(d)
+	const tail = `  print '(es24.16)', sum(a), sum(b), sum(c), sum(d), x, y
   print *, i, j, k
 end program p
 `
@@ -73,7 +73,32 @@ end program p
 		{"matmul loops", "d = 0d0\n do j = 1, 40\n do k = 1, 40\n do i = 1, n\n d(i,j) = d(i,j) + c(i,k)*c(k,j)\n end do\n end do\n end do\n", true},
 		{"second subscript runs", "do j = 1, n\n d(5,j) = c(7,j) - c(j,3)\n end do\n", true},
 		{"invariant element m", "do i = 1, n-8\n a(i+7) = b(i) + b(m) + c(m,m)\n end do\n", true},
-		{"variable offset", "do i = 1, n-8\n a(i+m) = b(i)\n end do\n", false},
+		{"variable offset", "do i = 1, n-8\n a(i+m) = b(i)\n end do\n", true},
+		{"variable offset both sides", "do i = 1, n-8\n a(i+m) = a(i+m)*0.5d0 + b(m+i)\n end do\n", true},
+		{"variable offset minus", "do i = 8, n\n a(i-m) = b(i) - b(i-m)\n end do\n", true},
+		{"variable offset recurrence", "do i = 1, n-8\n a(i+m) = a(i) + b(i)\n end do\n", false},
+		{"variable offset out of range", "do i = 1, n\n a(i) = b(i+m)\n end do\n", false},
+		{"power 2 3 half", "do i = 1, n\n a(i) = b(i)**2 + b(i)**3 + abs(b(i))**0.5d0 + b(i)**1\n end do\n", true},
+		{"power by array", "do i = 1, n\n a(i) = abs(b(i))**(a(i)*0.1d0)\n end do\n", true},
+		{"elementals", "do i = 1, n\n a(i) = exp(-abs(b(i))) + sin(a(i)) * cos(b(i)) + log(a(i)+3d0) + atan(b(i)) + aint(a(i)*3d0) + anint(b(i)*2d0) + tan(b(i)*0.1d0) + log10(a(i)+3d0)\n end do\n", true},
+		{"min max", "do i = 1, n\n a(i) = max(b(i), 0d0) + min(a(i), b(i), 1.5d0) - max(min(b(i), x), y)\n end do\n", true},
+		{"lv real", "do i = 1, n\n a(i) = real(i, 8)*0.5d0\n end do\n", true},
+		{"lv dble", "do i = 1, n\n a(i) = dble(i-1)\n end do\n", true},
+		{"lv real m", "do i = 1, n\n a(i) = real(m, 8)\n end do\n", true},
+		{"lv mixed", "do i = 1, n\n a(i) = b(i)*i\n end do\n", true},
+		{"dot product", "x = 0d0\n do i = 1, n\n x = x + a(i)*b(i)\n end do\n", true},
+		{"harmonic", "x = 0d0\n do i = 1, 100000\n x = x + 1d0/real(i,8)**2\n end do\n", true},
+		{"subtract", "x = 1d0\n do i = 1, n\n x = x - b(i)/7d0\n end do\n", true},
+		{"accumulator second", "x = 0.5d0\n do i = 1, n\n x = a(i)*0.01d0 + x\n end do\n", true},
+		{"invariant addend", "x = 0d0\n do i = 1, n\n x = x + y\n end do\n", true},
+		{"matrix column sums", "x = 0d0\n do j = 1, n\n x = x + c(7,j)*d(j,3)\n end do\n", true},
+		{"reads itself", "x = 1d0\n do i = 1, n\n x = x + x*1d-3\n end do\n", false},
+		{"reads itself in a product", "x = 1d0\n do i = 1, n\n x = x + a(i)*x\n end do\n", false},
+		{"product reduction", "x = 1d0\n do i = 1, n\n x = x*(1d0 + a(i)*1d-4)\n end do\n", false},
+		{"integer accumulator", "m = 0\n do i = 1, n\n m = m + i\n end do\n x = m\n", false},
+		{"single precision accumulator", "do i = 1, n\n x = x + 1.0\n end do\n", false},
+		{"reduction bound error", "x = 0d0\n do i = 1, n\n x = x + a(i+1)\n end do\n", false},
+		{"nan from sqrt", "do i = 1, n\n a(i) = sqrt(b(i))\n end do\n", true},
 		{"short trip", "do i = 1, 5\n a(i) = b(i) * 2d0\n end do\n", false},
 		{"empty", "do i = 5, 1\n a(i) = 0d0\n end do\n", false},
 		{"recurrence", "do i = 2, n\n a(i) = a(i-1) + b(i)\n end do\n", false},
@@ -81,9 +106,9 @@ end program p
 		{"same array other column", "do i = 1, n\n c(i,2) = c(i,1) + 1d0\n end do\n", false},
 		{"step", "do i = 1, n, 2\n a(i) = b(i)\n end do\n", false},
 		{"cycle", "do i = 1, n\n if (a(i) > 100d0) cycle\n a(i) = b(i)\n end do\n", false},
-		{"power", "do i = 1, n\n a(i) = b(i)**2\n end do\n", false},
-		{"intrinsic", "do i = 1, n\n a(i) = sqrt(abs(b(i)))\n end do\n", false},
-		{"integer operand", "do i = 1, n\n a(i) = b(i) + i\n end do\n", false},
+		{"intrinsic sqrt abs", "do i = 1, n\n a(i) = sqrt(abs(b(i)))\n end do\n", true},
+		{"non-elemental intrinsic", "do i = 1, n\n a(i) = b(i) + real(mod(i, 3), 8)\n end do\n", false},
+		{"integer operand of the loop variable squared", "do i = 1, n\n a(i) = b(i) + i*i\n end do\n", false},
 		{"single precision", "do i = 1, n\n a(i) = b(i) + 1.0\n end do\n", false},
 		{"low bound error", "do i = 1, n\n a(i) = b(i-1)\n end do\n", false},
 		{"high bound error", "do i = 1, n\n a(i+1) = b(i)\n end do\n", false},
