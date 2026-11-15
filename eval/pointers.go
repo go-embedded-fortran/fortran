@@ -199,6 +199,17 @@ func (c *compiler) scalarTarget(at syntax.Node, p *sym, e syntax.Expr) (func(*fr
 		slot := t.slot
 		return func(f *frame) *sref { return &sref{f: f.at(h), s: slot} }, nil
 	case *syntax.Index:
+		if c.isFuncRef(x) {
+			// p => f(): the target of f's pointer result
+			v, err := c.expr(x)
+			if err != nil {
+				return nil, err
+			}
+			if v.ps == nil || v.k != p.k || v.kd != p.kd {
+				return nil, c.errf(at, "pointer association with a function that does not return a pointer of the pointer's type and kind")
+			}
+			return v.ps, nil
+		}
 		ref, ix, err := c.lhsRef(at, x)
 		if err != nil {
 			return nil, err
@@ -272,6 +283,21 @@ func allocScalarPtr(acc func(*frame) **sref, k kind, name string, dealloc bool) 
 	}
 }
 
+// isFuncRef reports a reference f(...) whose name is not a variable of the
+// program: a function reference (an array element's name is a variable).
+func (c *compiler) isFuncRef(e syntax.Expr) bool {
+	ix, ok := e.(*syntax.Index)
+	if !ok {
+		return false
+	}
+	id, ok := ix.X.(*syntax.Ident)
+	if !ok {
+		return false
+	}
+	_, _, err := c.symOf(id)
+	return err != nil
+}
+
 // isNullCall reports the reference null() (no MOLD).
 func isNullCall(e syntax.Expr) bool {
 	ix, ok := e.(*syntax.Index)
@@ -338,8 +364,23 @@ func (c *compiler) pointerAssign(s *syntax.PointerAssign) (stmtFn, error) {
 	if isNullCall(s.RHS) {
 		return func(f *frame) { *ref.ptr(f) = nil }, nil
 	}
+	if c.isFuncRef(s.RHS) {
+		// p => f(): the target of f's pointer result
+		x, err := c.expr(s.RHS)
+		if err != nil {
+			return nil, err
+		}
+		if x.pg == nil {
+			return nil, c.errf(s, "pointer assignment: the function does not return a pointer")
+		}
+		if x.et != ref.et || x.kd != ref.kd || x.rank != ref.rank {
+			return nil, c.errf(s, "pointer assignment: %s and the function's result differ in type, kind or rank", ref.name)
+		}
+		pg := x.pg
+		return func(f *frame) { *ref.ptr(f) = pg(f) }, nil
+	}
 	if _, ok := s.RHS.(*syntax.Ident); !ok {
-		return nil, c.errf(s, "pointer assignment: only a whole array variable is supported yet as the target (not a section or an expression)")
+		return nil, c.errf(s, "pointer assignment: only a whole array variable or a function's pointer result is supported yet as the target (not a section or an expression)")
 	}
 	tref, ix, err := c.lhsRef(s, s.RHS)
 	if err != nil {

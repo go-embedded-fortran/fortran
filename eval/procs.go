@@ -132,11 +132,6 @@ func (c *compiler) declareProc(p *procCode) error {
 			if s.isC || s.k == kArr {
 				return c.errf(p.unit, "function %s: only scalar integer, real, logical and character results are supported yet", p.name)
 			}
-			if s.ptr {
-				// the result is read through its slot after the call (callFn),
-				// which a pointer does not have (pointers.go)
-				return c.errf(p.unit, "function %s: a pointer result is not supported yet", p.name)
-			}
 			p.result = s
 		}
 		if p.result == nil {
@@ -395,6 +390,34 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	}
 	slot := ps.slot
 	var b binding
+	if v.ps != nil && intent != "in" && (ps.k == kInt || ps.k == kLog || ps.k == kReal) {
+		// a reference to a function with a pointer result is a variable (F2018
+		// 9.2): the function runs once, and the dummy is copied in from its
+		// target and out to it (ptr-func-4 of gfortran.dg)
+		tmp := c.cur.nPtrs
+		c.cur.nPtrs++
+		target, isReal := v.ps, ps.k == kReal
+		b.set = func(f, cf *frame) {
+			t := target(f)
+			if t == nil {
+				fail(f, "the actual argument is a disassociated pointer result")
+			}
+			f.ptrs[tmp] = t
+			if isReal {
+				cf.reals[slot] = t.getReal()
+			} else {
+				cf.ints[slot] = t.getInt()
+			}
+		}
+		b.back = func(f, cf *frame) {
+			if isReal {
+				f.ptrs[tmp].setReal(cf.reals[slot])
+			} else {
+				f.ptrs[tmp].setInt(cf.ints[slot])
+			}
+		}
+		return b, nil
+	}
 	switch ps.k {
 	case kD:
 		// a derived-type dummy is associated with the actual object itself
@@ -531,18 +554,42 @@ func (c *compiler) funcCallArgs(n *syntax.Index, p *procCode, args []syntax.Arg)
 	}
 	r := p.result
 	slot := r.slot
+	if r.ptr && !r.ga {
+		// a scalar pointer result: its target is in the callee's frame.ptrs
+		ps, name := r.pslot, p.name
+		target := func(f *frame) *sref { return run(f).ptrs[ps] }
+		get := func(f *frame) *sref {
+			t := target(f)
+			if t == nil {
+				fail(f, "the result of %s is a disassociated pointer", name)
+			}
+			return t
+		}
+		switch r.k {
+		case kInt:
+			return &ex{k: kInt, kd: r.kd, slot: -1, ps: target, i: func(f *frame) int64 { return get(f).getInt() }}, nil
+		case kLog:
+			return &ex{k: kLog, slot: -1, ps: target, b: func(f *frame) bool { return get(f).getInt() != 0 }}, nil
+		}
+		return &ex{k: kReal, kd: r.kd, slot: -1, ps: target, r: func(f *frame) float64 { return get(f).getReal() }}, nil
+	}
 	switch r.k {
 	case kD:
 		return &ex{k: kD, slot: -1, dt: r.dt, d: func(f *frame) *dobj { return run(f).dobjs[slot] }}, nil
 	case kGA:
 		name := p.name
-		return &ex{k: kGA, slot: -1, rank: r.rank, et: r.et, kd: r.kd, g: func(f *frame) *garr {
+		e := &ex{k: kGA, slot: -1, rank: r.rank, et: r.et, kd: r.kd, g: func(f *frame) *garr {
 			g := run(f).gas[slot]
 			if g == nil {
 				fail(f, "the result of %s is not allocated", name)
 			}
 			return g
-		}}, nil
+		}}
+		if r.ptr {
+			// an array pointer result: its target, for p => f()
+			e.pg = func(f *frame) *garr { return run(f).gas[slot] }
+		}
+		return e, nil
 	case kStr:
 		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return run(f).strs[slot] }}, nil
 	case kInt:

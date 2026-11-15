@@ -61,9 +61,6 @@ func TestArrayPointerFailures(t *testing.T) {
 	for _, tc := range []struct{ name, src string }{
 		{"a character pointer", "character(len=3), pointer :: s\n"},
 		{"a pointer as the do variable", "integer, target :: j\ninteger, pointer :: i\ni => j\ndo i = 1, 2\nend do\n"},
-		// found by the execution differential: four gfortran.dg tests reached the
-		// result's slot -1 and failed as internal errors (the safety net held)
-		{"a function with a pointer result", "program q\ninteger, pointer :: p\nallocate(p)\np = f()\ncontains\nfunction f()\ninteger, pointer :: f\nallocate(f)\nf = 1\nend function\nend program\n"},
 		{"a pointer to a section", "integer, target :: a(4)\ninteger, pointer :: p(:)\np => a(1:2)\n"},
 		{"a pointer initialised to a target", "integer, target :: a(4)\ninteger, pointer :: p(:) => a\n"},
 	} {
@@ -119,6 +116,56 @@ func TestScalarPointers(t *testing.T) {
 	}
 	if out, err := runPtr(t, 1<<20, "integer, pointer :: p\ninteger :: i\ndo i = 1, 100000\nallocate(p)\np = i\ndeallocate(p)\nend do\nprint *, i\n"); err != nil || out != "100001" {
 		t.Errorf("100000 allocate/deallocate of a scalar under 1 MiB: %q, %v", out, err)
+	}
+}
+
+// A function may return a pointer (F2018 15.6.2.2: a function result with the
+// POINTER attribute). Four gfortran.dg tests reached such a
+// result through its slot -1 before this was supported, and failed as internal
+// errors: the safety net of pointers.go held.
+func TestPointerResults(t *testing.T) {
+	const prog = "module mr\ninteger, target :: x = 7\ncontains\n" +
+		"function f()\ninteger, pointer :: f\nallocate(f)\nf = 42\nend function\n" +
+		"function g() result(r)\ninteger, pointer :: r\nr => x\nend function\n" +
+		"function ga()\ninteger, pointer :: ga(:)\nallocate(ga(3))\nga = [1, 2, 3]\nend function\n" +
+		"function h()\ninteger, pointer :: h\nnullify(h)\nend function\n" +
+		"end module\n"
+	for _, tc := range []struct{ name, body, want string }{
+		{"a scalar result as a value", "print *, f() + 1\n", "43"},
+		{"p => f(), then the target ALLOCATE made is freed through p", "p => f()\nprint *, p, associated(p)\ndeallocate(p)\nprint *, associated(p)\n", "42 T F"},
+		{"a result associated with a module variable", "p => g()\np = 9\nprint *, x, associated(p, x)\n", "9 T"},
+		{"an array result, as a value and through q => ga()", "q => ga()\nprint *, sum(q), sum(ga()), associated(q)\n", "6 6 T"},
+	} {
+		src := prog + "program t\nuse mr\ninteger, pointer :: p, q(:)\n" + tc.body + "end program\n"
+		got, err := runPtr(t, 0, src)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+	// a reference to a function with a pointer result is a variable (F2018
+	// 9.2): passed to an intent(out) dummy, the function runs once and the
+	// dummy is copied out to its target (gfortran.dg ptr-func-4)
+	if got, err := runPtr(t, 0, prog+"program t\nuse mr\ncall setv(g())\nprint *, x\ncontains\nsubroutine setv(v)\ninteger, intent(out) :: v\nv = 1\nend subroutine\nend program\n"); err != nil || got != "1" {
+		t.Errorf("an intent(out) dummy associated with g(): %q, %v; want x = 1", got, err)
+	}
+	// a TARGET dummy would need the actual argument itself, not a copy
+	// (gfortran.dg pointer_function_actual_2): refused rather than wrong
+	if _, err := runPtr(t, 0, "program t\nreal, target :: x\ncall s3(x)\ncontains\nsubroutine s3(a)\nreal, target :: a\nend subroutine\nend program\n"); err == nil || !strings.Contains(err.Error(), "TARGET dummy argument") {
+		t.Errorf("a TARGET dummy argument: %v, want a refusal", err)
+	}
+	_, err := runPtr(t, 0, prog+"program t\nuse mr\nprint *, h()\nend program\n")
+	var e *Error
+	if !errors.As(err, &e) || e.Refused || !strings.Contains(err.Error(), "disassociated pointer") {
+		t.Errorf("the value of a disassociated result: %v, want a run-time failure", err)
+	}
+	// a target a function allocates for its result is the heap's: returned and
+	// never freed, they pile up; freed through the pointer, they do not
+	const big = "module mb\ncontains\nfunction mk()\ninteger, pointer :: mk(:)\nallocate(mk(2**22))\nmk = 1\nend function\nend module\n"
+	if _, err := runPtr(t, 100<<20, big+"program t\nuse mb\ninteger, pointer :: q(:)\ninteger :: i\ndo i = 1, 10\nq => mk()\nend do\nend program\n"); !memErr(err) {
+		t.Errorf("ten 32 MB results never freed under 100 MiB: %v", err)
+	}
+	if out, err := runPtr(t, 100<<20, big+"program t\nuse mb\ninteger, pointer :: q(:)\ninteger :: i\ndo i = 1, 10\nq => mk()\ndeallocate(q)\nend do\nprint *, i\nend program\n"); err != nil || out != "11" {
+		t.Errorf("ten 32 MB results freed through the pointer under 100 MiB: %q, %v", out, err)
 	}
 }
 

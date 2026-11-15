@@ -365,12 +365,17 @@ type sym struct {
 
 // ex is a compiled expression.
 type ex struct {
-	k  kind
-	i  intFn
-	r  realFn
-	b  boolFn
-	s  strFn
-	a  arrFn
+	k kind
+	i intFn
+	r realFn
+	b boolFn
+	s strFn
+	a arrFn
+	// ps and pg are set on the reference of a function whose result is a
+	// pointer: the result's target as such (nil when the function returned it
+	// disassociated), for p => f() (pointers.go); i, r, b and g dereference it.
+	ps func(*frame) *sref
+	pg func(*frame) *garr
 	g  gaFn                 // a general array: its shape and elements
 	et kind                 // the class of the elements of a general array
 	d  func(*frame) *dobj   // a derived-type object (a live reference)
@@ -782,6 +787,12 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		}
 		if ss.Flags&sema.FPointer != 0 && ss.Type.Basic == sema.Derived {
 			return c.errf(e, "%s: derived-type pointers are not supported yet", name)
+		}
+		if ss.Flags&(sema.FDummy|sema.FTarget) == sema.FDummy|sema.FTarget {
+			// a pointer associated with a TARGET dummy is associated with the
+			// actual argument (F2018 15.5.2.4); arguments are copied in and out
+			// here, so it would point at the copy: refused rather than wrong
+			return c.errf(e, "dummy argument %s: a TARGET dummy argument is not supported yet (arguments are copied, so a pointer to it would not point at the actual argument)", name)
 		}
 		if init != nil && (c.cur.unit.Kind == syntax.SubroutineUnit || c.cur.unit.Kind == syntax.FunctionUnit) {
 			return c.errf(e, "%s: an initialised variable of a procedure is saved between calls, which is not supported yet", name)
