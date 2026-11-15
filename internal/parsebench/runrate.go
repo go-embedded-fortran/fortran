@@ -90,13 +90,35 @@ func Classify(gf, ours Outcome) (RunVerdict, string) {
 	case ours.Failure != "":
 		return RunDiffers, "eval failed while running: " + ours.Failure
 	case !bytes.Equal(gf.Stdout, ours.Stdout):
-		return RunDiffers, "stdout"
+		return RunDiffers, "stdout " + firstDiff(ours.Stdout, gf.Stdout)
 	case !bytes.Equal(gf.Stderr, ours.Stderr):
-		return RunDiffers, "stderr"
+		return RunDiffers, "stderr " + firstDiff(ours.Stderr, gf.Stderr)
 	case gf.Exit != ours.Exit:
 		return RunDiffers, fmt.Sprintf("exit %d, gfortran %d", ours.Exit, gf.Exit)
 	}
 	return RunSame, ""
+}
+
+// firstDiff names the first line where ours and gfortran's differ, each side
+// quoted and cut to 60 bytes, so that a report sorts its differences by cause.
+func firstDiff(ours, gf []byte) string {
+	a, b := bytes.Split(ours, []byte("\n")), bytes.Split(gf, []byte("\n"))
+	cut := func(l [][]byte, i int) string {
+		if i >= len(l) {
+			return "(none)"
+		}
+		s := l[i]
+		if len(s) > 60 {
+			s = s[:60]
+		}
+		return fmt.Sprintf("%q", s)
+	}
+	for i := 0; i < max(len(a), len(b)); i++ {
+		if i >= len(a) || i >= len(b) || !bytes.Equal(a[i], b[i]) {
+			return fmt.Sprintf("line %d: ours %s, gfortran %s", i+1, cut(a, i), cut(b, i))
+		}
+	}
+	return ""
 }
 
 // RunEval runs one source with eval, in one session with implicit typing (the

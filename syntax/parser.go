@@ -419,7 +419,13 @@ func (p *parser) implicitMain() *Unit {
 	if p.cell {
 		// loose cell material: up to the next program unit, an END, or EOF
 		u.Body = p.block(p.isUnitStart)
-		if p.load() && p.atUnitEnd() {
+		if p.load() && p.word() == "contains" {
+			// a main program without a PROGRAM statement has internal
+			// procedures like any other (F2018 14.1: R1401 program-stmt is
+			// optional): the cell's statements, CONTAINS, the procedures, END
+			p.containsPart(u)
+			p.unitTail(u)
+		} else if p.load() && p.atUnitEnd() {
 			p.unitTail(u)
 		} else if p.load() && !p.isUnitStart() {
 			// "contains" outside a unit: report it and move on, never loop
@@ -627,24 +633,31 @@ func (p *parser) unitHeader(u *Unit) {
 
 func (p *parser) unitBody(u *Unit) {
 	u.Body = p.block(func() bool { return false })
-	if p.load() && p.word() == "contains" {
-		u.HasContains = true
-		p.done()
-		p.enter()
-		for p.load() {
-			if p.atUnitEnd() {
-				break
-			}
-			if p.isUnitStart() {
-				u.Contains = append(u.Contains, p.unit())
-				continue
-			}
-			p.errorAt(p.tok().Pos, "expected a procedure after 'contains', found "+p.describe(p.tok()))
-			p.statement()
-		}
-		p.leave()
-	}
+	p.containsPart(u)
 	p.unitTail(u)
+}
+
+// containsPart parses the internal or module procedures of u when the current
+// statement is CONTAINS, up to (not including) u's END.
+func (p *parser) containsPart(u *Unit) {
+	if !p.load() || p.word() != "contains" {
+		return
+	}
+	u.HasContains = true
+	p.done()
+	p.enter()
+	for p.load() {
+		if p.atUnitEnd() {
+			break
+		}
+		if p.isUnitStart() {
+			u.Contains = append(u.Contains, p.unit())
+			continue
+		}
+		p.errorAt(p.tok().Pos, "expected a procedure after 'contains', found "+p.describe(p.tok()))
+		p.statement()
+	}
+	p.leave()
 }
 
 var unitEndWords = [...]string{"", "program", "module", "submodule", "subroutine", "function", "blockdata"}

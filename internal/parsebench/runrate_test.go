@@ -45,6 +45,19 @@ func TestRunEvalSortsRefusalFromFailure(t *testing.T) {
 	}
 }
 
+// The note of a differing stream names the first differing line of each side,
+// so a report sorts its differences by cause.
+func TestClassifyNamesTheFirstDifferingLine(t *testing.T) {
+	_, note := Classify(Outcome{Stdout: []byte("a\nb\n")}, Outcome{Stdout: []byte("a\nc\n"), Stderr: nil})
+	if note != `stdout line 2: ours "c", gfortran "b"` {
+		t.Errorf("stdout: %q", note)
+	}
+	_, note = Classify(Outcome{}, Outcome{Stderr: []byte("STOP 1\n")})
+	if note != `stderr line 1: ours "STOP 1", gfortran ""` {
+		t.Errorf("stderr: %q", note)
+	}
+}
+
 func TestSkipReason(t *testing.T) {
 	if skipReason(corpus.Entry{Form: corpus.Fixed}) == "" {
 		t.Error("fixed form is not skipped")

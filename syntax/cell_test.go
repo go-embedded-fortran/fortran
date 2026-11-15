@@ -41,4 +41,18 @@ func TestCellGrammar(t *testing.T) {
 	if _, err := Parse("c.f90", []byte("x = 1\nend\n"), &Options{Form: Free, Cell: true}); err != nil {
 		t.Error(err)
 	}
+	// a main program without a PROGRAM statement has internal procedures:
+	// statements, CONTAINS, procedures, END (most gfortran.dg run tests); the
+	// cell goes on after its END
+	f, err = Parse("c.f90", []byte("x = 1\ncall s\ncontains\nsubroutine s\nprint *, x\nend subroutine\nend\nprint *, 2\n"), &Options{Form: Free, Cell: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Units) != 2 || !f.Units[0].Implicit || len(f.Units[0].Body) != 2 || len(f.Units[0].Contains) != 1 || !f.Units[1].Implicit {
+		t.Errorf("an implicit main with CONTAINS: %d units, first: implicit %v, %d statements, %d procedures", len(f.Units), f.Units[0].Implicit, len(f.Units[0].Body), len(f.Units[0].Contains))
+	}
+	// without its END it is refused, not taken as loose material
+	if _, err := Parse("c.f90", []byte("x = 1\ncontains\nsubroutine s\nend subroutine\n"), &Options{Form: Free, Cell: true}); err == nil {
+		t.Error("an implicit main with CONTAINS and no END was accepted")
+	}
 }

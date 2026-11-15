@@ -417,6 +417,15 @@ Writing it found that `eval` never ran an implicitly typed variable: the
 analyser typed it, and the compiler refused it as not declared. It now gets its
 storage like a declared one.
 
+**Second run** (same day, with a main program without `program` statement
+accepted with its `contains` part): identical **201**, differs 23,
+refused-by-us 2176, gfortran-failed 434, skipped 317. Compared file by file
+with the first run, 9 files went from refused to identical, 1 from refused to
+differs, and none left identical. The 23 that differ are programs `eval` runs
+and gets wrong (most stop on their own self-check): they are listed, with the
+first differing line of each side as the report now gives it, in
+[#40](https://github.com/go-embedded-fortran/fortran/issues/40).
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the

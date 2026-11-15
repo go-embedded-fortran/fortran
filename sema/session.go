@@ -125,6 +125,12 @@ func (s *Session) AnalyzeNext(state any, index int, src string) (*CellInfo, any)
 					execs = append(execs, b)
 				}
 			}
+			// the internal procedures of a main program without a PROGRAM
+			// statement (statements, CONTAINS, procedures, END) become
+			// procedures of the cell's module, like a procedure written loose
+			// in a cell: they still see the main's variables, which are the
+			// module's (they were dropped, and a CALL of one found nothing)
+			procs = append(procs, u.Contains...)
 		case u.Kind == syntax.SubroutineUnit || u.Kind == syntax.FunctionUnit:
 			procs = append(procs, u)
 		default:
