@@ -240,8 +240,21 @@ func editE(dst, buf []byte, x float64, bits int, t *tok, m *modes, g bool) ([]by
 		d.classify(x)
 		return special(dst, &d, w, m, 0), nil
 	}
-	if !g && t.v == 0 && (!t.hasD || ed == 0) {
-		return nil, &Error{Stat: ErrFormat, Msg: "Scale factor out of range in format specifier 'E' or 'D'"}
+	if !g && t.v == 0 {
+		// libgfortran's write_float.def (determine_precision's caller, the
+		// FMT_E/FMT_D case): with no d (its d < 0) and k = 0 the precision
+		// is refused; otherwise k must be in -d < k < d+2 (F2018 13.7.2.3.3),
+		// so 1PE5.0 is valid and writes one digit
+		d := ed
+		if !t.hasD {
+			d = -1
+		}
+		if d < 0 && k == 0 {
+			return nil, &Error{Stat: ErrFormat, Msg: "Precision not greater than zero in format specifier 'E' or 'D'"}
+		}
+		if k <= -d || k >= d+2 {
+			return nil, &Error{Stat: ErrFormat, Msg: "Scale factor out of range in format specifier 'E' or 'D'"}
+		}
 	}
 	sig := ed
 	minimize := false
