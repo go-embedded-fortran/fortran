@@ -26,6 +26,39 @@ func mustRun(t *testing.T, s *Session, src string) string {
 	return out
 }
 
+// With ImplicitTyping, a variable the implicit rules type gets storage like a
+// declared one: in a main program, as a local of a procedure and as a dummy
+// argument (i-n integer, the rest real). Without it, or under implicit none, the
+// same source is refused, and the refusal says so (Error.Refused).
+func TestSessionImplicitTyping(t *testing.T) {
+	src := "program p\nn = 6\nx = 0.5\nprint *, n * 7, x * 4\ncall s(n)\ncontains\nsubroutine s(k)\nm = k + 1\nprint *, m\nend subroutine\nend program\n"
+	s := NewSession(SessionOptions{ImplicitTyping: true})
+	out := mustRun(t, s, src)
+	if f := strings.Fields(out); len(f) != 3 || f[0] != "42" || f[1] != "2.00000000" || f[2] != "7" {
+		t.Fatalf("implicit typing: %q", out)
+	}
+	for name, s := range map[string]*Session{
+		"implicit typing off": NewSession(SessionOptions{}),
+		"implicit none":       NewSession(SessionOptions{ImplicitTyping: true}),
+	} {
+		src := src
+		if name == "implicit none" {
+			src = strings.Replace(src, "program p\n", "program p\nimplicit none\n", 1)
+		}
+		_, _, _, err := runCell(t, s, src)
+		var e *Error
+		if !errors.As(err, &e) || !e.Refused {
+			t.Errorf("%s: %v, want a refusal", name, err)
+		}
+	}
+	// a failure while running is not a refusal
+	_, _, _, err := runCell(t, NewSession(SessionOptions{}), "integer :: a(3), i\ni = 4\na(i) = 1\n")
+	var e *Error
+	if !errors.As(err, &e) || e.Refused {
+		t.Errorf("a subscript out of range: %v, want a run-time failure", err)
+	}
+}
+
 func TestSessionVariablePersists(t *testing.T) {
 	s := NewSession(SessionOptions{})
 	mustRun(t, s, "integer :: n = 40\nreal(8) :: x\nx = 1.5d0\n")

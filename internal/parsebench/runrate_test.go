@@ -1,0 +1,68 @@
+package parsebench
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/go-embedded-fortran/fortran/internal/corpus"
+)
+
+func TestClassify(t *testing.T) {
+	ok := Outcome{Stdout: []byte("1\n"), Stderr: []byte("STOP 2\n"), Exit: 2}
+	for _, tc := range []struct {
+		name     string
+		gf, ours Outcome
+		want     RunVerdict
+	}{
+		{"identical", ok, ok, RunSame},
+		{"gfortran failed wins over anything", Outcome{Failure: "x"}, Outcome{Refused: true, Failure: "y"}, RunGfFailed},
+		{"refused", ok, Outcome{Refused: true, Failure: "real(16) is not supported"}, RunRefused},
+		{"failed while running", ok, Outcome{Failure: "subscript out of range"}, RunDiffers},
+		{"stdout", ok, Outcome{Stdout: []byte("2\n"), Stderr: ok.Stderr, Exit: 2}, RunDiffers},
+		{"stderr", ok, Outcome{Stdout: ok.Stdout, Stderr: nil, Exit: 2}, RunDiffers},
+		{"exit", ok, Outcome{Stdout: ok.Stdout, Stderr: ok.Stderr, Exit: 0}, RunDiffers},
+	} {
+		if got, note := Classify(tc.gf, tc.ours); got != tc.want {
+			t.Errorf("%s: %s (%s), want %s", tc.name, got, note, tc.want)
+		}
+	}
+}
+
+// RunEval tells a refusal (nothing ran) from a failure while running, and
+// reports the exit status of STOP: the three outcomes the differential sorts.
+func TestRunEvalSortsRefusalFromFailure(t *testing.T) {
+	ctx := context.Background()
+	if o := RunEval(ctx, []byte("program p\nreal(16) :: q\nq = 1\nprint *, q\nend program\n"), RunLimits{}); !o.Refused || o.Failure == "" {
+		t.Errorf("an unsupported kind: %+v, want a refusal", o)
+	}
+	if o := RunEval(ctx, []byte("program p\ninteger :: a(3), i\ni = 4\na(i) = 1\nend program\n"), RunLimits{}); o.Refused || o.Failure == "" {
+		t.Errorf("a subscript out of range: %+v, want a failure while running, not a refusal", o)
+	}
+	o := RunEval(ctx, []byte("program p\nn = 6\nprint *, n * 7\nstop 3\nend program\n"), RunLimits{})
+	if o.Failure != "" || strings.TrimSpace(string(o.Stdout)) != "42" || o.Exit != 3 || strings.TrimSpace(string(o.Stderr)) != "STOP 3" {
+		t.Errorf("implicit typing and STOP 3: %+v", o)
+	}
+}
+
+func TestSkipReason(t *testing.T) {
+	if skipReason(corpus.Entry{Form: corpus.Fixed}) == "" {
+		t.Error("fixed form is not skipped")
+	}
+	if skipReason(corpus.Entry{Form: corpus.Free, Source: []byte("! { dg-do run }\n! { dg-shouldfail \"x\" }\n")}) == "" {
+		t.Error("dg-shouldfail is not skipped")
+	}
+	if why := skipReason(corpus.Entry{Form: corpus.Free, Source: []byte("! { dg-do run }\n")}); why != "" {
+		t.Errorf("a plain run test is skipped: %s", why)
+	}
+}
+
+// Every class is in the count, zero included.
+func TestCountRunHasEveryClass(t *testing.T) {
+	c := CountRun(nil)
+	for _, v := range []RunVerdict{RunSame, RunDiffers, RunRefused, RunGfFailed, RunSkipped} {
+		if n, ok := c[v]; !ok || n != 0 {
+			t.Errorf("%s: %d, %v", v, n, ok)
+		}
+	}
+}
