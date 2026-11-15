@@ -16,7 +16,7 @@ import (
 	"github.com/go-embedded-fortran/fortran/syntax"
 )
 
-func compile(t *testing.T, src string) (*Program, error) {
+func compile(t testing.TB, src string) (*Program, error) {
 	t.Helper()
 	f, err := syntax.Parse("t.f90", []byte(src), nil)
 	if err != nil {

@@ -56,10 +56,15 @@ type dobj struct {
 }
 
 func (c *compiler) typeDefs() map[string]*syntax.TypeDef {
-	if c.typedefs != nil {
+	if c.typedefs != nil && c.tdFile == c.file {
 		return c.typedefs
 	}
-	c.typedefs = map[string]*syntax.TypeDef{}
+	// a session compiles one file per cell: the definitions of the earlier
+	// cells stay, a later one of the same name replaces them
+	c.tdFile = c.file
+	if c.typedefs == nil {
+		c.typedefs = map[string]*syntax.TypeDef{}
+	}
 	var walk func(u *syntax.Unit)
 	walk = func(u *syntax.Unit) {
 		for _, s := range u.Body {
@@ -370,11 +375,12 @@ func (c *compiler) declD(ss *sema.Symbol, e syntax.Node, s *sym, init syntax.Exp
 }
 
 func (c *compiler) daIdent(id *syntax.Ident, s *sym) (*ex, error) {
-	if s.owner != c.cur {
-		return nil, c.errf(id, "array %s of derived type of another program unit is not supported yet", id.Name)
+	h, err := c.hops(s, id)
+	if err != nil {
+		return nil, err
 	}
 	slot := s.slot
-	return &ex{k: kDA, slot: -1, dt: s.dt, rank: 1, v: s, da: func(f *frame) []*dobj { return f.das[slot] }}, nil
+	return &ex{k: kDA, slot: -1, dt: s.dt, rank: 1, v: s, da: func(f *frame) []*dobj { return f.at(h).das[slot] }}, nil
 }
 
 // daElement compiles pts(i): an element of an array of derived type, a live

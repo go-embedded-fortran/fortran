@@ -200,6 +200,15 @@ func (f *frame) hop(n int) *frame {
 	return f
 }
 
+// at is the frame of a variable's owner, h static links up as c.hops counted
+// them (0: this frame).
+func (f *frame) at(h int) *frame {
+	if h != 0 {
+		return f.hop(h)
+	}
+	return f
+}
+
 // hostRead is the read of a scalar variable of an enclosing unit.
 func hostRead(s *sym, n int) *ex {
 	slot := s.slot
