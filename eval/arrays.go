@@ -942,7 +942,9 @@ func (c *compiler) emitter(e syntax.Expr) (emitFn, error) {
 				fail(f, "implied-do of %d iterations is out of range", n)
 			}
 			v := l
+			base := f.bud.mark()
 			for ; n > 0; n-- {
+				f.bud.reset(base) // the temporaries of the last iteration are garbage
 				f.ints[slot] = v
 				for _, it := range items {
 					it(f, a)
