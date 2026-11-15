@@ -203,6 +203,10 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 		f.ctl, f.target = ctlNone, ""
 		return ctl == ctlExit
 	}
+	var vec *vecKernel
+	if counted && !hasStepE && !jumps && vh == 0 {
+		vec = c.vecLoop(d, sy)
+	}
 	switch {
 	case counted:
 		return func(f *frame) {
@@ -213,6 +217,10 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 			n := (h - l + st) / st
 			v := l
 			vf := f.at(vh) // the frame of the do variable: a session's variable is a module's
+			if vec != nil && n >= vecMin && vec.run(f, l, n, f.bud) {
+				vf.ints[slot] = l + n
+				return
+			}
 			if !jumps {
 				for ; n > 0; n-- {
 					f.bud.tick()
