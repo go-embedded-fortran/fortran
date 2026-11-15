@@ -37,6 +37,10 @@ type garr struct {
 	// palloc marks a target ALLOCATE made through a pointer: the only one a
 	// DEALLOCATE of a pointer may free (F2018 9.7.3.3).
 	palloc bool
+	// aliased marks an array a pointer was associated with: when its frame
+	// returns, its charge moves to the heap instead of being credited, since
+	// the pointer may still hold it (memory.go exit).
+	aliased bool
 }
 
 func (g *garr) size() int {

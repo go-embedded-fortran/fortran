@@ -118,6 +118,20 @@ func (b *budget) exit(f *frame) {
 	if b == nil {
 		return
 	}
+	if b.aliased && b.heap != nil {
+		// an array of this frame that a pointer was associated with outlives
+		// the frame in fact (the pointer still holds it, and Go keeps it): its
+		// charge moves to the heap rather than being credited, so the memory
+		// stays counted. A pointer to a local that is not SAVEd is undefined
+		// in Fortran after the return; counting it is the safe side.
+		for _, g := range f.gas {
+			if g != nil && g.aliased && g.own == f && g.chg > 0 {
+				f.mem -= g.chg
+				b.heap.mem += g.chg
+				g.own = b.heap
+			}
+		}
+	}
 	if b.mem < f.mem {
 		underflow(f, "the session", b.mem, f.mem)
 	}

@@ -111,6 +111,9 @@ type budget struct {
 	// DEALLOCATE, whatever frame made them (pointers.go). It never returns, so
 	// nothing credits it but DEALLOCATE; a session keeps one across its cells.
 	heap *frame
+	// aliased is set once a pointer is associated with an array: exit then
+	// looks for the frame's aliased arrays (and skips the scan before).
+	aliased bool
 }
 
 func newBudget(ctx context.Context, max int64) *budget {
@@ -365,12 +368,17 @@ type sym struct {
 
 // ex is a compiled expression.
 type ex struct {
-	k  kind
-	i  intFn
-	r  realFn
-	b  boolFn
-	s  strFn
-	a  arrFn
+	k kind
+	i intFn
+	r realFn
+	b boolFn
+	s strFn
+	a arrFn
+	// ps and pg are set on the reference of a function whose result is a
+	// pointer: the result's target as such (nil when the function returned it
+	// disassociated), for p => f() (pointers.go); i, r, b and g dereference it.
+	ps func(*frame) *sref
+	pg func(*frame) *garr
 	g  gaFn                 // a general array: its shape and elements
 	et kind                 // the class of the elements of a general array
 	d  func(*frame) *dobj   // a derived-type object (a live reference)
@@ -569,12 +577,22 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 	case *syntax.AttrStmt:
 		switch s.Attr {
 		case "private", "public", "save", "target", "pointer": // see decl
+			if s.Attr == "save" {
+				if err := c.saveHere(s); err != nil {
+					return err
+				}
+			}
 		default:
 			return c.errf(s, "the %s statement is not supported yet", s.Attr)
 		}
 	case *syntax.KeywordStmt:
 		switch s.Word {
 		case "private", "public", "save", "contains":
+			if s.Word == "save" {
+				if err := c.saveHere(s); err != nil {
+					return err
+				}
+			}
 		default:
 			return c.errf(s, "%q is not supported yet", s.Word)
 		}
@@ -707,12 +725,28 @@ func (c *compiler) symOf(id *syntax.Ident) (*sym, *sema.Symbol, error) {
 	return s, ss, nil
 }
 
+// saveHere refuses SAVE in a procedure. A procedure's variables are made anew
+// at each call here, so a SAVEd one would silently restart from its initial
+// value: it printed 1 then 1 where gfortran prints 1 then 2. In a module or the
+// main program SAVE changes nothing (their variables live for the run).
+func (c *compiler) saveHere(at syntax.Node) error {
+	if k := c.cur.unit.Kind; k == syntax.SubroutineUnit || k == syntax.FunctionUnit {
+		return c.errf(at, "SAVE in a procedure is not supported yet (its variables are made anew at each call)")
+	}
+	return nil
+}
+
 func (c *compiler) decl(d *syntax.Decl) error {
 	for _, a := range d.Attrs {
 		switch a.Name {
 		case "parameter", "allocatable", "dimension", "intent", "value", "external", "private", "public", "save",
 			"target",  // lets a pointer be associated with the variable (pointers.go)
 			"pointer": // an array pointer; declSym refuses the kinds not supported yet
+			if a.Name == "save" {
+				if err := c.saveHere(d); err != nil {
+					return err
+				}
+			}
 		default:
 			return c.errf(d, "attribute %q is not supported", a.Name)
 		}
@@ -782,6 +816,12 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		}
 		if ss.Flags&sema.FPointer != 0 && ss.Type.Basic == sema.Derived {
 			return c.errf(e, "%s: derived-type pointers are not supported yet", name)
+		}
+		if ss.Flags&(sema.FDummy|sema.FTarget) == sema.FDummy|sema.FTarget {
+			// a pointer associated with a TARGET dummy is associated with the
+			// actual argument (F2018 15.5.2.4); arguments are copied in and out
+			// here, so it would point at the copy: refused rather than wrong
+			return c.errf(e, "dummy argument %s: a TARGET dummy argument is not supported yet (arguments are copied, so a pointer to it would not point at the actual argument)", name)
 		}
 		if init != nil && (c.cur.unit.Kind == syntax.SubroutineUnit || c.cur.unit.Kind == syntax.FunctionUnit) {
 			return c.errf(e, "%s: an initialised variable of a procedure is saved between calls, which is not supported yet", name)

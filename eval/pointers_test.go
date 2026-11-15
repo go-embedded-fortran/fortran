@@ -61,9 +61,6 @@ func TestArrayPointerFailures(t *testing.T) {
 	for _, tc := range []struct{ name, src string }{
 		{"a character pointer", "character(len=3), pointer :: s\n"},
 		{"a pointer as the do variable", "integer, target :: j\ninteger, pointer :: i\ni => j\ndo i = 1, 2\nend do\n"},
-		// found by the execution differential: four gfortran.dg tests reached the
-		// result's slot -1 and failed as internal errors (the safety net held)
-		{"a function with a pointer result", "program q\ninteger, pointer :: p\nallocate(p)\np = f()\ncontains\nfunction f()\ninteger, pointer :: f\nallocate(f)\nf = 1\nend function\nend program\n"},
 		{"a pointer to a section", "integer, target :: a(4)\ninteger, pointer :: p(:)\np => a(1:2)\n"},
 		{"a pointer initialised to a target", "integer, target :: a(4)\ninteger, pointer :: p(:) => a\n"},
 	} {
@@ -72,6 +69,24 @@ func TestArrayPointerFailures(t *testing.T) {
 		if !errors.As(err, &e) || !e.Refused {
 			t.Errorf("%s: %v, want a refusal", tc.name, err)
 		}
+	}
+}
+
+// SAVE in a procedure was accepted and ignored: the variables of a procedure
+// are made anew at each call, so a counter SAVEd across two calls printed 1
+// then 1 where gfortran prints 1 then 2 (found while writing the alias tests).
+// It is refused in all three forms; in the main program it changes nothing.
+func TestSaveInAProcedureIsRefused(t *testing.T) {
+	for _, form := range []string{"integer, save :: n\n", "integer :: n\nsave n\n", "integer :: n\nsave\n"} {
+		src := "program p\ncall c()\ncall c()\ncontains\nsubroutine c()\n" + form + "n = 1\nprint *, n\nend subroutine\nend program\n"
+		_, err := runPtr(t, 0, src)
+		var e *Error
+		if !errors.As(err, &e) || !e.Refused || !strings.Contains(err.Error(), "SAVE in a procedure") {
+			t.Errorf("%q: %v, want a refusal", form, err)
+		}
+	}
+	if out, err := runPtr(t, 0, "integer, save :: n\nn = 2\nprint *, n\n"); err != nil || out != "2" {
+		t.Errorf("SAVE in a cell's main program: %q, %v", out, err)
 	}
 }
 
@@ -122,6 +137,56 @@ func TestScalarPointers(t *testing.T) {
 	}
 }
 
+// A function may return a pointer (F2018 15.6.2.2: a function result with the
+// POINTER attribute). Four gfortran.dg tests reached such a
+// result through its slot -1 before this was supported, and failed as internal
+// errors: the safety net of pointers.go held.
+func TestPointerResults(t *testing.T) {
+	const prog = "module mr\ninteger, target :: x = 7\ncontains\n" +
+		"function f()\ninteger, pointer :: f\nallocate(f)\nf = 42\nend function\n" +
+		"function g() result(r)\ninteger, pointer :: r\nr => x\nend function\n" +
+		"function ga()\ninteger, pointer :: ga(:)\nallocate(ga(3))\nga = [1, 2, 3]\nend function\n" +
+		"function h()\ninteger, pointer :: h\nnullify(h)\nend function\n" +
+		"end module\n"
+	for _, tc := range []struct{ name, body, want string }{
+		{"a scalar result as a value", "print *, f() + 1\n", "43"},
+		{"p => f(), then the target ALLOCATE made is freed through p", "p => f()\nprint *, p, associated(p)\ndeallocate(p)\nprint *, associated(p)\n", "42 T F"},
+		{"a result associated with a module variable", "p => g()\np = 9\nprint *, x, associated(p, x)\n", "9 T"},
+		{"an array result, as a value and through q => ga()", "q => ga()\nprint *, sum(q), sum(ga()), associated(q)\n", "6 6 T"},
+	} {
+		src := prog + "program t\nuse mr\ninteger, pointer :: p, q(:)\n" + tc.body + "end program\n"
+		got, err := runPtr(t, 0, src)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+	// a reference to a function with a pointer result is a variable (F2018
+	// 9.2): passed to an intent(out) dummy, the function runs once and the
+	// dummy is copied out to its target (gfortran.dg ptr-func-4)
+	if got, err := runPtr(t, 0, prog+"program t\nuse mr\ncall setv(g())\nprint *, x\ncontains\nsubroutine setv(v)\ninteger, intent(out) :: v\nv = 1\nend subroutine\nend program\n"); err != nil || got != "1" {
+		t.Errorf("an intent(out) dummy associated with g(): %q, %v; want x = 1", got, err)
+	}
+	// a TARGET dummy would need the actual argument itself, not a copy
+	// (gfortran.dg pointer_function_actual_2): refused rather than wrong
+	if _, err := runPtr(t, 0, "program t\nreal, target :: x\ncall s3(x)\ncontains\nsubroutine s3(a)\nreal, target :: a\nend subroutine\nend program\n"); err == nil || !strings.Contains(err.Error(), "TARGET dummy argument") {
+		t.Errorf("a TARGET dummy argument: %v, want a refusal", err)
+	}
+	_, err := runPtr(t, 0, prog+"program t\nuse mr\nprint *, h()\nend program\n")
+	var e *Error
+	if !errors.As(err, &e) || e.Refused || !strings.Contains(err.Error(), "disassociated pointer") {
+		t.Errorf("the value of a disassociated result: %v, want a run-time failure", err)
+	}
+	// a target a function allocates for its result is the heap's: returned and
+	// never freed, they pile up; freed through the pointer, they do not
+	const big = "module mb\ncontains\nfunction mk()\ninteger, pointer :: mk(:)\nallocate(mk(2**22))\nmk = 1\nend function\nend module\n"
+	if _, err := runPtr(t, 100<<20, big+"program t\nuse mb\ninteger, pointer :: q(:)\ninteger :: i\ndo i = 1, 10\nq => mk()\nend do\nend program\n"); !memErr(err) {
+		t.Errorf("ten 32 MB results never freed under 100 MiB: %v", err)
+	}
+	if out, err := runPtr(t, 100<<20, big+"program t\nuse mb\ninteger, pointer :: q(:)\ninteger :: i\ndo i = 1, 10\nq => mk()\ndeallocate(q)\nend do\nprint *, i\nend program\n"); err != nil || out != "11" {
+		t.Errorf("ten 32 MB results freed through the pointer under 100 MiB: %q, %v", out, err)
+	}
+}
+
 // A target ALLOCATE makes through a pointer is the heap's: allocating the
 // pointer again leaves the old one held (Fortran leaks it), so the budget sees
 // them pile up; DEALLOCATE gives each back, so a loop of both does not.
@@ -151,5 +216,36 @@ func TestPointerTargetsAreChargedToTheHeap(t *testing.T) {
 	control := strings.Replace(escape, "call mk()\n", "", 1)
 	if _, err := runPtr(t, 100<<20, control); err != nil {
 		t.Errorf("the control, 96 MB alone under 100 MiB: %v", err)
+	}
+	// pointer assignment allocates nothing: a million reassignments between
+	// two 32 MB targets in a 100 MiB budget run, and the budget still holds the
+	// two targets only (one more 32 MB array fits, a 64 MB one does not)
+	const reassign = "integer, target :: a(2**22), b(2**22)\ninteger, pointer :: p(:)\ninteger :: i\na = 1\nb = 2\ndo i = 1, 1000000\np => a\np => b\nend do\nprint *, sum(p(1:2))\n"
+	if out, err := runPtr(t, 100<<20, reassign); err != nil || out != "4" {
+		t.Errorf("a million pointer reassignments: %q, %v", out, err)
+	}
+	more := strings.Replace(strings.Replace(reassign, "integer :: i\n", "integer :: i\ninteger, allocatable :: c(:)\n", 1), "print *", "allocate(c(2**23))\nprint *", 1)
+	if _, err := runPtr(t, 100<<20, more); !memErr(err) {
+		t.Errorf("64 MB more after the reassignments (64 MB held) under 100 MiB: %v, want a refusal", err)
+	}
+	// an alias of a local array that goes out of scope: DEALLOCATE through it
+	// is refused (ALLOCATE did not make it through a pointer), so it is never
+	// credited a second time and the counter never goes below zero (which would
+	// fail the cell as an internal error)
+	const alias = "module ma\ninteger, pointer :: g(:)\ncontains\nsubroutine keep()\ninteger, target :: loc(4)\nloc = 3\ng => loc\nend subroutine\nend module\nprogram q\nuse ma\ncall keep()\ndeallocate(g)\nend program\n"
+	if _, err := runPtr(t, 100<<20, alias); err == nil || !strings.Contains(err.Error(), "did not make through a pointer") {
+		t.Errorf("DEALLOCATE through an alias of a local array: %v, want a refusal of the deallocate", err)
+	}
+	// the escape a review asked about: a module pointer to a LOCAL array (not
+	// SAVEd) keeps it alive after the procedure returns (Go holds it, Fortran
+	// calls the pointer undefined). Its charge moves to the heap instead of
+	// being credited, so it stays counted: 32 MB held after the call, and 96 MB
+	// more do not fit in 100 MiB; without the pointer (the control) they do.
+	const dangle = "module md\ninteger, pointer :: g(:)\ncontains\nsubroutine keep()\ninteger, target :: loc(2**22)\nloc = 3\ng => loc\nend subroutine\nend module\nprogram q\nuse md\ninteger, allocatable :: c(:)\ncall keep()\nallocate(c(12582912))\nend program\n"
+	if _, err := runPtr(t, 100<<20, dangle); !memErr(err) {
+		t.Errorf("96 MB after a pointer kept a 32 MB local alive, under 100 MiB: %v (the kept array is no longer counted)", err)
+	}
+	if _, err := runPtr(t, 100<<20, strings.Replace(dangle, "g => loc\n", "", 1)); err != nil {
+		t.Errorf("the control, no pointer to the local: %v", err)
 	}
 }
