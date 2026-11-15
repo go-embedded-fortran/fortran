@@ -20,12 +20,15 @@ func runRateCmd() *cobra.Command {
 	var timeout time.Duration
 	c := &cobra.Command{
 		Use:   "run-rate",
-		Short: "run every \"dg-do run\" file below --dir with eval and with gfortran, and compare stdout, stderr and exit status: identical, differs, refused-by-us, gfortran-failed, skipped",
+		Short: "run every \"dg-do run\" file below --dir with eval and with gfortran, and compare stdout, stderr and exit status: identical, both-failed, differs, refused-by-us, gfortran-failed, skipped",
 		Long: `The execution differential of bib/fortran.md §10 (M6). Each file is built by
 gfortran and run, and run by eval in one session with implicit typing; both
 sides are bounded (--timeout each, eval's memory 1 GiB and output 1 MiB).
 
-  identical        stdout, stderr and exit status are equal
+  identical        stdout, stderr and exit status are equal, and the status is 0
+  both-failed      the same, with a status that is not 0: the test stopped
+                   itself on both sides, so gfortran, the reference, failed it
+                   too (usually for want of the dg-options not passed here)
   differs          eval ran it, or failed while running, and they are not
   refused-by-us    eval's analyser or compiler refused it: nothing ran
   gfortran-failed  gfortran did not build it or did not run it within bounds
@@ -63,8 +66,8 @@ nothing is refused rather than reported as zero failures.`,
 			}
 			n := parsebench.CountRun(recs)
 			w := cmd.OutOrStdout()
-			fmt.Fprintf(w, "%d files: identical=%d differs=%d refused-by-us=%d gfortran-failed=%d skipped=%d\n",
-				len(recs), n[parsebench.RunSame], n[parsebench.RunDiffers], n[parsebench.RunRefused], n[parsebench.RunGfFailed], n[parsebench.RunSkipped])
+			fmt.Fprintf(w, "%d files: identical=%d both-failed=%d differs=%d refused-by-us=%d gfortran-failed=%d skipped=%d\n",
+				len(recs), n[parsebench.RunSame], n[parsebench.RunBothFail], n[parsebench.RunDiffers], n[parsebench.RunRefused], n[parsebench.RunGfFailed], n[parsebench.RunSkipped])
 			for _, v := range []parsebench.RunVerdict{parsebench.RunDiffers, parsebench.RunRefused} {
 				for _, e := range parsebench.TopRunNotes(recs, v, topNotes) {
 					fmt.Fprintf(w, "%-13s %5d  %s\n       e.g. %s\n", v, e.Count, e.Msg, e.Eg)
