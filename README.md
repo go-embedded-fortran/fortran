@@ -82,10 +82,9 @@ copies are listed in the package documentation (`go doc ./rt`): `F0.d` prints
 `.50`, `E0.d` an E+000 exponent, `G8.1` of 0.95 is `1.`, `I5.8` is refused, `A`
 and `L` accept integers, a repeat count cannot cross kinds on input, and so on.
 `testdata/programs/formatted_output.f90` is reproduced on rt
-(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 13 and
-they are byte-identical to their goldens (stdout, stderr, exit status); the
-other one uses derived types (M3-A part 6), `TestGoldenPrograms` counts the
-runs and the refusals.
+(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs all 14 and
+they are byte-identical to their goldens (stdout, stderr, exit status);
+`TestGoldenPrograms` counts the runs and the refusals.
 
 ### Performance
 
@@ -640,8 +639,20 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
   (reallocated on assignment), merge, scan, verify, and internal files: WRITE
   to and READ from a character variable, list-directed or formatted, scalar
   integer, real, logical and character items, with `iostat=` (the iostat
-  values are the runtime's, libgfortran's). Still refused: derived types,
-  character arrays, READ from a unit, complex
+  values are the runtime's, libgfortran's). Part 6 (v0.16.0) added derived
+  types: scalar objects and rank-1 fixed-size arrays of them, scalar integer,
+  real, logical and character components, array components (fixed shape or
+  allocatable), components of derived type, default initialisation, structure
+  constructors (keywords, omitted components), component references
+  (`a%b%c`, `pts%x`, `pts(i)%x`, `a%items(1:n)`), deep-copy intrinsic
+  assignment, type-bound procedures (`call a%push(1)`, `a%size()`; resolved by
+  `eval`, the analyser does not resolve them) with `class(t)` dummies treated
+  as their declared type, `move_alloc`, and derived-type output (refused, as
+  gfortran does, when the type has an allocatable component). With it `eval`
+  runs all 14 golden programs. Still refused: type extension, `select type` and
+  dynamic dispatch, pointer components, derived-type named constants and
+  allocatable derived-type variables, arrays of derived type of rank above 1 or
+  with sections, character arrays, READ from a unit, complex
   variables, vector subscripts, `elsewhere`, a dim= or mask= argument of a
   reduction, optional arguments, an initialised local variable of a procedure
   (it is saved between calls), host- and module-associated arrays, internal

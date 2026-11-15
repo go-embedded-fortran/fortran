@@ -145,7 +145,7 @@ func (c *compiler) declareProc(p *procCode) error {
 // isSpec reports a specification statement, compiled by declareProc.
 func isSpec(s syntax.Stmt) bool {
 	switch s.(type) {
-	case *syntax.Decl, *syntax.ImplicitStmt, *syntax.UseStmt, *syntax.Interface, *syntax.AttrStmt, *syntax.KeywordStmt:
+	case *syntax.Decl, *syntax.ImplicitStmt, *syntax.UseStmt, *syntax.Interface, *syntax.AttrStmt, *syntax.KeywordStmt, *syntax.TypeDef:
 		return true
 	}
 	return false
@@ -367,6 +367,14 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	slot := ps.slot
 	var b binding
 	switch ps.k {
+	case kD:
+		// a derived-type dummy is associated with the actual object itself
+		if v.dt != ps.dt {
+			return binding{}, c.errf(a, "the actual argument is not of type %s", ps.dt.name)
+		}
+		fn := v.d
+		b.set = func(f, cf *frame) { cf.dobjs[slot] = fn(f) }
+		return b, nil
 	case kGA:
 		// the dummy shares the actual's elements, with lower bounds 1; only a
 		// whole array (or a value that is not defined) can be shared
@@ -478,16 +486,22 @@ func (c *compiler) funcCall(n *syntax.Index, ss *sema.Symbol) (*ex, error) {
 	if err != nil {
 		return nil, err
 	}
+	return c.funcCallArgs(n, p, n.Args)
+}
+
+func (c *compiler) funcCallArgs(n *syntax.Index, p *procCode, args []syntax.Arg) (*ex, error) {
 	if p.unit.Kind != syntax.FunctionUnit || p.result == nil {
 		return nil, c.errf(n, "%s is not a function", p.name)
 	}
-	run, err := c.invoker(n, p, n.Args)
+	run, err := c.invoker(n, p, args)
 	if err != nil {
 		return nil, err
 	}
 	r := p.result
 	slot := r.slot
 	switch r.k {
+	case kD:
+		return &ex{k: kD, slot: -1, dt: r.dt, d: func(f *frame) *dobj { return run(f).dobjs[slot] }}, nil
 	case kGA:
 		name := p.name
 		return &ex{k: kGA, slot: -1, rank: r.rank, et: r.et, kd: r.kd, g: func(f *frame) *garr {

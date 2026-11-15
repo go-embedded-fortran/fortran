@@ -547,16 +547,11 @@ func (c *compiler) allocatedGA(n *syntax.Index) (*ex, error) {
 	if len(n.Args) != 1 || n.Args[0].Value == nil {
 		return nil, c.errf(n, "allocated takes one argument")
 	}
-	id, ok := n.Args[0].Value.(*syntax.Ident)
-	if !ok {
-		return nil, c.errf(n, "allocated needs an allocatable array")
+	ref, ix, err := c.lhsRef(n, n.Args[0].Value)
+	if err != nil || ix != nil || !ref.alloc {
+		return nil, c.errf(n, "allocated needs an allocatable array of the general kind")
 	}
-	s, _, err := c.symOf(id)
-	if err != nil || !s.ga || !s.alloc || s.owner != c.cur {
-		return nil, c.errf(n, "allocated: %s is not an allocatable array of the general kind of this unit", id.Name)
-	}
-	slot := s.slot
-	return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.gas[slot] != nil }}, nil
+	return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return *ref.ptr(f) != nil }}, nil
 }
 
 // elementalGA compiles an elemental intrinsic applied to arrays: the scalar
