@@ -131,3 +131,105 @@ func TestBudgetZeroIsNoBound(t *testing.T) {
 		t.Errorf("%v", err)
 	}
 }
+
+// A derived-type copy is charged to the owner of its destination: a module's
+// array, copied into by a procedure, stays charged when the procedure returns,
+// and the counter ends at what the module holds. 1000 copies of a 32 MiB array
+// into a module's objects are refused once the budget is passed, not counted
+// as zero.
+func TestBudgetChargesTheOwnerOfACopy(t *testing.T) {
+	s := NewSession(SessionOptions{MaxAlloc: 512 << 20})
+	if err := cellErr(t, s, "module m\ntype :: t\nreal(8), allocatable :: x(:)\nend type\ntype(t) :: keep(1000)\ncontains\nsubroutine put(i)\ninteger :: i\ntype(t) :: tmp\nallocate(tmp%x(2**22))\nkeep(i) = tmp\nend subroutine\nend module\n"); err != nil {
+		t.Fatal(err)
+	}
+	err := cellErr(t, s, "use m\ninteger :: i\ndo i = 1, 1000\n  call put(i)\nend do\n")
+	if !memErr(err) {
+		t.Fatalf("1000 x 32 MiB held by a module: %v, want a memory limit error", err)
+	}
+	// what was copied before the refusal is the module's, and counted
+	if got := held(s.mods); got < 256<<20 {
+		t.Errorf("the module holds %d bytes after the copies, want at least 256 MiB", got)
+	}
+}
+
+// A credit that gives back more than was charged is an error of the evaluator,
+// reported, never clamped to zero.
+func TestBudgetUnderflowIsReported(t *testing.T) {
+	b := newBudget(nil, 0)
+	b.mem = 100
+	own := &frame{mem: 5}
+	defer func() {
+		e, ok := recover().(*Error)
+		if !ok || !strings.Contains(e.Msg, "below zero") {
+			t.Errorf("recovered %v, want the underflow error", e)
+		}
+	}()
+	b.credit(&frame{}, own, 10)
+	t.Error("a credit of more than the frame holds went through")
+}
+
+// The temporaries of one statement are alive together, so they are summed:
+// (a+1)+((a+2)+((a+3)+...)) holds one temporary for each level, and a
+// statement of 16 levels over a 32 MiB array passes 512 MiB though each
+// temporary alone fits. The same statement over a small array is fine, and so
+// is the next statement: the reservation ends with the statement.
+func TestBudgetSumsTheTemporariesOfAStatement(t *testing.T) {
+	expr := func(levels int) string {
+		e := "(a+" + "99" + ")"
+		for i := levels; i > 0; i-- {
+			e = "((a+" + strings.Repeat("1", i) + ")+" + e + ")"
+		}
+		return e
+	}
+	s := NewSession(SessionOptions{MaxAlloc: 512 << 20})
+	if err := cellErr(t, s, "integer :: a(2**22), b(2**22)\na = 1\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cellErr(t, s, "b = "+expr(16)+"\n"); !memErr(err) {
+		t.Errorf("16 live temporaries of 32 MiB: %v", err)
+	}
+	// the budget is back: a statement of two temporaries runs, and runs again
+	for i := 0; i < 3; i++ {
+		if err := cellErr(t, s, "b = "+expr(2)+"\n"); err != nil {
+			t.Errorf("a statement of two temporaries, round %d: %v", i, err)
+		}
+	}
+}
+
+// Character results are temporaries too: a chain of // over 16 MiB variables, a
+// REPEAT of 64 MiB beside another, and ADJUSTL.
+func TestBudgetCountsCharacterTemporaries(t *testing.T) {
+	s := NewSession(SessionOptions{MaxAlloc: 128 << 20})
+	for name, src := range map[string]string{
+		"concatenations": "character(len=2**22) :: s, r\nr = " + strings.Repeat("s//", 40) + "s\n",
+		"two repeats":    "character(len=1) :: c\nc = 'x'\nprint *, len(repeat(c, 2**25)//repeat(c, 2**25)//repeat(c, 2**25)//repeat(c, 2**25))\n",
+		"adjustl chain":  "character(len=2**24) :: s, r\nr = " + strings.Repeat("adjustl(", 9) + "s" + strings.Repeat(")", 9) + "\n",
+	} {
+		if err := cellErr(t, s, src); !memErr(err) {
+			t.Errorf("%s: %v, want a memory limit error", name, err)
+		}
+	}
+	if err := cellErr(t, s, "character(len=1) :: c\nc = 'x'\nprint *, len(repeat(c, 2**24))\n"); err != nil {
+		t.Errorf("one 16 MiB REPEAT: %v", err)
+	}
+}
+
+// An output statement does not build the text of an array it could not print:
+// 4 million values would cost 192 MiB of values in a 100 MiB budget, but the cap
+// of 1000 bytes needs 501 of them, and the statement runs.
+func TestPrintStopsAtTheOutputCap(t *testing.T) {
+	s := NewSession(SessionOptions{MaxAlloc: 100 << 20, MaxOutput: 1000})
+	var out strings.Builder
+	_, err := s.Run(context.Background(), "integer :: a(2**22), i\na = 7\nprint *, a\nprint *, (i, i = 1, 100000000)\n", &out, io.Discard)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if out.Len() == 0 || out.Len() > 20000 {
+		t.Errorf("the output is %d bytes", out.Len())
+	}
+	// without the cap the same statement needs the values, and the budget says no
+	s = NewSession(SessionOptions{MaxAlloc: 100 << 20})
+	if err := cellErr(t, s, "integer :: a(2**22)\na = 7\nprint *, a\n"); !memErr(err) {
+		t.Errorf("an uncapped print of 4 million values in 100 MiB: %v", err)
+	}
+}

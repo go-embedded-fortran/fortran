@@ -53,6 +53,10 @@ type dtype struct {
 type dobj struct {
 	t *dtype
 	v []cv
+	// own is the frame the object's storage is charged to: the one that holds
+	// the variable (a module's, for a module variable), not the one that runs a
+	// statement on it; nil for a temporary (see memory.go).
+	own *frame
 }
 
 func (c *compiler) typeDefs() map[string]*syntax.TypeDef {
@@ -231,7 +235,7 @@ func (c *compiler) compDefault(dc *dcomp, e syntax.Expr) (func(*frame) cv, error
 // structure constructor).
 func (t *dtype) newObj(f *frame, own *frame) *dobj {
 	f.bud.charge(f, own, t.objBytes()) // before anything of the object is allocated
-	o := &dobj{t: t, v: make([]cv, len(t.comps))}
+	o := &dobj{t: t, v: make([]cv, len(t.comps)), own: own}
 	for i, dc := range t.comps {
 		switch dc.k {
 		case kStr:
@@ -250,7 +254,7 @@ func (t *dtype) newObj(f *frame, own *frame) *dobj {
 				o.v[i].s = ""
 			}
 			if d.g != nil {
-				f.bud.release(o.v[i].g)
+				f.bud.release(f, o.v[i].g)
 				o.v[i].g = f.bud.retain(f, own, d.g)
 			}
 		}
@@ -266,12 +270,12 @@ func (o *dobj) assign(f *frame, src *dobj) {
 		case kD:
 			o.v[i].d.assign(f, src.v[i].d)
 		case kGA:
-			f.bud.release(o.v[i].g)
+			f.bud.release(f, o.v[i].g)
 			if src.v[i].g == nil {
 				o.v[i].g = nil
 			} else {
 				f.bud.peek(f, garrBytes(src.v[i].g.size()))
-				o.v[i].g = f.bud.retain(f, f, src.v[i].g.clone())
+				o.v[i].g = f.bud.retain(f, o.own, src.v[i].g.clone()) // charged to the destination's owner
 			}
 		default:
 			o.v[i] = src.v[i]
@@ -281,7 +285,7 @@ func (o *dobj) assign(f *frame, src *dobj) {
 
 // vals appends the output values of o (a list-directed or formatted WRITE of
 // a derived-type object transfers its components in order).
-func (o *dobj) vals(l []rt.Val) []rt.Val {
+func (o *dobj) vals(f *frame, l []rt.Val) []rt.Val {
 	for i, dc := range o.t.comps {
 		v := o.v[i]
 		switch dc.k {
@@ -298,10 +302,10 @@ func (o *dobj) vals(l []rt.Val) []rt.Val {
 		case kStr:
 			l = append(l, rt.Str(v.s))
 		case kD:
-			l = v.d.vals(l)
+			l = v.d.vals(f, l)
 		case kGA:
 			if v.g != nil {
-				l = printVals(l, v.g, dc.ksz)
+				l = printVals(f, l, v.g, dc.ksz)
 			}
 		}
 	}
@@ -501,7 +505,7 @@ func (c *compiler) compRef(n *syntax.Component) (*gref, error) {
 		return nil, c.errf(n, "%s is not an array component", dc.name)
 	}
 	o := x.d
-	return &gref{ptr: func(f *frame) **garr { return &o(f).v[i].g }, name: dc.name, et: dc.et, kd: dc.kd, rank: dc.rank, alloc: dc.alloc}, nil
+	return &gref{ptr: func(f *frame) **garr { return &o(f).v[i].g }, own: func(f *frame) *frame { return o(f).own }, name: dc.name, et: dc.et, kd: dc.kd, rank: dc.rank, alloc: dc.alloc}, nil
 }
 
 // assignDerived compiles an assignment whose target is a derived-type object
@@ -625,8 +629,8 @@ func (c *compiler) structCons(n *syntax.Index, sd *sema.DerivedType) (*ex, error
 					a, b := src.at(k)
 					g.put(k, a, b)
 				}
-				f.bud.release(o.v[i].g)
-				o.v[i].g = f.bud.retain(f, f, g)
+				f.bud.release(f, o.v[i].g)
+				o.v[i].g = f.bud.retain(f, o.own, g)
 			})
 		default:
 			set, err := c.assignScalarComp(a.Value, func(f *frame) *dobj { return f.tmpObj }, dc, i, x)

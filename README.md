@@ -629,8 +629,13 @@ statements.
   exceeded` and allocates nothing for it, many small objects counting as much as
   one big array. It is credited by `deallocate`, by the return of a procedure
   (its locals) and by the reassignment of an allocatable array to a new shape; a
-  temporary is checked against what is left but not held; a module's storage is
-  held for the session. It is the session's own count, not the process's heap:
+  temporary of a statement (array, section, constructor, `//`, `repeat`,
+  `adjustl`) is reserved until the next statement and summed with the others of
+  its statement; storage is charged to the frame that holds the variable (a
+  module's, for a module variable, even when a procedure fills it), and a credit
+  larger than the charge is an internal error, never clamped. `SessionOptions.
+  MaxOutput` bounds what an output statement builds to the values that could be
+  printed within the cap. A module's storage is held for the session. It is the session's own count, not the process's heap:
   no collection, no stop-the-world.
   The budget costs 0.45 ns on a 2.85 ns scalar DO iteration (Apple M4 Max,
   `BenchmarkDoLoop`). A Go panic inside the evaluator is returned as an error,

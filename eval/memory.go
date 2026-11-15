@@ -1,5 +1,10 @@
 package eval
 
+import (
+	"io"
+	"math"
+)
+
 // The storage a program holds is counted, not measured: every variable, array,
 // derived-type object and character component is charged to a counter when it
 // is made, before it is allocated, and credited back when it is let go. A
@@ -33,24 +38,47 @@ const (
 	slotBytes      = 24
 )
 
-// peek refuses, before it is allocated, a temporary of n bytes that would take
-// the program past its bound.
+// check refuses, before it is allocated, storage of n bytes that would take the
+// program past its bound: what it holds, and the temporaries of the statement
+// that is running, are counted.
+func (b *budget) check(f *frame, n int64) {
+	if b == nil || b.maxMem <= 0 {
+		return
+	}
+	if n > b.maxMem-b.mem-b.tmp {
+		fail(f, "memory limit exceeded: %d more bytes would pass the limit of %d bytes (%d held, %d in temporaries)", n, b.maxMem, b.mem, b.tmp)
+	}
+}
+
+// peek reserves n bytes for a temporary (the value of an array expression, a
+// section, a constructor, a character result): it is refused when it would
+// take the program past its bound together with what it holds and the
+// temporaries already alive in the statement. The reservation is released when
+// the next statement that makes temporaries starts (compiler.stmts resets it to
+// the caller's), because a temporary is garbage when its statement ends; two
+// temporaries of one statement are alive together, so they are summed.
 func (b *budget) peek(f *frame, n int64) {
 	if b == nil || b.maxMem <= 0 {
 		return
 	}
-	if n > b.maxMem-b.mem {
-		fail(f, "memory limit exceeded: %d more bytes would pass the limit of %d bytes (%d held)", n, b.maxMem, b.mem)
-	}
+	b.check(f, n)
+	b.tmp += n
 }
 
-// charge counts n bytes of storage that live in the frame own.
+// underflow is the failure of a credit that gives back more than was charged:
+// a defect of the evaluator, reported and never hidden by clamping.
+func underflow(f *frame, what string, have, n int64) {
+	fail(f, "internal error in the evaluator: the memory counter would go below zero (%s holds %d, credit of %d); please report it", what, have, n)
+}
+
+// charge counts n bytes of storage that live in the frame own, or only checks
+// them when own is nil (a temporary).
 func (b *budget) charge(f *frame, own *frame, n int64) {
 	if b == nil {
 		return
 	}
-	b.peek(f, n)
-	if own == nil { // a temporary: checked, not held
+	b.check(f, n)
+	if own == nil {
 		return
 	}
 	b.mem += n
@@ -58,12 +86,18 @@ func (b *budget) charge(f *frame, own *frame, n int64) {
 }
 
 // credit gives back n bytes charged to own.
-func (b *budget) credit(own *frame, n int64) {
+func (b *budget) credit(f *frame, own *frame, n int64) {
 	if b == nil || n <= 0 {
 		return
 	}
-	b.mem = max(0, b.mem-n)
-	own.mem = max(0, own.mem-n)
+	if own.mem < n {
+		underflow(f, "the frame", own.mem, n)
+	}
+	if b.mem < n {
+		underflow(f, "the session", b.mem, n)
+	}
+	b.mem -= n
+	own.mem -= n
 }
 
 // chargeDelta follows a variable that changes size by d bytes.
@@ -71,17 +105,24 @@ func (b *budget) chargeDelta(f *frame, own *frame, d int64) {
 	if d > 0 {
 		b.charge(f, own, d)
 	} else {
-		b.credit(own, -d)
+		b.credit(f, own, -d)
 	}
 }
 
-// exit credits what the frame of a procedure that returns still holds.
+// exit credits what the frame of a procedure that returns still holds, and
+// marks the frame dead: storage that is charged to it and outlives it (an
+// array an allocatable dummy took) is not credited a second time.
 func (b *budget) exit(f *frame) {
 	if b == nil {
 		return
 	}
-	b.mem = max(0, b.mem-f.mem)
+	if b.mem < f.mem {
+		underflow(f, "the session", b.mem, f.mem)
+	}
+	b.mem -= f.mem
 	f.mem = 0
+	f.dead = true
+	b.tmp = f.tmpBase // the callee's temporaries are garbage; the caller's stay
 }
 
 // held is what the frames that outlive a cell hold: the counter's start for the
@@ -94,6 +135,38 @@ func held(mods []*frame) int64 {
 	return n
 }
 
+// valBytes is what a value of an output list costs, as it waits for the
+// formatting.
+const valBytes = 48
+
+// valRoom is the number of values an output statement may still build: the
+// output the cell may still write, at no more than two bytes a value (a
+// separator and a character), because the values past it could only print after
+// the cap, where they are dropped; and no more than the budget has room for.
+// The text is then never built whole for an output that will be cut.
+func (b *budget) valRoom() int {
+	if b == nil || b.outCap <= 0 {
+		return math.MaxInt
+	}
+	return int(min(b.outLeft/2+1, math.MaxInt32))
+}
+
+// valsFit reserves the storage of n values of an output list.
+func (b *budget) valsFit(f *frame, n int) {
+	b.peek(f, int64(n)*valBytes)
+}
+
+// countWriter counts what a cell writes against the output cap.
+type countWriter struct {
+	w io.Writer
+	b *budget
+}
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	c.b.outLeft = max(0, c.b.outLeft-int64(len(p)))
+	return c.w.Write(p)
+}
+
 // garrBytes is the storage of an array of n elements.
 func garrBytes(n int) int64 { return 8*int64(n) + arrayOverhead }
 
@@ -104,17 +177,22 @@ func (b *budget) retain(f *frame, own *frame, g *garr) *garr {
 		return g
 	}
 	n := garrBytes(g.size())
+	// the array was reserved as a temporary when it was made; it is held now
+	b.tmp = max(0, b.tmp-n)
 	b.charge(f, own, n)
 	g.chg, g.own = n, own
 	return g
 }
 
-// release credits what g was charged and forgets it.
-func (b *budget) release(g *garr) {
+// release credits what g was charged and forgets it. An array charged to a
+// frame that has returned was credited when the frame did.
+func (b *budget) release(f *frame, g *garr) {
 	if b == nil || g == nil || g.chg == 0 {
 		return
 	}
-	b.credit(g.own, g.chg)
+	if !g.own.dead {
+		b.credit(f, g.own, g.chg)
+	}
 	g.chg, g.own = 0, nil
 }
 
