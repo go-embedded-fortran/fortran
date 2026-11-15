@@ -82,12 +82,11 @@ copies are listed in the package documentation (`go doc ./rt`): `F0.d` prints
 `.50`, `E0.d` an E+000 exponent, `G8.1` of 0.95 is `1.`, `I5.8` is refused, `A`
 and `L` accept integers, a repeat count cannot cross kinds on input, and so on.
 `testdata/programs/formatted_output.f90` is reproduced on rt
-(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 10 and
+(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 12 and
 they are byte-identical to their goldens (stdout, stderr, exit status); the
-other 4 use derived types, character variables of non-constant length,
-substrings and internal files, and arrays of integers, sections and the array
-intrinsics (M3-A part 4 and later), `TestGoldenPrograms` counts the runs and
-the refusals.
+other 2 use derived types, and character variables of non-constant length,
+substrings and internal files (M3-A parts 5 and 6), `TestGoldenPrograms` counts
+the runs and the refusals.
 
 ### Performance
 
@@ -624,12 +623,24 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
   analyser resolves them) and character scalars (constant-length variables and
   dummies, `character(*)` dummies, results, `//`, comparisons with blank
   padding, trim, len, len_trim, adjustl, adjustr, index, ichar, achar, char).
-  Still refused: derived types, character
+  Part 4 (v0.14.0) added arrays of the general kind: integer, logical and
+  real(4|8) arrays of rank 1 to 7 with any lower bounds (column-major,
+  bounds-checked), allocatable arrays (`allocate(a(0:4))`, `deallocate`,
+  `allocated`, reallocation on assignment), elements and sections with
+  strides, array constructors with implied-do, whole-array and elemental
+  expressions (operators, and any scalar intrinsic through a placeholder),
+  `where` (no `elsewhere`), assumed-shape dummies (a view of the actual) and
+  array results, and the intrinsics size, shape, lbound, ubound, sum, product,
+  maxval, minval, maxloc, minloc, any, all, count, reshape (pad, order),
+  transpose, matmul, dot_product, pack, spread, cshift and eoshift (rank 1).
+  The real(8) arrays of rank 1 and 2 declared with bounds 1 that the gate
+  kernels use keep their go-ndarray storage and are not mixed with the general
+  arrays in one expression. Still refused: derived types, character
   variables of non-constant length, character arrays and substrings, complex
-  variables, array dummy arguments and
-  results, optional arguments, an initialised local variable of a procedure
-  (it is saved between calls), host-associated arrays, arrays other than
-  real(8) of rank 1 and 2, sections, `where`, internal files and `read`.
+  variables, vector subscripts, `elsewhere`, a dim= or mask= argument of a
+  reduction, optional arguments, an initialised local variable of a procedure
+  (it is saved between calls), host- and module-associated arrays, internal
+  files and `read`.
   Resource bounds:
   an array of more than `MaxArrayElems` (2^28) elements, a character result of
   more than `MaxStringLen` (2^26) characters and an output list of more than

@@ -371,6 +371,21 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	slot := ps.slot
 	var b binding
 	switch ps.k {
+	case kGA:
+		// the dummy shares the actual's elements, with lower bounds 1; only a
+		// whole array (or a value that is not defined) can be shared
+		if id, ok := a.(*syntax.Ident); !ok || v.v == nil || !v.v.ga {
+			if intent != "in" {
+				return binding{}, c.errf(a, "an array section or expression can only be passed to an intent(in) dummy argument yet")
+			}
+			_ = id
+		}
+		fn := v.g
+		b.set = func(f, cf *frame) {
+			g := fn(f)
+			cf.gas[slot] = &garr{et: g.et, kd: g.kd, lb: ones(len(g.ext)), ext: g.ext, i: g.i, r: g.r}
+		}
+		return b, nil
 	case kStr:
 		fn, n := v.s, ps.clen
 		if n < 0 { // character(*): the dummy takes the length of the actual
@@ -477,6 +492,15 @@ func (c *compiler) funcCall(n *syntax.Index, ss *sema.Symbol) (*ex, error) {
 	r := p.result
 	slot := r.slot
 	switch r.k {
+	case kGA:
+		name := p.name
+		return &ex{k: kGA, slot: -1, rank: r.rank, et: r.et, kd: r.kd, g: func(f *frame) *garr {
+			g := run(f).gas[slot]
+			if g == nil {
+				fail(f, "the result of %s is not allocated", name)
+			}
+			return g
+		}}, nil
 	case kStr:
 		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return run(f).strs[slot] }}, nil
 	case kInt:
