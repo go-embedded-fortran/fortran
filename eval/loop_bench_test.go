@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"io"
 	"testing"
 )
@@ -86,3 +87,28 @@ func benchSource(b *testing.B, src string) {
 func BenchmarkK1(b *testing.B)  { benchSource(b, benchK1) }
 func BenchmarkK2(b *testing.B)  { benchSource(b, benchK2) }
 func BenchmarkK3L(b *testing.B) { benchSource(b, benchK3L) }
+
+// BenchmarkCellLoops is notebook-cell code: the variables of a cell are a
+// module's, so every loop reaches them through a static link.
+func BenchmarkCellLoops(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		s := NewSession(SessionOptions{MaxSteps: -1})
+		for _, c := range []string{
+			"real(8) :: a(100000), b(100000), s\ninteger :: i, k\nb = 1.5d0\n",
+			"do k = 1, 20\n do i = 1, 100000\n  a(i) = 2d0*b(i) + a(i)\n end do\nend do\ns = 0d0\ndo i = 1, 100000\n s = s + a(i)*b(i)\nend do\n",
+		} {
+			if _, err := s.Run(context.Background(), c, io.Discard, io.Discard); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
+// BenchmarkCellLoopsOrdinary is the same cell code with the kernels off: what
+// cell loops cost before they took the kernels (v0.20.0).
+func BenchmarkCellLoopsOrdinary(b *testing.B) {
+	disableVec = true
+	defer func() { disableVec = false }()
+	BenchmarkCellLoops(b)
+}

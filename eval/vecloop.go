@@ -108,6 +108,7 @@ type vstate struct {
 type vecBuild struct {
 	c      *compiler
 	loop   *sym
+	loopH  int  // hops to the frame of the DO variable
 	acc    *sym // the accumulator of a reduction: no operand may read it
 	leaves []vleaf
 	nodes  []vnode
@@ -115,7 +116,7 @@ type vecBuild struct {
 }
 
 // vecLoop compiles the kernel of d, or returns nil when d is not of the shape.
-func (c *compiler) vecLoop(d *syntax.Do, loop *sym) *vecKernel {
+func (c *compiler) vecLoop(d *syntax.Do, loop *sym, loopH int) *vecKernel {
 	if disableVec || len(d.Body) != 1 {
 		return nil
 	}
@@ -124,13 +125,13 @@ func (c *compiler) vecLoop(d *syntax.Do, loop *sym) *vecKernel {
 		return nil
 	}
 	if id, ok := as.LHS.(*syntax.Ident); ok {
-		return c.vecReduce(as, id, loop)
+		return c.vecReduce(as, id, loop, loopH)
 	}
 	l, ok := as.LHS.(*syntax.Index)
 	if !ok {
 		return nil
 	}
-	b := &vecBuild{c: c, loop: loop}
+	b := &vecBuild{c: c, loop: loop, loopH: loopH}
 	t, ok := b.leaf(l)
 	if !ok || t.dim == 0 {
 		return nil
@@ -146,7 +147,7 @@ func (c *compiler) vecLoop(d *syntax.Do, loop *sym) *vecKernel {
 // vecReduce compiles "s = s + E", "s = E + s" and "s = s - E" for a real(8)
 // scalar s that E does not read. The additions run in iteration order, so the sum
 // is the ordinary loop's, bit for bit.
-func (c *compiler) vecReduce(as *syntax.Assignment, id *syntax.Ident, loop *sym) *vecKernel {
+func (c *compiler) vecReduce(as *syntax.Assignment, id *syntax.Ident, loop *sym, loopH int) *vecKernel {
 	s, _, err := c.symOf(id)
 	if err != nil || s.k != kReal || s.kd != 0 || s.isC || s.ga || s == loop {
 		return nil
@@ -179,7 +180,7 @@ func (c *compiler) vecReduce(as *syntax.Assignment, id *syntax.Ident, loop *sym)
 	if err != nil {
 		return nil
 	}
-	b := &vecBuild{c: c, loop: loop, acc: s}
+	b := &vecBuild{c: c, loop: loop, loopH: loopH, acc: s}
 	root, ok := b.real(e)
 	if !ok {
 		return nil
@@ -229,7 +230,7 @@ func (b *vecBuild) leaf(n *syntax.Index) (*vleaf, bool) {
 			return nil, false
 		}
 		off, osrc, osign, ofn, vok := int64(0), syntax.Expr(nil), int64(0), intFn(nil), false
-		if !(e.aff && e.avs == b.loop.slot) {
+		if !(b.isLoop(e)) {
 			off, osrc, osign, ofn, vok = b.depVar(a.Value)
 		}
 		switch {
@@ -239,7 +240,7 @@ func (b *vecBuild) leaf(n *syntax.Index) (*vleaf, bool) {
 			}
 			lf.dim = i + 1
 			lf.sub[i] = vsub{dep: true, off: off, ofn: ofn, osign: osign, osrc: osrc}
-		case e.aff && e.avs == b.loop.slot:
+		case b.isLoop(e):
 			if lf.dim != 0 {
 				return nil, false
 			}
@@ -280,7 +281,7 @@ func (b *vecBuild) depVar(n syntax.Expr) (off int64, osrc syntax.Expr, osign int
 	}
 	dep := func(x syntax.Expr) (int64, bool) {
 		e, err := b.c.expr(x)
-		if err != nil || e.k != kInt || !e.aff || e.avs != b.loop.slot {
+		if err != nil || e.k != kInt || !b.isLoop(e) {
 			return 0, false
 		}
 		return e.avo, true
@@ -312,6 +313,11 @@ func (b *vecBuild) depVar(n syntax.Expr) (off int64, osrc syntax.Expr, osign int
 		}
 	}
 	return 0, nil, 0, nil, false
+}
+
+// isLoop reports whether e is the DO variable plus a constant.
+func (b *vecBuild) isLoop(e *ex) bool {
+	return e.aff && e.avs == b.loop.slot && e.avh == b.loopH
 }
 
 func (b *vecBuild) sameSubs(x, y *vleaf) bool {
@@ -485,7 +491,7 @@ func (b *vecBuild) intAsReal(n syntax.Expr) (int, bool) {
 	switch {
 	case e.isC:
 		i = b.node(vnode{op: 'k', val: float64(e.ci)})
-	case e.aff && e.avs == b.loop.slot:
+	case b.isLoop(e):
 		i = b.node(vnode{op: 'v', ioff: e.avo})
 	case b.pureInv(n):
 		fi := e.i
@@ -614,8 +620,8 @@ func (k *vecKernel) run(f *frame, l, n int64, bud *budget) bool {
 			}
 		}
 	}
-	bud.spend(n)
 	atomic.AddInt64(&vecHits, 1)
+	bud.spend(n)
 	need := k.nbuf * vecChunk
 	if len(f.vs) < need {
 		f.vs = make([]float64, need)

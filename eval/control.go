@@ -204,8 +204,8 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 		return ctl == ctlExit
 	}
 	var vec *vecKernel
-	if counted && !hasStepE && !jumps && vh == 0 {
-		vec = c.vecLoop(d, sy)
+	if counted && !hasStepE && !jumps {
+		vec = c.vecLoop(d, sy, vh)
 	}
 	switch {
 	case counted:
