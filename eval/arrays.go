@@ -483,7 +483,7 @@ func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn)
 		if whole && alloc && src != nil {
 			// an allocatable array takes the shape of the value (F2018 10.2.1.3)
 			if d := *ref.ptr(f); d == nil || !sameShape(d.ext, src.ext) {
-				f.bud.release(d)
+				f.bud.release(f, d)
 				*ref.ptr(f) = f.bud.retain(f, ref.owner(f), newGarr(f, ref.et, ref.kd, ones(len(src.ext)), append([]int(nil), src.ext...)))
 			}
 		}
@@ -565,7 +565,7 @@ func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr) (stmtFn, error)
 	}
 	if a.Dealloc {
 		return func(f *frame) {
-			f.bud.release(*ref.ptr(f))
+			f.bud.release(f, *ref.ptr(f))
 			*ref.ptr(f) = nil
 		}, nil
 	}
@@ -974,8 +974,9 @@ func (c *compiler) emitter(e syntax.Expr) (emitFn, error) {
 }
 
 // printVals appends the elements of g, in array element order, to an output list.
-func printVals(l []rt.Val, g *garr, size int) []rt.Val {
-	n := g.size()
+func printVals(f *frame, l []rt.Val, g *garr, size int) []rt.Val {
+	n := min(g.size(), max(0, f.bud.valRoom()-len(l))) // no more than can be printed
+	f.bud.valsFit(f, n)
 	for k := 0; k < n; k++ {
 		switch g.et {
 		case kReal:

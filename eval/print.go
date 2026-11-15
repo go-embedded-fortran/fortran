@@ -221,17 +221,20 @@ func (c *compiler) printItem(it syntax.Expr) (item, error) {
 			return nil, c.errf(it, "a derived type with allocatable components needs defined input/output to be transferred (F2018 12.6.4.8.2)")
 		}
 		fn := x.d
-		return func(f *frame, l []rt.Val) []rt.Val { return fn(f).vals(l) }, nil
+		return func(f *frame, l []rt.Val) []rt.Val { return fn(f).vals(f, l) }, nil
 	case kGA:
 		fn, size := x.g, tv.Type.Kind
-		return func(f *frame, l []rt.Val) []rt.Val { return printVals(l, fn(f), size) }, nil
+		return func(f *frame, l []rt.Val) []rt.Val { return printVals(f, l, fn(f), size) }, nil
 	case kStr:
 		fn := x.s
 		return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Str(fn(f))) }, nil
 	case kArr:
 		fn := x.a
 		return func(f *frame, l []rt.Val) []rt.Val {
-			for _, v := range fn(f).data { // column-major: the first subscript varies fastest
+			data := fn(f).data // column-major: the first subscript varies fastest
+			data = data[:min(len(data), max(0, f.bud.valRoom()-len(l)))]
+			f.bud.valsFit(f, len(data))
+			for _, v := range data {
 				l = append(l, rt.Real8(v))
 			}
 			return l
@@ -298,11 +301,14 @@ func (c *compiler) impliedDo(d *syntax.ImpliedDo) (item, error) {
 			fail(f, "implied-do of %d iterations is out of range", n)
 		}
 		v := a
-		for ; n > 0; n-- {
+		room := f.bud.valRoom()
+		for ; n > 0 && len(l) < room; n-- { // past the room, nothing printed would be kept
 			f.ints[slot] = v
+			before := len(l)
 			for _, it := range items {
 				l = it(f, l)
 			}
+			f.bud.valsFit(f, len(l)-before)
 			v += st
 		}
 		f.ints[slot] = v

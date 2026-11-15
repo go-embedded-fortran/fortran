@@ -48,6 +48,7 @@ func (c *compiler) strBinary(n *syntax.Binary, x, y *ex) (*ex, error) {
 			if len(p)+len(q) > MaxStringLen {
 				fail(f, "//: the result is longer than %d characters", MaxStringLen)
 			}
+			f.bud.peek(f, int64(len(p)+len(q))) // the result is a temporary of the statement
 			return p + q
 		}}, nil
 	case "==", "/=", "<", "<=", ">", ">=":
@@ -141,12 +142,14 @@ func (c *compiler) strIntrinsic(n *syntax.Index, name string, args []*ex) (*ex, 
 	case "adjustl":
 		return &ex{k: kStr, slot: -1, s: func(f *frame) string {
 			s := a(f)
+			f.bud.peek(f, int64(len(s)))
 			t := strings.TrimLeft(s, " ")
 			return t + strings.Repeat(" ", len(s)-len(t))
 		}}, nil
 	case "adjustr":
 		return &ex{k: kStr, slot: -1, s: func(f *frame) string {
 			s := a(f)
+			f.bud.peek(f, int64(len(s)))
 			t := strings.TrimRight(s, " ")
 			return strings.Repeat(" ", len(s)-len(t)) + t
 		}}, nil

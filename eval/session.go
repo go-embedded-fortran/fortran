@@ -32,6 +32,12 @@ type SessionOptions struct {
 	// allocates nothing for it. The count is the session's own, not the
 	// process's heap. Zero is no bound (the playground: 512 MiB, R's bound).
 	MaxAlloc int64
+	// MaxOutput is the bytes a cell may write to standard output and standard
+	// error together, as its host will keep them (zero: no bound). An output
+	// statement builds no more values than could be printed within it, so a
+	// cell that prints a huge array does not build the text first; what is past
+	// the bound is the host's to drop and to say so.
+	MaxOutput int64
 }
 
 // DefaultMaxSteps is the step bound of a cell: about a minute of the
@@ -92,13 +98,17 @@ func (s *Session) Run(ctx context.Context, src string, out, stderr io.Writer) (s
 		s.vars[n] = v
 	}
 
-	tab := rt.NewTable(out, stderr, nil, nil)
 	max := s.opt.MaxSteps
 	if max == 0 {
 		max = DefaultMaxSteps
 	}
 	bud := newBudget(ctx, max)
 	bud.maxMem = s.opt.MaxAlloc
+	if s.opt.MaxOutput > 0 {
+		bud.outCap, bud.outLeft = s.opt.MaxOutput, s.opt.MaxOutput
+		out, stderr = &countWriter{w: out, b: bud}, &countWriter{w: stderr, b: bud}
+	}
+	tab := rt.NewTable(out, stderr, nil, nil)
 	f := &frame{out: out, tab: tab, start: time.Now(), bud: bud}
 	first := len(s.mods)
 	for _, m := range c.modules[first:] { // every new module's frame exists before any initialisation runs

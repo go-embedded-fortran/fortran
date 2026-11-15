@@ -70,6 +70,10 @@ type frame struct {
 	vs     []float64 // the scratch strips of the loop kernels (see vecloop.go)
 	mem    int64     // the storage charged to this frame (see memory.go)
 	weight int       // what the calls below this one weigh (see callWeight)
+	// tmpBase is what the caller's statement had reserved for temporaries when
+	// it called this frame; dead is set when the frame has returned.
+	tmpBase int64
+	dead    bool
 }
 
 // chunk is the number of steps between two looks at the budget's total and at
@@ -89,6 +93,15 @@ type budget struct {
 	// mem is the storage the program holds, in bytes, and maxMem its bound
 	// (zero: none); see memory.go.
 	mem, maxMem int64
+	// tmp is what the temporaries alive in the running statement have reserved
+	// (peek).
+	tmp int64
+
+	// outCap is the bytes the cell may write to standard output and standard
+	// error together (zero: no bound) and outLeft what it has not yet written:
+	// an output statement builds no more values than could be printed (see
+	// valRoom).
+	outCap, outLeft int64
 }
 
 func newBudget(ctx context.Context, max int64) *budget {
@@ -212,6 +225,9 @@ func (p *procCode) newFrame(caller, up *frame) *frame {
 	if caller != nil {
 		f.out, f.tab, f.start, f.depth, f.mods, f.bud = caller.out, caller.tab, caller.start, caller.depth+1, caller.mods, caller.bud
 		f.weight = caller.weight + callWeight(p.maxNest, p.maxX)
+		if f.bud != nil {
+			f.tmpBase = f.bud.tmp
+		}
 		if f.weight > maxCallWeight {
 			fail(f, "procedure %s: more than %d nested calls", p.name, f.depth-1)
 		}
@@ -384,6 +400,7 @@ type compiler struct {
 	// cur is the program unit being compiled, procs all of them.
 	modules   []*procCode
 	cur       *procCode
+	tmps      bool        // the statement being compiled makes temporaries (see stmts)
 	lenExpr   syntax.Expr // the length of the character entity being declared
 	typedefs  map[string]*syntax.TypeDef
 	tdFile    *syntax.File // the file typedefs was last read from
@@ -425,9 +442,24 @@ func Compile(f *syntax.File, info *sema.Info) (*Program, error) {
 func (c *compiler) stmts(body []syntax.Stmt) ([]stmtFn, error) {
 	var out []stmtFn
 	for _, s := range body {
+		n, outer := len(out), c.tmps
+		c.tmps = false
 		if err := c.stmt(s, &out); err != nil {
 			return nil, err
 		}
+		if c.tmps {
+			// the statement makes temporaries (an array or a character value): it
+			// starts with none of the last statement's reserved (memory.go). A
+			// statement of scalars pays nothing.
+			for i := n; i < len(out); i++ {
+				fn := out[i]
+				out[i] = func(f *frame) {
+					f.bud.tmp = f.tmpBase
+					fn(f)
+				}
+			}
+		}
+		c.tmps = c.tmps || outer
 	}
 	return out, nil
 }
@@ -856,7 +888,6 @@ func newArray(f *frame, rank, n1, n2 int) *array {
 	if n1 < 0 || n2 < 0 || n1 > MaxArrayElems || n2 > MaxArrayElems || (n2 > 0 && n1 > MaxArrayElems/n2) {
 		fail(f, "array extent (%d,%d) is out of range", n1, n2)
 	}
-	f.bud.peek(f, 8*int64(n1)*int64(n2)+arrayOverhead)
 	var nd *ndarray.Array
 	var err error
 	if rank == 1 {
@@ -958,6 +989,9 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 	}
 	if e.k != want || ((want == kArr || want == kGA) && e.rank != tv.Rank) {
 		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
+	}
+	if (e.k == kGA || e.k == kStr || e.k == kD) && !e.isC {
+		c.tmps = true // the value is a temporary: see stmts
 	}
 	return e, nil
 }
@@ -1543,6 +1577,7 @@ func (c *compiler) intrinsicWith(n *syntax.Index, name string, tv sema.TV, args 
 			if cnt > 0 && int64(len(str)) > MaxStringLen/cnt {
 				fail(f, "repeat: the result is longer than %d characters", MaxStringLen)
 			}
+			f.bud.peek(f, int64(len(str))*cnt) // before the result is built
 			return strings.Repeat(str, int(cnt))
 		}}, nil
 	case "fraction", "exponent", "scale", "spacing":
