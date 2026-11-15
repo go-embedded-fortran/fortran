@@ -52,11 +52,14 @@ type frame struct {
 	target string
 	// up is the frame of the host of the procedure (its static link), depth
 	// the number of activations below this one.
-	up    *frame
-	depth int
-	mods  []*frame // the frames of the modules
-	strs  []string // character scalars
-	gas   []*garr  // general arrays
+	up     *frame
+	depth  int
+	mods   []*frame  // the frames of the modules
+	strs   []string  // character scalars
+	gas    []*garr   // general arrays
+	dobjs  []*dobj   // derived-type scalars
+	das    [][]*dobj // arrays of derived type
+	tmpObj *dobj     // the object a structure constructor is filling
 }
 
 // Values of frame.ctl.
@@ -101,6 +104,7 @@ type procCode struct {
 	host                 *procCode
 	nInts, nReals, nArrs int
 	nStrs, nGAs          int
+	nDs, nDAs            int
 	init                 []stmtFn
 	body                 stmtFn
 	params               []*sym
@@ -126,6 +130,8 @@ func (p *procCode) newFrame(caller, up *frame) *frame {
 		arrs:  make([]*array, p.nArrs),
 		strs:  make([]string, p.nStrs),
 		gas:   make([]*garr, p.nGAs),
+		dobjs: make([]*dobj, p.nDs),
+		das:   make([][]*dobj, p.nDAs),
 		up:    up,
 	}
 	if caller != nil {
@@ -221,6 +227,8 @@ const (
 	kLog
 	kStr // a character scalar value (an expression; there are no character variables yet)
 	kGA  // an array of the general kind (arrays.go)
+	kD   // a derived-type scalar (derived.go)
+	kDA  // a rank-1 array of a derived type
 )
 
 type strFn func(*frame) string
@@ -243,6 +251,8 @@ type sym struct {
 	et     kind   // the class of the elements of a general array
 	cs     string // the value of a character named constant
 	clen   int64  // the declared length of a character variable; -1 assumed (character(*)), -2 deferred (len=:)
+	dt     *dtype // the type of a derived-type variable
+	dlb    int64  // the lower bound of an array of derived type
 	cdyn   bool   // the length is an expression evaluated when the unit starts, kept in ints[clslot]
 	clslot int
 }
@@ -255,8 +265,11 @@ type ex struct {
 	b  boolFn
 	s  strFn
 	a  arrFn
-	g  gaFn // a general array: its shape and elements
-	et kind // the class of the elements of a general array
+	g  gaFn                 // a general array: its shape and elements
+	et kind                 // the class of the elements of a general array
+	d  func(*frame) *dobj   // a derived-type object (a live reference)
+	da func(*frame) []*dobj // an array of derived type
+	dt *dtype
 	// kd is the kind parameter of an integer or real value (0 for 8 or none):
 	// a real(4) result is rounded to single precision after each operation, an
 	// integer(1|2|4) result wraps.
@@ -287,6 +300,8 @@ type compiler struct {
 	modules   []*procCode
 	cur       *procCode
 	lenExpr   syntax.Expr // the length of the character entity being declared
+	typedefs  map[string]*syntax.TypeDef
+	dtypes    map[*sema.DerivedType]*dtype
 	procs     map[*syntax.Unit]*procCode
 	externals map[string]*syntax.Unit // the external subroutines and functions of the file
 	// loops are the names of the DO constructs enclosing the statement being
@@ -396,6 +411,11 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 			return err
 		}
 		*out = append(*out, fn)
+	case *syntax.TypeDef:
+		// the layout of a derived type is built from the analyser's type on first use
+		if s.Name != "" {
+			return c.errf(s, "a named type definition is not supported")
+		}
 	case *syntax.Return:
 		fn, err := c.returnStmt(s)
 		if err != nil {
@@ -468,6 +488,10 @@ func (c *compiler) kindOf(at syntax.Node, t sema.Type, rank int) (kind, error) {
 		k = kReal
 	case t.Basic == sema.Character && t.Kind == 1 && rank == 0:
 		return kStr, nil
+	case t.Basic == sema.Derived && t.Der != nil && rank == 0:
+		return kD, nil
+	case t.Basic == sema.Derived && t.Der != nil && rank == 1:
+		return kDA, nil
 	case t.Basic == sema.Real:
 		return 0, c.errf(at, "real(%d) is not supported: only real(4) and real(8)", t.Kind)
 	default:
@@ -601,6 +625,12 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		}
 		k := elem
 		s := &sym{k: k, kd: kdOf(ss.Type), owner: c.cur}
+		if ss.Type.Basic == sema.Derived {
+			if param {
+				return c.errf(e, "a named constant of derived type is not supported yet")
+			}
+			return c.declD(ss, e, s, init)
+		}
 		switch {
 		case ss.Rank != 0 && !kernelArray(ss, k):
 			if k == kStr {
@@ -886,6 +916,8 @@ func (c *compiler) expr1(n syntax.Expr, tv sema.TV) (*ex, error) {
 		return c.binary(n, tv)
 	case *syntax.ArrayCons:
 		return c.arrayCons(n, tv)
+	case *syntax.Component:
+		return c.component(n)
 	case *syntax.Index:
 		return c.index(n, tv)
 	}
@@ -899,6 +931,12 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 	}
 	if s.ga {
 		return c.gaIdent(n, s)
+	}
+	switch s.k {
+	case kD:
+		return c.objIdent(n, s)
+	case kDA:
+		return c.daIdent(n, s)
 	}
 	if !s.isC {
 		h, err := c.hops(s, n)
@@ -1189,6 +1227,9 @@ func wrap(f *frame, nd *ndarray.Array, like *array) *array {
 }
 
 func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
+	if comp, ok := n.X.(*syntax.Component); ok {
+		return c.componentIndex(n, comp)
+	}
 	id, ok := n.X.(*syntax.Ident)
 	if !ok {
 		return nil, c.errf(n, "only a name can be subscripted or called")
@@ -1196,6 +1237,9 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	ss := c.info.Uses[id]
 	if ss == nil { // not a name of the program: an intrinsic (sema.Analyze resolved it)
 		return c.intrinsic(n, id.Name, tv)
+	}
+	if ss.Kind == sema.SymType && ss.Der != nil {
+		return c.structCons(n, ss.Der)
 	}
 	if ss.Kind == sema.SymProc || ss.Kind == sema.SymGeneric {
 		// a function of the file; for a generic the analyser resolved the specific
@@ -1213,6 +1257,9 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	}
 	if s.k == kStr {
 		return c.substring(n, id)
+	}
+	if s.k == kDA {
+		return c.daElement(n, id, s)
 	}
 	if s.k != kArr {
 		return nil, c.errf(n, "%s is not an array", id.Name)
@@ -1669,6 +1716,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		if sy.ga {
 			return c.assignGA(s, l, rhs, nil)
 		}
+		if sy.k == kD {
+			return c.assignDerived(s, l, rhs)
+		}
 		if sy.k == kArr {
 			if sy.owner != c.cur {
 				return nil, c.errf(l, "array %s of an enclosing unit: host-associated arrays are not supported yet", l.Name)
@@ -1676,12 +1726,20 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 			return c.assignArray(s, sy, l.Name, rhs)
 		}
 		return c.storeVar(sy, rhs, s)
+	case *syntax.Component:
+		return c.assignDerived(s, l, rhs)
 	case *syntax.Index:
+		if _, isComp := l.X.(*syntax.Component); isComp {
+			return c.assignGA(s, l, rhs, nil)
+		}
 		id, ok := l.X.(*syntax.Ident)
 		if !ok {
 			return nil, c.errf(l, "unsupported assignment target")
 		}
 		sy, _, err := c.symOf(id)
+		if err == nil && sy.k == kDA {
+			return c.assignDerived(s, l, rhs)
+		}
 		if err == nil && sy.ga {
 			return c.assignGA(s, l, rhs, nil)
 		}
@@ -1802,6 +1860,12 @@ func (c *compiler) call(s *syntax.Call) (stmtFn, error) {
 	if ss := c.info.Calls[s]; ss != nil && ss.Unit != nil {
 		return c.callStmt(s, ss)
 	}
+	if comp, ok := s.Proc.(*syntax.Component); ok {
+		return c.boundCallStmt(s, comp)
+	}
+	if id, ok := s.Proc.(*syntax.Ident); ok && id.Name == "move_alloc" {
+		return c.moveAlloc(s)
+	}
 	if id, ok := s.Proc.(*syntax.Ident); ok && c.externals[id.Name] != nil {
 		return c.callStmt(s, &sema.Symbol{Name: id.Name})
 	}
@@ -1829,24 +1893,27 @@ func (c *compiler) allocate(a *syntax.Allocate) (stmtFn, error) {
 	for _, o := range a.Objects {
 		// an array of the general kind
 		var gid *syntax.Ident
-		switch x := o.(type) {
+		var base syntax.Expr = o
+		if x, ok := o.(*syntax.Index); ok {
+			base = x.X
+		}
+		isGA := false
+		switch x := base.(type) {
 		case *syntax.Ident:
 			gid = x
-		case *syntax.Index:
-			gid, _ = x.X.(*syntax.Ident)
-		}
-		if gid != nil {
 			if gs, _, err := c.symOf(gid); err == nil && gs.ga {
-				if gs.owner != c.cur || !gs.alloc {
-					return nil, c.errf(o, "%s is not an allocatable array of this unit", gid.Name)
-				}
-				fn, err := c.allocateGA(a, o, gs, gid)
-				if err != nil {
-					return nil, err
-				}
-				fns = append(fns, fn)
-				continue
+				isGA = true
 			}
+		case *syntax.Component:
+			isGA = true
+		}
+		if isGA {
+			fn, err := c.allocateGA(a, o)
+			if err != nil {
+				return nil, err
+			}
+			fns = append(fns, fn)
+			continue
 		}
 		if a.Dealloc {
 			return nil, c.errf(a, "only deallocate of an allocatable array of the general kind is supported")

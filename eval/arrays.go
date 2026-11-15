@@ -260,27 +260,48 @@ func resolve(f *frame, g *garr, name string, ss []sub) (offs []int, ext []int) {
 
 // ---- variables ----
 
-// getGA is the storage of a general array variable of this unit.
-func (c *compiler) gaVar(id *syntax.Ident, s *sym) (gaFn, error) {
+// gref is where an array of the general kind lives: a variable's slot or an
+// array component of a derived-type object.
+type gref struct {
+	ptr   func(*frame) **garr
+	name  string
+	et    kind
+	kd    int
+	rank  int
+	alloc bool
+}
+
+func (r *gref) get(f *frame) *garr {
+	g := *r.ptr(f)
+	if g == nil {
+		fail(f, "array %s is not allocated", r.name)
+	}
+	return g
+}
+
+// symRef is the reference to a general array variable of this unit.
+func (c *compiler) symRef(id *syntax.Ident, s *sym) (*gref, error) {
 	if s.owner != c.cur {
 		return nil, c.errf(id, "array %s of another program unit: host- and module-associated arrays are not supported yet", id.Name)
 	}
-	slot, name := s.slot, id.Name
-	return func(f *frame) *garr {
-		g := f.gas[slot]
-		if g == nil {
-			fail(f, "array %s is not allocated", name)
-		}
-		return g
-	}, nil
+	slot := s.slot
+	return &gref{ptr: func(f *frame) **garr { return &f.gas[slot] }, name: id.Name, et: s.et, kd: s.kd, rank: s.rank, alloc: s.alloc}, nil
 }
 
-func (c *compiler) gaIdent(id *syntax.Ident, s *sym) (*ex, error) {
-	g, err := c.gaVar(id, s)
+func (c *compiler) gaVar(id *syntax.Ident, s *sym) (gaFn, error) {
+	r, err := c.symRef(id, s)
 	if err != nil {
 		return nil, err
 	}
-	return &ex{k: kGA, slot: -1, rank: s.rank, et: s.et, kd: s.kd, g: g, v: s}, nil
+	return r.get, nil
+}
+
+func (c *compiler) gaIdent(id *syntax.Ident, s *sym) (*ex, error) {
+	r, err := c.symRef(id, s)
+	if err != nil {
+		return nil, err
+	}
+	return &ex{k: kGA, slot: -1, rank: s.rank, et: s.et, kd: s.kd, g: r.get, v: s}, nil
 }
 
 // declGA gives an array of the general kind its storage: a fixed-shape array is
@@ -326,17 +347,22 @@ func (c *compiler) declGA(ss *sema.Symbol, e syntax.Node, s *sym, k kind) error 
 // ---- elements and sections as expressions ----
 
 func (c *compiler) gaIndex(n *syntax.Index, id *syntax.Ident, s *sym) (*ex, error) {
-	gf, err := c.gaVar(id, s)
+	r, err := c.symRef(id, s)
 	if err != nil {
 		return nil, err
 	}
-	ss, err := c.subs(n, s.rank)
+	return c.gaIndexRef(n, r)
+}
+
+func (c *compiler) gaIndexRef(n *syntax.Index, r *gref) (*ex, error) {
+	gf := r.get
+	ss, err := c.subs(n, r.rank)
 	if err != nil {
 		return nil, err
 	}
-	name, et, kd := id.Name, s.et, s.kd
+	name, et, kd := r.name, r.et, r.kd
 	if allScalar(ss) {
-		rank := s.rank
+		rank := r.rank
 		fns := make([]intFn, rank)
 		for i := range ss {
 			fns[i] = ss[i].scalar
@@ -402,37 +428,22 @@ func scalarVal(e *ex) valFn {
 // assignGA compiles an assignment whose target is an array variable, a
 // section or an element; mask, when not nil, restricts it (WHERE).
 func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn) (stmtFn, error) {
-	var id *syntax.Ident
-	var ss []sub
-	switch l := lhs.(type) {
-	case *syntax.Ident:
-		id = l
-	case *syntax.Index:
-		var ok bool
-		if id, ok = l.X.(*syntax.Ident); !ok {
-			return nil, c.errf(l, "unsupported assignment target")
-		}
-	default:
-		return nil, c.errf(at, "unsupported assignment target")
-	}
-	s, _, err := c.symOf(id)
-	if err != nil || !s.ga {
-		return nil, c.errf(at, "%s is not an array of the general kind", id.Name)
-	}
-	if _, err = c.gaVar(id, s); err != nil {
+	ref, ix, err := c.lhsRef(at, lhs)
+	if err != nil {
 		return nil, err
 	}
+	var ss []sub
 	whole := true
-	if ix, ok := lhs.(*syntax.Index); ok {
+	if ix != nil {
 		whole = false
-		if ss, err = c.subs(ix, s.rank); err != nil {
+		if ss, err = c.subs(ix, ref.rank); err != nil {
 			return nil, err
 		}
 	}
 	if rhs.k == kArr {
 		return nil, c.errf(at, "an assignment between a real(8) array of the kernels' kind and another array is not supported")
 	}
-	slot, name := s.slot, id.Name
+	name := ref.name
 	var sv valFn
 	var rv gaFn
 	if rhs.k == kGA {
@@ -440,7 +451,7 @@ func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn)
 	} else if sv = scalarVal(rhs); sv == nil {
 		return nil, c.errf(at, "this assignment is not supported")
 	}
-	alloc := s.alloc
+	alloc := ref.alloc
 	return func(f *frame) {
 		var src *garr
 		var iv int64
@@ -453,11 +464,11 @@ func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn)
 		var dst *garr
 		if whole && alloc && src != nil {
 			// an allocatable array takes the shape of the value (F2018 10.2.1.3)
-			if d := f.gas[slot]; d == nil || !sameShape(d.ext, src.ext) {
-				f.gas[slot] = newGarr(f, s.et, s.kd, ones(len(src.ext)), append([]int(nil), src.ext...))
+			if d := *ref.ptr(f); d == nil || !sameShape(d.ext, src.ext) {
+				*ref.ptr(f) = newGarr(f, ref.et, ref.kd, ones(len(src.ext)), append([]int(nil), src.ext...))
 			}
 		}
-		if dst = f.gas[slot]; dst == nil {
+		if dst = *ref.ptr(f); dst == nil {
 			fail(f, "array %s is not allocated", name)
 		}
 		var offs []int
@@ -502,17 +513,45 @@ func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn)
 
 // ---- allocate and deallocate ----
 
-func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr, s *sym, id *syntax.Ident) (stmtFn, error) {
-	if a.Dealloc {
-		slot := s.slot
-		return func(f *frame) { f.gas[slot] = nil }, nil
+// lhsRef is the array an assignment target designates (a variable, a section
+// or element of it, or an array component) and the subscript list, if any.
+func (c *compiler) lhsRef(at syntax.Node, lhs syntax.Expr) (*gref, *syntax.Index, error) {
+	var base syntax.Expr = lhs
+	var ix *syntax.Index
+	if i, ok := lhs.(*syntax.Index); ok {
+		base, ix = i.X, i
 	}
-	ix, ok := o.(*syntax.Index)
-	if !ok || len(ix.Args) != s.rank {
-		return nil, c.errf(o, "%s has rank %d", id.Name, s.rank)
+	switch b := base.(type) {
+	case *syntax.Ident:
+		s, _, err := c.symOf(b)
+		if err != nil || !s.ga {
+			return nil, nil, c.errf(at, "%s is not an array of the general kind", b.Name)
+		}
+		r, err := c.symRef(b, s)
+		return r, ix, err
+	case *syntax.Component:
+		r, err := c.compRef(b)
+		return r, ix, err
+	}
+	return nil, nil, c.errf(at, "unsupported assignment target")
+}
+
+func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr) (stmtFn, error) {
+	ref, ix, err := c.lhsRef(o, o)
+	if err != nil {
+		return nil, err
+	}
+	if !ref.alloc {
+		return nil, c.errf(o, "%s is not allocatable", ref.name)
+	}
+	if a.Dealloc {
+		return func(f *frame) { *ref.ptr(f) = nil }, nil
+	}
+	if ix == nil || len(ix.Args) != ref.rank {
+		return nil, c.errf(o, "%s has rank %d", ref.name, ref.rank)
 	}
 	type bnd struct{ lo, hi intFn }
-	bs := make([]bnd, s.rank)
+	bs := make([]bnd, ref.rank)
 	for d, ar := range ix.Args {
 		if ar.Keyword != "" || ar.Value == nil {
 			return nil, c.errf(o, "bad extent")
@@ -535,9 +574,9 @@ func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr, s *sym, id *syn
 			return nil, err
 		}
 	}
-	slot, et, kd, name := s.slot, s.et, s.kd, id.Name
+	et, kd, name := ref.et, ref.kd, ref.name
 	return func(f *frame) {
-		if f.gas[slot] != nil {
+		if *ref.ptr(f) != nil {
 			fail(f, "array %s is already allocated", name)
 		}
 		lb := make([]int64, len(bs))
@@ -553,7 +592,7 @@ func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr, s *sym, id *syn
 				ext[d] = int(n)
 			}
 		}
-		f.gas[slot] = newGarr(f, et, kd, lb, ext)
+		*ref.ptr(f) = newGarr(f, et, kd, lb, ext)
 	}, nil
 }
 

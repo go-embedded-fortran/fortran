@@ -216,6 +216,12 @@ func (c *compiler) printItem(it syntax.Expr) (item, error) {
 			return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Real4(float32(fn(f)))) }, nil
 		}
 		return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Real8(fn(f))) }, nil
+	case kD:
+		if x.dt.hasAlloc() {
+			return nil, c.errf(it, "a derived type with allocatable components needs defined input/output to be transferred (F2018 12.6.4.8.2)")
+		}
+		fn := x.d
+		return func(f *frame, l []rt.Val) []rt.Val { return fn(f).vals(l) }, nil
 	case kGA:
 		fn, size := x.g, tv.Type.Kind
 		return func(f *frame, l []rt.Val) []rt.Val { return printVals(l, fn(f), size) }, nil
