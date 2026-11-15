@@ -34,6 +34,9 @@ type garr struct {
 	// (zero and nil for a temporary: see memory.go).
 	chg int64
 	own *frame
+	// palloc marks a target ALLOCATE made through a pointer: the only one a
+	// DEALLOCATE of a pointer may free (F2018 9.7.3.3).
+	palloc bool
 }
 
 func (g *garr) size() int {
@@ -285,13 +288,19 @@ type gref struct {
 	kd    int
 	rank  int
 	alloc bool
+	isPtr bool // a pointer array: what ALLOCATE makes for it is the heap's (pointers.go)
 	// own is the frame the array's storage is charged to: the one that holds the
 	// variable (nil: the running one). See memory.go.
 	own func(*frame) *frame
 }
 
-// owner is the frame the array of r is charged to.
+// owner is the frame the array of r is charged to. The target ALLOCATE makes
+// for a pointer outlives the pointer's frame (another pointer may hold it), so
+// it is the heap's, credited only by DEALLOCATE.
 func (r *gref) owner(f *frame) *frame {
+	if r.isPtr {
+		return f.bud.heapFrame()
+	}
 	if r.own != nil {
 		return r.own(f)
 	}
@@ -313,7 +322,7 @@ func (c *compiler) symRef(id *syntax.Ident, s *sym) (*gref, error) {
 		return nil, err
 	}
 	slot := s.slot
-	return &gref{ptr: func(f *frame) **garr { return &f.at(h).gas[slot] }, own: func(f *frame) *frame { return f.at(h) }, name: id.Name, et: s.et, kd: s.kd, rank: s.rank, alloc: s.alloc}, nil
+	return &gref{ptr: func(f *frame) **garr { return &f.at(h).gas[slot] }, own: func(f *frame) *frame { return f.at(h) }, name: id.Name, et: s.et, kd: s.kd, rank: s.rank, alloc: s.alloc, isPtr: s.ptr}, nil
 }
 
 func (c *compiler) gaVar(id *syntax.Ident, s *sym) (gaFn, error) {
@@ -349,6 +358,16 @@ func (c *compiler) declGA(ss *sema.Symbol, e syntax.Node, s *sym, k kind) error 
 		for _, dm := range ss.Dims {
 			if !dm.Deferred {
 				return c.errf(e, "an allocatable array is declared with (:,...)")
+			}
+		}
+		return nil
+	}
+	if ss.Flags&sema.FPointer != 0 {
+		// disassociated until a pointer assignment or an ALLOCATE (pointers.go)
+		s.ptr = true
+		for _, dm := range ss.Dims {
+			if !dm.Deferred {
+				return c.errf(e, "a pointer array is declared with (:,...)")
 			}
 		}
 		return nil
@@ -580,10 +599,13 @@ func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr) (stmtFn, error)
 	if err != nil {
 		return nil, err
 	}
-	if !ref.alloc {
+	if !ref.alloc && !ref.isPtr {
 		return nil, c.errf(o, "%s is not allocatable", ref.name)
 	}
 	if a.Dealloc {
+		if ref.isPtr {
+			return deallocPointer(ref), nil
+		}
 		return func(f *frame) {
 			f.bud.release(f, *ref.ptr(f))
 			*ref.ptr(f) = nil
@@ -618,7 +640,9 @@ func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr) (stmtFn, error)
 	}
 	et, kd, name := ref.et, ref.kd, ref.name
 	return func(f *frame) {
-		if *ref.ptr(f) != nil {
+		// a pointer may be allocated again: its old target is left behind
+		// (still held by the heap until a DEALLOCATE through another pointer)
+		if *ref.ptr(f) != nil && !ref.isPtr {
 			fail(f, "array %s is already allocated", name)
 		}
 		lb := make([]int64, len(bs))
@@ -634,7 +658,9 @@ func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr) (stmtFn, error)
 				ext[d] = int(n)
 			}
 		}
-		*ref.ptr(f) = f.bud.retain(f, ref.owner(f), newGarr(f, et, kd, lb, ext))
+		g := f.bud.retain(f, ref.owner(f), newGarr(f, et, kd, lb, ext))
+		g.palloc = ref.isPtr
+		*ref.ptr(f) = g
 	}, nil
 }
 

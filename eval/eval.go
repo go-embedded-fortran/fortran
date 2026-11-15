@@ -105,6 +105,11 @@ type budget struct {
 	// an output statement builds no more values than could be printed (see
 	// valRoom).
 	outCap, outLeft int64
+
+	// heap owns the targets ALLOCATE makes for pointers: they live until a
+	// DEALLOCATE, whatever frame made them (pointers.go). It never returns, so
+	// nothing credits it but DEALLOCATE; a session keeps one across its cells.
+	heap *frame
 }
 
 func newBudget(ctx context.Context, max int64) *budget {
@@ -344,6 +349,7 @@ type sym struct {
 	owner  *procCode
 	ga     bool   // an array of the general kind: slot indexes frame.gas
 	alloc  bool   // an allocatable array
+	ptr    bool   // a pointer array: its slot holds the target's storage, or nil (pointers.go)
 	et     kind   // the class of the elements of a general array
 	cs     string // the value of a character named constant
 	clen   int64  // the declared length of a character variable; -1 assumed (character(*)), -2 deferred (len=:)
@@ -558,7 +564,7 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 		}
 	case *syntax.AttrStmt:
 		switch s.Attr {
-		case "private", "public", "save", "target": // target: see decl
+		case "private", "public", "save", "target", "pointer": // see decl
 		default:
 			return c.errf(s, "the %s statement is not supported yet", s.Attr)
 		}
@@ -582,6 +588,18 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 		*out = append(*out, fn)
 	case *syntax.Allocate:
 		fn, err := c.allocate(s)
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.PointerAssign:
+		fn, err := c.pointerAssign(s)
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
+	case *syntax.Nullify:
+		fn, err := c.nullify(s)
 		if err != nil {
 			return err
 		}
@@ -636,6 +654,11 @@ func kernelArray(ss *sema.Symbol, k kind) bool {
 	if k != kReal || ss.Type.Kind != 8 || ss.Rank < 1 || ss.Rank > 2 || len(ss.Dims) != ss.Rank || ss.Flags&sema.FDummy != 0 {
 		return false
 	}
+	if ss.Flags&(sema.FPointer|sema.FTarget) != 0 {
+		// a pointer and what it may point at share one representation, the
+		// general array's (a pointer's slot holds its target's *garr)
+		return false
+	}
 	if ss.Flags&sema.FAllocatable != 0 {
 		return true
 	}
@@ -684,8 +707,8 @@ func (c *compiler) decl(d *syntax.Decl) error {
 	for _, a := range d.Attrs {
 		switch a.Name {
 		case "parameter", "allocatable", "dimension", "intent", "value", "external", "private", "public", "save",
-			"target": // only lets a pointer be associated with the variable; without pointers (refused) it changes nothing that runs
-
+			"target",  // lets a pointer be associated with the variable (pointers.go)
+			"pointer": // an array pointer; declSym refuses the kinds not supported yet
 		default:
 			return c.errf(d, "attribute %q is not supported", a.Name)
 		}
@@ -703,7 +726,17 @@ func (c *compiler) decl(d *syntax.Decl) error {
 		if c.lenExpr == nil && d.Type != nil {
 			c.lenExpr = d.Type.Len
 		}
-		err := c.declSym(ss, e, e.Init)
+		init := e.Init
+		if e.PtrInit {
+			// "=> null()": a pointer starts disassociated anyway; any other
+			// initial target is not supported yet
+			if !isNullCall(init) {
+				c.lenExpr = nil
+				return c.errf(e, "%s: a pointer initialised to a target is not supported yet (only => null())", e.Name.Name)
+			}
+			init = nil
+		}
+		err := c.declSym(ss, e, init)
 		c.lenExpr = nil
 		if err != nil {
 			return err
@@ -742,6 +775,9 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		}
 		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 && (elem == kStr || ss.Flags&sema.FOptional != 0) || ss.Flags&(sema.FOptional|sema.FPointer|sema.FAllocatable) != 0) {
 			return c.errf(e, "dummy argument %s: only scalar, non-optional dummy arguments are supported yet", name)
+		}
+		if ss.Flags&sema.FPointer != 0 && (ss.Rank == 0 || ss.Type.Basic == sema.Derived) {
+			return c.errf(e, "%s: only pointer arrays of integer, real or logical are supported yet (scalar and derived-type pointers are not)", name)
 		}
 		if init != nil && (c.cur.unit.Kind == syntax.SubroutineUnit || c.cur.unit.Kind == syntax.FunctionUnit) {
 			return c.errf(e, "%s: an initialised variable of a procedure is saved between calls, which is not supported yet", name)

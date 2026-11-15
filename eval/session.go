@@ -61,11 +61,12 @@ type Session struct {
 	mods  []*frame // the frame of every module compiled so far, by modIdx
 	n     int      // the index of the last cell
 	vars  map[string]*sema.Symbol
+	heap  *frame // owns what ALLOCATE made for pointers, across cells (pointers.go)
 }
 
 // NewSession makes an empty session.
 func NewSession(o SessionOptions) *Session {
-	s := &Session{opt: o, an: sema.NewSession(sema.SessionOptions{ImplicitTyping: o.ImplicitTyping, Limits: o.Limits}), vars: map[string]*sema.Symbol{}}
+	s := &Session{opt: o, an: sema.NewSession(sema.SessionOptions{ImplicitTyping: o.ImplicitTyping, Limits: o.Limits}), vars: map[string]*sema.Symbol{}, heap: &frame{}}
 	s.state = s.an.Begin()
 	s.c = &compiler{syms: map[*sema.Symbol]*sym{}, procs: map[*syntax.Unit]*procCode{}, externals: map[string]*syntax.Unit{}}
 	return s
@@ -126,7 +127,8 @@ func (s *Session) Run(ctx context.Context, src string, out, stderr io.Writer) (s
 	f.mods = s.mods
 	// what the session's modules hold from the cells before (a failed cell may
 	// have left the counter wrong; the modules' frames are exact)
-	bud.mem = held(s.mods)
+	bud.mem = held(s.mods) + s.heap.mem
+	bud.heap = s.heap
 	defer func() {
 		tab.Flush()
 		if r := recover(); r != nil {
