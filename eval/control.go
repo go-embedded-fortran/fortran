@@ -38,6 +38,11 @@ func seq(fns []stmtFn, jumps bool) stmtFn {
 func (c *compiler) block(body []syntax.Stmt) (stmtFn, bool, error) {
 	saved := c.jumped
 	c.jumped = false
+	if c.cur != nil { // the deepest nesting of statements of the unit: its call weight
+		c.cur.nest++
+		c.cur.maxNest = max(c.cur.maxNest, c.cur.nest)
+		defer func() { c.cur.nest-- }()
+	}
 	fns, err := c.stmts(body)
 	got := c.jumped
 	c.jumped = saved || got

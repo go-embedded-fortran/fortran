@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"runtime"
 	"strings"
 	"time"
 
@@ -69,6 +68,8 @@ type frame struct {
 	tmpObj *dobj     // the object a structure constructor is filling
 	bud    *budget   // the step budget of the run, shared by every frame of it
 	vs     []float64 // the scratch strips of the loop kernels (see vecloop.go)
+	mem    int64     // the storage charged to this frame (see memory.go)
+	weight int       // what the calls below this one weigh (see callWeight)
 }
 
 // chunk is the number of steps between two looks at the budget's total and at
@@ -85,38 +86,9 @@ type budget struct {
 	rest int64 // steps left in all
 	ctx  context.Context
 
-	// maxHeap, when positive, bounds the Go heap a run may make an array of
-	// minAllocCheck bytes or more grow past (see checkAlloc).
-	maxHeap int64
-}
-
-// minAllocCheck is the size of an array from which its allocation is checked
-// against the heap bound: the check reads the heap's statistics, which stops
-// the world, so the many small arrays of a run do not pay for it.
-const minAllocCheck = 1 << 16
-
-// checkAlloc refuses, before anything is allocated, an array of bytes bytes
-// that would take the Go heap past the bound of the run (SessionOptions.
-// MaxAlloc). What the heap holds is what counts, not what the run has
-// allocated in all: a loop that makes a big temporary at every iteration is
-// not refused as long as the collector can take them back, which is why the
-// bound is tested again after a collection before it fails. The heap is the
-// process's: in a browser tab it holds the other cells' runtimes too, and its
-// bound is what keeps the tab under its 4 GiB of linear memory.
-func (b *budget) checkAlloc(f *frame, bytes int64) {
-	if b == nil || b.maxHeap <= 0 || bytes < minAllocCheck {
-		return
-	}
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	if int64(m.HeapAlloc)+bytes <= b.maxHeap {
-		return
-	}
-	runtime.GC()
-	runtime.ReadMemStats(&m)
-	if int64(m.HeapAlloc)+bytes > b.maxHeap {
-		fail(f, "memory limit exceeded: an array of %d bytes would take the heap past %d bytes", bytes, b.maxHeap)
-	}
+	// mem is the storage the program holds, in bytes, and maxMem its bound
+	// (zero: none); see memory.go.
+	mem, maxMem int64
 }
 
 func newBudget(ctx context.Context, max int64) *budget {
@@ -217,6 +189,11 @@ type procCode struct {
 	// [modIdx]) and the module procedures link to it.
 	module bool
 	modIdx int
+
+	// the nesting of the statements and of the expressions of the unit, at the
+	// moment (nest, xnest) and at the deepest (maxNest, maxX): a call of the
+	// unit costs the host's call stack in proportion (see depth_wasm.go).
+	nest, xnest, maxNest, maxX int
 }
 
 // newFrame makes the activation record of p called from caller (nil for the
@@ -234,8 +211,9 @@ func (p *procCode) newFrame(caller, up *frame) *frame {
 	}
 	if caller != nil {
 		f.out, f.tab, f.start, f.depth, f.mods, f.bud = caller.out, caller.tab, caller.start, caller.depth+1, caller.mods, caller.bud
-		if f.depth > MaxCallDepth {
-			fail(f, "procedure %s: more than %d nested calls", p.name, MaxCallDepth)
+		f.weight = caller.weight + callWeight(p.maxNest, p.maxX)
+		if f.weight > maxCallWeight {
+			fail(f, "procedure %s: more than %d nested calls", p.name, f.depth-1)
 		}
 		f.bud.tick()
 	}
@@ -800,14 +778,28 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 						fail(f, "character length %d is out of range", n)
 					}
 					f.ints[ls] = n
+					f.bud.charge(f, f, n)
 					f.strs[slot] = strings.Repeat(" ", int(n))
 				})
 			}
 			if !param && s.clen >= 0 && ss.Flags&sema.FDummy == 0 {
 				// a character variable is blank until it is assigned
-				blank := strings.Repeat(" ", int(min(s.clen, MaxStringLen)))
+				// (made when the variable is, not when the cell is compiled, so
+				// that the budget refuses it before it is allocated)
+				n := min(s.clen, MaxStringLen)
+				var shared string
+				if n <= 256 {
+					shared = strings.Repeat(" ", int(n))
+				}
 				slot := s.slot
-				c.cur.init = append(c.cur.init, func(f *frame) { f.strs[slot] = blank })
+				c.cur.init = append(c.cur.init, func(f *frame) {
+					f.bud.charge(f, f, n)
+					if n <= 256 {
+						f.strs[slot] = shared
+					} else {
+						f.strs[slot] = strings.Repeat(" ", int(n))
+					}
+				})
 			}
 		default:
 			s.slot = c.cur.nReals
@@ -852,7 +844,11 @@ func allocFn(h, slot int, shape []intFn) stmtFn {
 		for i, sh := range shape {
 			n[i] = int(sh(f))
 		}
-		f.at(h).arrs[slot] = newArray(f, len(shape), n[0], n[1])
+		own := f.at(h)
+		if n[0] >= 0 && n[1] >= 0 && n[0] <= MaxArrayElems && n[1] <= MaxArrayElems {
+			f.bud.charge(f, own, 8*int64(n[0])*int64(n[1])+arrayOverhead)
+		}
+		own.arrs[slot] = newArray(f, len(shape), n[0], n[1])
 	}
 }
 
@@ -860,7 +856,7 @@ func newArray(f *frame, rank, n1, n2 int) *array {
 	if n1 < 0 || n2 < 0 || n1 > MaxArrayElems || n2 > MaxArrayElems || (n2 > 0 && n1 > MaxArrayElems/n2) {
 		fail(f, "array extent (%d,%d) is out of range", n1, n2)
 	}
-	f.bud.checkAlloc(f, 8*int64(n1)*int64(n2))
+	f.bud.peek(f, 8*int64(n1)*int64(n2)+arrayOverhead)
 	var nd *ndarray.Array
 	var err error
 	if rank == 1 {
@@ -925,6 +921,11 @@ func constFloat(k *sema.Const) float64 {
 // folded it (a literal, a named constant, a constant expression), its value
 // come from the typed tree: the compiler derives none of them.
 func (c *compiler) expr(n syntax.Expr) (*ex, error) {
+	if c.cur != nil { // the deepest nesting of expressions of the unit: its call weight
+		c.cur.xnest++
+		c.cur.maxX = max(c.cur.maxX, c.cur.xnest)
+		defer func() { c.cur.xnest-- }()
+	}
 	tv, err := c.tv(n)
 	if err != nil {
 		return nil, err
@@ -1840,6 +1841,15 @@ func (c *compiler) store(s *sym, v *ex, at syntax.Node) (stmtFn, error) {
 		return func(f *frame) { f.ints[slot] = b2i(fn(f)) }, nil
 	case s.k == kStr && v.k == kStr:
 		fn := v.s
+		if s.clen == -2 {
+			// a deferred-length variable takes the length of its value: the
+			// counter follows it
+			return func(f *frame) {
+				v := fn(f)
+				f.bud.chargeDelta(f, f, int64(len(v))-int64(len(f.strs[slot])))
+				f.strs[slot] = v
+			}, nil
+		}
 		return func(f *frame) { f.strs[slot] = s.fit(f, fn(f)) }, nil
 	case s.k == kReal && v.k != kArr && v.k != kLog:
 		fn := v.asReal().r

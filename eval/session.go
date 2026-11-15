@@ -25,12 +25,12 @@ type SessionOptions struct {
 	MaxSteps int64
 	// Limits bound what the analyser accepts of a cell's source.
 	Limits sema.Limits
-	// MaxAlloc bounds the Go heap, in bytes, that an array of 64 KiB or more may
-	// grow: such an allocation that would take the heap past it, after a
-	// collection, is refused with an error before anything is allocated. Zero is
-	// no bound. It is the process's heap, not only this session's, so a host
-	// that shares the process with other runtimes sets it above what they hold
-	// (the playground: 512 MiB, R's bound).
+	// MaxAlloc bounds the storage the session holds, in bytes, counted (see
+	// memory.go): every variable, array, derived-type object and character
+	// component is charged before it is allocated and credited when it is let
+	// go, and a program that would pass the bound fails with an error and
+	// allocates nothing for it. The count is the session's own, not the
+	// process's heap. Zero is no bound (the playground: 512 MiB, R's bound).
 	MaxAlloc int64
 }
 
@@ -98,7 +98,7 @@ func (s *Session) Run(ctx context.Context, src string, out, stderr io.Writer) (s
 		max = DefaultMaxSteps
 	}
 	bud := newBudget(ctx, max)
-	bud.maxHeap = s.opt.MaxAlloc
+	bud.maxMem = s.opt.MaxAlloc
 	f := &frame{out: out, tab: tab, start: time.Now(), bud: bud}
 	first := len(s.mods)
 	for _, m := range c.modules[first:] { // every new module's frame exists before any initialisation runs
@@ -108,6 +108,9 @@ func (s *Session) Run(ctx context.Context, src string, out, stderr io.Writer) (s
 		mf.out, mf.tab, mf.start, mf.bud, mf.mods = f.out, f.tab, f.start, f.bud, s.mods
 	}
 	f.mods = s.mods
+	// what the session's modules hold from the cells before (a failed cell may
+	// have left the counter wrong; the modules' frames are exact)
+	bud.mem = held(s.mods)
 	defer func() {
 		tab.Flush()
 		if r := recover(); r != nil {
@@ -138,7 +141,9 @@ func (s *Session) Run(ctx context.Context, src string, out, stderr io.Writer) (s
 		if p.host != nil {
 			up = s.mods[p.host.modIdx]
 		}
-		p.run(p.newFrame(f, up))
+		mf := p.newFrame(f, up)
+		p.run(mf)
+		bud.exit(mf)
 	}
 	return
 }

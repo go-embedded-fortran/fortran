@@ -617,13 +617,21 @@ statements.
   ends with `step limit reached` or the context's error (`errors.Is(err,
   context.DeadlineExceeded)`); the count, not a timer, is what holds in
   WebAssembly. `MaxArrayElems`, `MaxStringLen` and `MaxCallDepth` apply per run.
-  `MaxCallDepth` is 2^15 natively and 200 under `js` and `wasip1`: the host's
-  call stack is shallow (Chromium's default overflows between 600 and 2500
-  nested calls, by the statements around the call) and an overflow there is a
-  RangeError that kills the whole instance. `SessionOptions.MaxAlloc` bounds the
-  Go heap: an array of 64 KiB or more that would take it past the bound, after a
-  collection, is refused before it is allocated (zero is no bound; the heap is
-  the process's, so a host sharing it sets the bound above what the others hold).
+  `MaxCallDepth` is 2^15 natively. Under `js` and `wasip1` it is a weight: a call
+  weighs the deepest nesting of the statements of its unit (at least 1), and the
+  weights of the nested calls are bounded by 1500, because the host's call stack
+  is shallow (Chromium's default overflows at 2000-2500 nested calls of a plain
+  function, 600-900 at 7 levels of nesting, 150-199 at 29) and an overflow there
+  is a RangeError that kills the whole instance. `SessionOptions.MaxAlloc` is a
+  counted budget of the storage the session holds (zero is no bound): every
+  variable, array, derived-type object and character component is charged before
+  it is allocated, so a program that would hold more fails with `memory limit
+  exceeded` and allocates nothing for it, many small objects counting as much as
+  one big array. It is credited by `deallocate`, by the return of a procedure
+  (its locals) and by the reassignment of an allocatable array to a new shape; a
+  temporary is checked against what is left but not held; a module's storage is
+  held for the session. It is the session's own count, not the process's heap:
+  no collection, no stop-the-world.
   The budget costs 0.45 ns on a 2.85 ns scalar DO iteration (Apple M4 Max,
   `BenchmarkDoLoop`). A Go panic inside the evaluator is returned as an error,
   not raised.
@@ -659,7 +667,7 @@ statements.
   variables through the frame's static link) and external ones of the same
   file, with scalar integer, real and logical dummy arguments (copy-in,
   copy-out for a variable actual that is not `intent(in)`; keyword arguments),
-  `result(r)`, `recursive` (bounded by `MaxCallDepth`, 2^15 nested calls natively, 200 in WebAssembly: a
+  `result(r)`, `recursive` (bounded by `MaxCallDepth`, 2^15 nested calls natively, a weight of 1500 in WebAssembly: a
   deeper call is a run-time error), `return`, and the bit functions (iand,
   ior, ieor, not, ishft, popcnt, poppar, leadz, trailz, btest, ibset, ibclr).
   Part 3 (v0.13.0) added modules of the file (variables with initial values and
