@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"runtime"
 	"strings"
 	"time"
 
@@ -83,6 +84,39 @@ type budget struct {
 	left int64 // steps left in the current chunk
 	rest int64 // steps left in all
 	ctx  context.Context
+
+	// maxHeap, when positive, bounds the Go heap a run may make an array of
+	// minAllocCheck bytes or more grow past (see checkAlloc).
+	maxHeap int64
+}
+
+// minAllocCheck is the size of an array from which its allocation is checked
+// against the heap bound: the check reads the heap's statistics, which stops
+// the world, so the many small arrays of a run do not pay for it.
+const minAllocCheck = 1 << 16
+
+// checkAlloc refuses, before anything is allocated, an array of bytes bytes
+// that would take the Go heap past the bound of the run (SessionOptions.
+// MaxAlloc). What the heap holds is what counts, not what the run has
+// allocated in all: a loop that makes a big temporary at every iteration is
+// not refused as long as the collector can take them back, which is why the
+// bound is tested again after a collection before it fails. The heap is the
+// process's: in a browser tab it holds the other cells' runtimes too, and its
+// bound is what keeps the tab under its 4 GiB of linear memory.
+func (b *budget) checkAlloc(f *frame, bytes int64) {
+	if b == nil || b.maxHeap <= 0 || bytes < minAllocCheck {
+		return
+	}
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	if int64(m.HeapAlloc)+bytes <= b.maxHeap {
+		return
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&m)
+	if int64(m.HeapAlloc)+bytes > b.maxHeap {
+		fail(f, "memory limit exceeded: an array of %d bytes would take the heap past %d bytes", bytes, b.maxHeap)
+	}
 }
 
 func newBudget(ctx context.Context, max int64) *budget {
@@ -184,10 +218,6 @@ type procCode struct {
 	module bool
 	modIdx int
 }
-
-// MaxCallDepth bounds the nesting of procedure activations: a deeper call is a
-// run-time error (a runaway recursion), decided before another frame is made.
-const MaxCallDepth = 1 << 15
 
 // newFrame makes the activation record of p called from caller (nil for the
 // main program), linked to the frame of its host.
@@ -830,6 +860,7 @@ func newArray(f *frame, rank, n1, n2 int) *array {
 	if n1 < 0 || n2 < 0 || n1 > MaxArrayElems || n2 > MaxArrayElems || (n2 > 0 && n1 > MaxArrayElems/n2) {
 		fail(f, "array extent (%d,%d) is out of range", n1, n2)
 	}
+	f.bud.checkAlloc(f, 8*int64(n1)*int64(n2))
 	var nd *ndarray.Array
 	var err error
 	if rank == 1 {
