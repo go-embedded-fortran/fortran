@@ -56,6 +56,7 @@ type frame struct {
 	depth int
 	mods  []*frame // the frames of the modules
 	strs  []string // character scalars
+	gas   []*garr  // general arrays
 }
 
 // Values of frame.ctl.
@@ -99,7 +100,7 @@ type procCode struct {
 	scope                *sema.Scope
 	host                 *procCode
 	nInts, nReals, nArrs int
-	nStrs                int
+	nStrs, nGAs          int
 	init                 []stmtFn
 	body                 stmtFn
 	params               []*sym
@@ -124,6 +125,7 @@ func (p *procCode) newFrame(caller, up *frame) *frame {
 		reals: make([]float64, p.nReals),
 		arrs:  make([]*array, p.nArrs),
 		strs:  make([]string, p.nStrs),
+		gas:   make([]*garr, p.nGAs),
 		up:    up,
 	}
 	if caller != nil {
@@ -218,6 +220,7 @@ const (
 	kArr
 	kLog
 	kStr // a character scalar value (an expression; there are no character variables yet)
+	kGA  // an array of the general kind (arrays.go)
 )
 
 type strFn func(*frame) string
@@ -235,18 +238,23 @@ type sym struct {
 	rank  int
 	shape []intFn // constant-shape arrays: allocated at start
 	owner *procCode
+	ga    bool   // an array of the general kind: slot indexes frame.gas
+	alloc bool   // an allocatable array
+	et    kind   // the class of the elements of a general array
 	cs    string // the value of a character named constant
 	clen  int64  // the declared length of a character variable, -1 for an assumed length (character(*))
 }
 
 // ex is a compiled expression.
 type ex struct {
-	k kind
-	i intFn
-	r realFn
-	b boolFn
-	s strFn
-	a arrFn
+	k  kind
+	i  intFn
+	r  realFn
+	b  boolFn
+	s  strFn
+	a  arrFn
+	g  gaFn // a general array: its shape and elements
+	et kind // the class of the elements of a general array
 	// kd is the kind parameter of an integer or real value (0 for 8 or none):
 	// a real(4) result is rounded to single precision after each operation, an
 	// integer(1|2|4) result wraps.
@@ -379,6 +387,12 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 			return err
 		}
 		*out = append(*out, fn)
+	case *syntax.Where:
+		fn, err := c.where(s)
+		if err != nil {
+			return err
+		}
+		*out = append(*out, fn)
 	case *syntax.Return:
 		fn, err := c.returnStmt(s)
 		if err != nil {
@@ -457,12 +471,32 @@ func (c *compiler) kindOf(at syntax.Node, t sema.Type, rank int) (kind, error) {
 		return 0, c.errf(at, "type %s is not supported", t)
 	}
 	if rank != 0 {
-		if rank == sema.RankUnknown || k != kReal || t.Kind != 8 {
-			return 0, c.errf(at, "only real(8) arrays are supported")
+		if rank == sema.RankUnknown || rank > MaxRank {
+			return 0, c.errf(at, "arrays of assumed rank are not supported")
 		}
-		return kArr, nil
+		if k == kReal && t.Kind == 8 && rank <= 2 {
+			return kArr, nil // the kernels' arrays; an expression of the general kind is accepted too
+		}
+		return kGA, nil
 	}
 	return k, nil
+}
+
+// kernelArray reports whether the variable ss keeps the storage of the gate's
+// kernels (go-ndarray): real(8), rank 1 or 2, bounds 1, not a dummy.
+func kernelArray(ss *sema.Symbol, k kind) bool {
+	if k != kReal || ss.Type.Kind != 8 || ss.Rank < 1 || ss.Rank > 2 || len(ss.Dims) != ss.Rank || ss.Flags&sema.FDummy != 0 {
+		return false
+	}
+	if ss.Flags&sema.FAllocatable != 0 {
+		return true
+	}
+	for _, dm := range ss.Dims {
+		if !dm.LoKnown || dm.Lo != 1 || !dm.HiKnown || dm.Assumed || dm.Deferred {
+			return false
+		}
+	}
+	return true
 }
 
 // kd is the kind parameter an ex carries: 0 for real(8), integer(8), logical.
@@ -532,7 +566,7 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		}
 		param := ss.Kind == sema.SymParam
 		if param && ss.Rank != 0 {
-			return c.errf(e, "only real(8) variable arrays are supported")
+			return c.errf(e, "array named constants are not supported yet")
 		}
 		elem, err := c.kindOf(e, ss.Type, 0)
 		if err != nil {
@@ -549,7 +583,7 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 				return c.errf(e, "an allocatable or pointer character variable is not supported yet")
 			}
 		}
-		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 || ss.Flags&(sema.FOptional|sema.FPointer|sema.FAllocatable) != 0) {
+		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 && (elem == kStr || ss.Flags&sema.FOptional != 0) || ss.Flags&(sema.FOptional|sema.FPointer|sema.FAllocatable) != 0) {
 			return c.errf(e, "dummy argument %s: only scalar, non-optional dummy arguments are supported yet", name)
 		}
 		if init != nil && (c.cur.unit.Kind == syntax.SubroutineUnit || c.cur.unit.Kind == syntax.FunctionUnit) {
@@ -558,13 +592,16 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		k := elem
 		s := &sym{k: k, kd: kdOf(ss.Type), owner: c.cur}
 		switch {
+		case ss.Rank != 0 && !kernelArray(ss, k):
+			if k == kStr {
+				return c.errf(e, "character arrays are not supported yet")
+			}
+			if err := c.declGA(ss, e, s, k); err != nil {
+				return err
+			}
+			c.syms[ss] = s
+			return nil
 		case ss.Rank != 0:
-			if k != kReal || ss.Type.Kind != 8 {
-				return c.errf(e, "only real(8) variable arrays are supported")
-			}
-			if ss.Rank < 0 || ss.Rank > 2 || len(ss.Dims) != ss.Rank {
-				return c.errf(e, "rank %d: only ranks 1 and 2 are supported", ss.Rank)
-			}
 			s.k, s.rank, s.slot = kArr, ss.Rank, c.cur.nArrs
 			c.cur.nArrs++
 			if ss.Flags&sema.FAllocatable == 0 {
@@ -737,7 +774,10 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 	} else {
 		e = fit(e, tv.Type)
 	}
-	if e.k != want || (want == kArr && e.rank != tv.Rank) {
+	if e.k == kGA && want == kArr {
+		want = kGA // a real(8) array of rank 1 or 2 computed in the general kind
+	}
+	if e.k != want || ((want == kArr || want == kGA) && e.rank != tv.Rank) {
 		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
 	}
 	return e, nil
@@ -792,6 +832,9 @@ func (c *compiler) expr1(n syntax.Expr, tv sema.TV) (*ex, error) {
 		if err != nil {
 			return nil, err
 		}
+		if x.k == kGA {
+			return c.gaUnary(n, x)
+		}
 		switch n.Op {
 		case "+":
 			return x, nil
@@ -806,6 +849,8 @@ func (c *compiler) expr1(n syntax.Expr, tv sema.TV) (*ex, error) {
 		return nil, c.errf(n, "operator %q is not supported", n.Op)
 	case *syntax.Binary:
 		return c.binary(n, tv)
+	case *syntax.ArrayCons:
+		return c.arrayCons(n, tv)
 	case *syntax.Index:
 		return c.index(n, tv)
 	}
@@ -816,6 +861,9 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 	s, _, err := c.symOf(n)
 	if err != nil {
 		return nil, err
+	}
+	if s.ga {
+		return c.gaIdent(n, s)
 	}
 	if !s.isC {
 		h, err := c.hops(s, n)
@@ -895,6 +943,9 @@ func (c *compiler) binary(n *syntax.Binary, tv sema.TV) (*ex, error) {
 	}
 	if x.k == kStr || y.k == kStr {
 		return c.strBinary(n, x, y)
+	}
+	if x.k == kGA || y.k == kGA {
+		return c.gaBinary(n, x, y, tv)
 	}
 	switch n.Op {
 	case "+", "-", "*", "/", "**":
@@ -1122,6 +1173,9 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.ga {
+		return c.gaIndex(n, id, s)
+	}
 	if s.k != kArr {
 		return nil, c.errf(n, "%s is not an array", id.Name)
 	}
@@ -1190,6 +1244,18 @@ func bounds(f *frame, name string, dim int, i int64, n int) {
 }
 
 func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, error) {
+	if formals, ok := arrayFormals[name]; ok {
+		// the array intrinsics; sum and matmul of the kernels' arrays keep their own code
+		general := true
+		if (name == "sum" || name == "matmul") && len(n.Args) > 0 && n.Args[0].Value != nil {
+			if a, err := c.expr(n.Args[0].Value); err == nil && a.k == kArr {
+				general = false
+			}
+		}
+		if general {
+			return c.arrIntrinsic(n, name, tv, formals)
+		}
+	}
 	args := make([]*ex, len(n.Args))
 	for i, a := range n.Args {
 		if a.Value == nil || (a.Keyword != "" && !(name == "index" && a.Keyword == "back" && i == 2)) {
@@ -1201,6 +1267,15 @@ func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, err
 		}
 		args[i] = v
 	}
+	for _, a := range args {
+		if a.k == kGA {
+			return c.elementalGA(n, name, tv, args)
+		}
+	}
+	return c.intrinsicWith(n, name, tv, args)
+}
+
+func (c *compiler) intrinsicWith(n *syntax.Index, name string, tv sema.TV, args []*ex) (*ex, error) {
 	want := func(k int) error {
 		if len(args) != k {
 			return c.errf(n, "%s takes %d arguments", name, k)
@@ -1554,6 +1629,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		if sy.isC {
 			return nil, c.errf(l, "%s is a parameter", l.Name)
 		}
+		if sy.ga {
+			return c.assignGA(s, l, rhs, nil)
+		}
 		if sy.k == kArr {
 			if sy.owner != c.cur {
 				return nil, c.errf(l, "array %s of an enclosing unit: host-associated arrays are not supported yet", l.Name)
@@ -1567,6 +1645,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 			return nil, c.errf(l, "unsupported assignment target")
 		}
 		sy, _, err := c.symOf(id)
+		if err == nil && sy.ga {
+			return c.assignGA(s, l, rhs, nil)
+		}
 		if err != nil || sy.k != kArr || sy.owner != c.cur {
 			return nil, c.errf(l, "%s is not an array of this unit", id.Name)
 		}
@@ -1701,11 +1782,35 @@ func (c *compiler) call(s *syntax.Call) (stmtFn, error) {
 }
 
 func (c *compiler) allocate(a *syntax.Allocate) (stmtFn, error) {
-	if a.Dealloc || a.Type != nil || len(a.Specs) > 0 {
-		return nil, c.errf(a, "only plain allocate(name(extents)) is supported")
+	if a.Type != nil || len(a.Specs) > 0 {
+		return nil, c.errf(a, "only plain allocate(name(extents)) and deallocate(name) are supported")
 	}
 	var fns []stmtFn
 	for _, o := range a.Objects {
+		// an array of the general kind
+		var gid *syntax.Ident
+		switch x := o.(type) {
+		case *syntax.Ident:
+			gid = x
+		case *syntax.Index:
+			gid, _ = x.X.(*syntax.Ident)
+		}
+		if gid != nil {
+			if gs, _, err := c.symOf(gid); err == nil && gs.ga {
+				if gs.owner != c.cur || !gs.alloc {
+					return nil, c.errf(o, "%s is not an allocatable array of this unit", gid.Name)
+				}
+				fn, err := c.allocateGA(a, o, gs, gid)
+				if err != nil {
+					return nil, err
+				}
+				fns = append(fns, fn)
+				continue
+			}
+		}
+		if a.Dealloc {
+			return nil, c.errf(a, "only deallocate of an allocatable array of the general kind is supported")
+		}
 		ix, ok := o.(*syntax.Index)
 		if !ok {
 			return nil, c.errf(o, "allocate needs name(extents)")

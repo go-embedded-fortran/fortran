@@ -326,7 +326,6 @@ end program p
 func TestRefusals(t *testing.T) {
 	for name, src := range map[string]string{
 		"undeclared":    "program p\n  implicit none\n  x = 1\nend program p\n",
-		"rank 3":        "program p\n  implicit none\n  real(8) :: a(2,2,2)\nend program p\n",
 		"section":       "program p\n  implicit none\n  real(8) :: a(4)\n  real(8) :: x\n  x = a(1:2)\nend program p\n",
 		"lower bound":   "program p\n  implicit none\n  real(8), allocatable :: a(:)\n  allocate (a(0:3))\nend program p\n",
 		"unknown call":  "program p\n  implicit none\n  call foo()\nend program p\n",
@@ -501,8 +500,6 @@ func TestKindsComeFromTheAnalyser(t *testing.T) {
 		"real(16)":         "program p\n  implicit none\n  real(16) :: x\nend program p\n",
 		"complex variable": "program p\n  implicit none\n  complex(8) :: c\nend program p\n",
 		"complex constant": "program p\n  implicit none\n  complex(8), parameter :: c = (1d0, 2d0)\nend program p\n",
-		"real(4) array":    "program p\n  implicit none\n  real :: a(3)\nend program p\n",
-		"logical array":    "program p\n  implicit none\n  logical :: a(3)\nend program p\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := compile(t, src)

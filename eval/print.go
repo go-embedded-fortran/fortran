@@ -200,6 +200,9 @@ func (c *compiler) printItem(it syntax.Expr) (item, error) {
 			return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Real4(float32(fn(f)))) }, nil
 		}
 		return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Real8(fn(f))) }, nil
+	case kGA:
+		fn, size := x.g, tv.Type.Kind
+		return func(f *frame, l []rt.Val) []rt.Val { return printVals(l, fn(f), size) }, nil
 	case kStr:
 		fn := x.s
 		return func(f *frame, l []rt.Val) []rt.Val { return append(l, rt.Str(fn(f))) }, nil
