@@ -326,29 +326,35 @@ times the rounds asked for), and gives up after the stated total wait. The
 report prints the load samples bounding the kept rounds, the rounds discarded
 and the time spent waiting.
 
-**Figures (2026-11-14, v0.10.0, `foracle gate --wait-load 10h`).** Desktop
-darwin/arm64, one core, 7 interleaved rounds; every kept round is bounded by
-1-minute load samples between 6.2 and 7.9 (`6.7 7.9 7.9 7.7 7.8 7.3 7.4 7.0 7.3
-7.0 6.2`); 3 rounds were discarded for load after 32 minutes of waiting. Seconds,
-median and spread (max-min):
+**Figures (2026-11-15, v0.21.0, `foracle gate --wait-load 14h`, built from a
+clean checkout of the tag, 5e97af5).** Desktop darwin/arm64, one core, 7
+interleaved rounds; every kept round is bounded by 1-minute load samples between
+7.1 and 8.0 (`7.6 8.0 7.3 7.1 7.6 7.7 7.6 7.3 7.2 7.6 7.4`); 3 rounds were
+discarded for load after 3 h 12 min of waiting. Seconds, median and spread
+(max-min):
 
 | kernel | A | B-near | B-upper | gfortran -O2 | direct go-ndarray |
 |---|---|---|---|---|---|
-| K1 | 0.5050 +0.0141 | 1.5028 +0.0473 | 0.7010 +0.0741 | 0.0606 +0.0009 | - |
-| K2 | 3.4121 +0.2056 | 3.3757 +0.4956 | 1.6949 +0.0554 | 0.0366 +0.0019 | - |
-| K3L | 2.0977 +0.3126 | 2.2330 +0.2965 | 1.0762 +0.0276 | 0.0194 +0.0002 | - |
-| K3M | 0.0066 +0.0012 | 0.0067 +0.0027 | 0.0071 +0.0015 | 0.0058 +0.0003 | 0.0062 +0.0009 |
-| K4 | 0.0712 +0.0081 | 0.2940 +0.0242 | 0.2728 +0.0676 | 0.0350 +0.0113 | 0.0898 +0.0194 |
+| K1 | 0.1535 +0.0059 | 1.4778 +0.0283 | 0.7068 +0.0254 | 0.0605 +0.0019 | - |
+| K2 | 0.1850 +0.0059 | 3.2997 +0.0509 | 1.7110 +0.0637 | 0.0372 +0.0099 | - |
+| K3L | 0.1157 +0.0033 | 2.1937 +0.2551 | 1.0939 +0.0576 | 0.0193 +0.0010 | - |
+| K3M | 0.0070 +0.0032 | 0.0084 +0.0027 | 0.0084 +0.0042 | 0.0058 +0.0017 | 0.0079 +0.0030 |
+| K4 | 0.0750 +0.0287 | 0.3017 +0.0534 | 0.2798 +0.0481 | 0.0367 +0.0119 | 0.0907 +0.0166 |
 
-Time over gfortran on the loop kernels: K1 A 8.33, B-near 24.79, B-upper 11.56;
-K2 93.31, 92.31, 46.35; K3L 108.06, 115.03, 55.44. Inputs to the rule:
-g(rA) = 43.79, g(rB0) = 64.09, **g(rA)/g(rB0) = 0.683**; K4 A / direct = 0.793,
-K3-matmul A / direct = 1.065.
+Time over gfortran on the loop kernels: K1 A 2.54, B-near 24.42, B-upper 11.68;
+K2 4.97, 88.71, 46.00; K3L 5.99, 113.62, 56.66. Inputs to the rule:
+g(rA) = 4.23, g(rB0) = 62.67, **g(rA)/g(rB0) = 0.067**; K4 A / direct = 0.827,
+K3-matmul A / direct = 0.880.
 
 **Verdict: A first** (between; re-gate after go-embedded-c M3). The desktop
 ratio is at most 2 and both array kernels are within 1.2 of direct go-ndarray,
 but the playground home is not measured (#5), so the rule cannot pick A outright.
-The gap to gfortran on scalar loops (8x to 108x) is an open defect:
+
+Against the first run (2026-11-14, v0.10.0: A at 8.33 / 93.31 / 108.06 times
+gfortran on K1 / K2 / K3L), the loop work of v0.18.0 to v0.21.0 (affine
+subscripts, strip kernels, ordered reductions, kernels for enclosing-frame
+loops) puts A 4 to 10 times ahead of B-upper on every loop kernel. The gap to
+gfortran (2.5x to 6x) remains an open defect:
 [#17](https://github.com/go-embedded-fortran/fortran/issues/17).
 
 ### Golden programs
