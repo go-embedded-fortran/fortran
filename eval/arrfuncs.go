@@ -32,12 +32,16 @@ var arrayFormals = map[string][]string{
 	"dot_product": {"vector_a", "vector_b"},
 	"matmul":      {"matrix_a", "matrix_b"},
 	"allocated":   {"array"},
+	"associated":  {"pointer", "target"},
 }
 
 // arrIntrinsic compiles a call of an array intrinsic.
 func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formals []string) (*ex, error) {
 	if name == "allocated" {
 		return c.allocatedGA(n)
+	}
+	if name == "associated" {
+		return c.associatedGA(n)
 	}
 	args := make([]*ex, len(formals))
 	pos := true
