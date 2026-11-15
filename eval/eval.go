@@ -229,20 +229,22 @@ type strFn func(*frame) string
 const MaxStringLen = 1 << 26
 
 type sym struct {
-	k     kind
-	kd    int // the kind parameter of an integer, real or logical variable
-	slot  int
-	isC   bool // a parameter
-	ci    int64
-	cr    float64
-	rank  int
-	shape []intFn // constant-shape arrays: allocated at start
-	owner *procCode
-	ga    bool   // an array of the general kind: slot indexes frame.gas
-	alloc bool   // an allocatable array
-	et    kind   // the class of the elements of a general array
-	cs    string // the value of a character named constant
-	clen  int64  // the declared length of a character variable, -1 for an assumed length (character(*))
+	k      kind
+	kd     int // the kind parameter of an integer, real or logical variable
+	slot   int
+	isC    bool // a parameter
+	ci     int64
+	cr     float64
+	rank   int
+	shape  []intFn // constant-shape arrays: allocated at start
+	owner  *procCode
+	ga     bool   // an array of the general kind: slot indexes frame.gas
+	alloc  bool   // an allocatable array
+	et     kind   // the class of the elements of a general array
+	cs     string // the value of a character named constant
+	clen   int64  // the declared length of a character variable; -1 assumed (character(*)), -2 deferred (len=:)
+	cdyn   bool   // the length is an expression evaluated when the unit starts, kept in ints[clslot]
+	clslot int
 }
 
 // ex is a compiled expression.
@@ -284,6 +286,7 @@ type compiler struct {
 	// cur is the program unit being compiled, procs all of them.
 	modules   []*procCode
 	cur       *procCode
+	lenExpr   syntax.Expr // the length of the character entity being declared
 	procs     map[*syntax.Unit]*procCode
 	externals map[string]*syntax.Unit // the external subroutines and functions of the file
 	// loops are the names of the DO constructs enclosing the statement being
@@ -549,7 +552,13 @@ func (c *compiler) decl(d *syntax.Decl) error {
 		if ss.Kind == sema.SymProc {
 			continue // "integer, external :: f": a procedure, not storage
 		}
-		if err := c.declSym(ss, e, e.Init); err != nil {
+		c.lenExpr = e.CharLen
+		if c.lenExpr == nil && d.Type != nil {
+			c.lenExpr = d.Type.Len
+		}
+		err := c.declSym(ss, e, e.Init)
+		c.lenExpr = nil
+		if err != nil {
 			return err
 		}
 	}
@@ -576,11 +585,12 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 			if ss.Rank != 0 {
 				return c.errf(e, "character arrays are not supported yet")
 			}
-			if ss.Type.Len < 0 && ss.Flags&sema.FDummy == 0 {
-				return c.errf(e, "character variable %s: a length that is not a constant (character(len=:), character(len(x))) is not supported yet", name)
+			if ss.Flags&sema.FPointer != 0 {
+				return c.errf(e, "a pointer character variable is not supported yet")
 			}
-			if ss.Flags&(sema.FAllocatable|sema.FPointer) != 0 {
-				return c.errf(e, "an allocatable or pointer character variable is not supported yet")
+			_, deferred := c.lenExpr.(*syntax.Triplet)
+			if ss.Flags&sema.FAllocatable != 0 && !deferred || deferred && ss.Flags&sema.FAllocatable == 0 {
+				return c.errf(e, "character variable %s: only character(len=:), allocatable is supported as an allocatable character", name)
 			}
 		}
 		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 && (elem == kStr || ss.Flags&sema.FOptional != 0) || ss.Flags&(sema.FOptional|sema.FPointer|sema.FAllocatable) != 0) {
@@ -626,6 +636,31 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		case k == kStr:
 			s.slot, s.clen = c.cur.nStrs, ss.Type.Len
 			c.cur.nStrs++
+			_, star := c.lenExpr.(*syntax.Asterisk)
+			if _, deferred := c.lenExpr.(*syntax.Triplet); deferred {
+				s.clen = -2
+			} else if s.clen < 0 && !star && c.lenExpr != nil && ss.Flags&sema.FDummy == 0 && !param {
+				// a length that is an expression of the unit's dummy arguments:
+				// character(len(x)) :: y
+				fn, err := c.intExpr(c.lenExpr)
+				if err != nil {
+					return err
+				}
+				s.cdyn, s.clslot = true, c.cur.nInts
+				c.cur.nInts++
+				slot, ls := s.slot, s.clslot
+				c.cur.init = append(c.cur.init, func(f *frame) {
+					n := fn(f)
+					if n < 0 {
+						n = 0
+					}
+					if n > MaxStringLen {
+						fail(f, "character length %d is out of range", n)
+					}
+					f.ints[ls] = n
+					f.strs[slot] = strings.Repeat(" ", int(n))
+				})
+			}
 			if !param && s.clen >= 0 && ss.Flags&sema.FDummy == 0 {
 				// a character variable is blank until it is assigned
 				blank := strings.Repeat(" ", int(min(s.clen, MaxStringLen)))
@@ -1176,6 +1211,9 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	if s.ga {
 		return c.gaIndex(n, id, s)
 	}
+	if s.k == kStr {
+		return c.substring(n, id)
+	}
 	if s.k != kArr {
 		return nil, c.errf(n, "%s is not an array", id.Name)
 	}
@@ -1258,7 +1296,7 @@ func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, err
 	}
 	args := make([]*ex, len(n.Args))
 	for i, a := range n.Args {
-		if a.Value == nil || (a.Keyword != "" && !(name == "index" && a.Keyword == "back" && i == 2)) {
+		if a.Value == nil || (a.Keyword != "" && !((name == "index" || name == "scan" || name == "verify") && a.Keyword == "back" && i == 2)) {
 			return nil, c.errf(n, "keyword arguments of intrinsics are not supported")
 		}
 		v, err := c.expr(a.Value)
@@ -1283,6 +1321,8 @@ func (c *compiler) intrinsicWith(n *syntax.Index, name string, tv sema.TV, args 
 		return nil
 	}
 	switch name {
+	case "merge", "scan", "verify":
+		return c.strIntrinsic2(n, name, args)
 	case "trim", "len", "len_trim", "adjustl", "adjustr", "index", "ichar", "iachar", "achar", "char":
 		return c.strIntrinsic(n, name, args)
 	case "iand", "ior", "ieor", "not", "ishft", "popcnt", "leadz", "trailz", "btest", "ibset", "ibclr", "poppar":
@@ -1600,11 +1640,8 @@ func (c *compiler) store(s *sym, v *ex, at syntax.Node) (stmtFn, error) {
 		fn := v.b
 		return func(f *frame) { f.ints[slot] = b2i(fn(f)) }, nil
 	case s.k == kStr && v.k == kStr:
-		fn, n := v.s, s.clen
-		if n < 0 { // an assumed-length dummy keeps the length it was associated with
-			return func(f *frame) { f.strs[slot] = fitLen(fn(f), int64(len(f.strs[slot]))) }, nil
-		}
-		return func(f *frame) { f.strs[slot] = fitLen(fn(f), n) }, nil
+		fn := v.s
+		return func(f *frame) { f.strs[slot] = s.fit(f, fn(f)) }, nil
 	case s.k == kReal && v.k != kArr && v.k != kLog:
 		fn := v.asReal().r
 		if s.kd == 4 && v.kd != 4 {
@@ -1647,6 +1684,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		sy, _, err := c.symOf(id)
 		if err == nil && sy.ga {
 			return c.assignGA(s, l, rhs, nil)
+		}
+		if err == nil && sy.k == kStr {
+			return c.assignSubstring(s, l, id, sy, rhs)
 		}
 		if err != nil || sy.k != kArr || sy.owner != c.cur {
 			return nil, c.errf(l, "%s is not an array of this unit", id.Name)

@@ -18,6 +18,22 @@ func fitLen(s string, n int64) string {
 	return s + strings.Repeat(" ", int(n-int64(len(s))))
 }
 
+// fit is x as an assignment gives it to the character variable s of frame f:
+// its length is declared, or that of the actual argument (character(*)), or
+// computed when the unit started, or deferred (the variable takes the length
+// of the value).
+func (s *sym) fit(f *frame, x string) string {
+	switch {
+	case s.clen >= 0:
+		return fitLen(x, s.clen)
+	case s.clen == -2:
+		return x
+	case s.cdyn:
+		return fitLen(x, f.ints[s.clslot])
+	}
+	return fitLen(x, int64(len(f.strs[s.slot])))
+}
+
 // strBinary compiles // and the relational operators on character operands (a
 // shorter operand is padded with blanks for the comparison: F2018 10.1.5.5.1).
 func (c *compiler) strBinary(n *syntax.Binary, x, y *ex) (*ex, error) {
