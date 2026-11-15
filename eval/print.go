@@ -18,12 +18,15 @@ type item func(*frame, []rt.Val) []rt.Val
 // logical and real scalar expressions, real(8) arrays and implied DO loops.
 func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
 	var unit syntax.Expr
-	var format syntax.Expr
+	var format, iostat syntax.Expr
 	nonAdv := false
 	switch s.Kind {
 	case "print":
 		format = s.Format
-	case "write":
+	case "write", "read":
+		if s.Kind == "read" && !s.HasCtrl {
+			return nil, c.errf(s, "READ from standard input is not supported")
+		}
 		pos := 0
 		for _, a := range s.Controls {
 			switch a.Keyword {
@@ -41,6 +44,8 @@ func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
 				unit = a.Value
 			case "fmt":
 				format = a.Value
+			case "iostat":
+				iostat = a.Value
 			case "advance":
 				lit, ok := a.Value.(*syntax.StringLit)
 				if !ok {
@@ -60,6 +65,7 @@ func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
 	default:
 		return nil, c.errf(s, "%s is not supported by the prototype", s.Kind)
 	}
+	internal := false
 	unitFn := intFn(func(*frame) int64 { return 6 })
 	switch u := unit.(type) {
 	case nil, *syntax.Asterisk:
@@ -68,12 +74,19 @@ func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
 		if err != nil {
 			return nil, err
 		}
-		if tv.Type.Basic != sema.Integer || tv.Rank != 0 {
-			return nil, c.errf(u, "the unit must be * or a scalar integer expression (internal files are not supported yet)")
-		}
-		if unitFn, err = c.intExpr(u); err != nil {
+		if tv.Type.Basic == sema.Character && tv.Rank == 0 {
+			internal = true
+		} else if tv.Type.Basic != sema.Integer || tv.Rank != 0 {
+			return nil, c.errf(u, "the unit must be *, a scalar integer expression or a character scalar (an internal file)")
+		} else if unitFn, err = c.intExpr(u); err != nil {
 			return nil, err
 		}
+	}
+	if s.Kind == "read" && !internal {
+		return nil, c.errf(s, "only READ from a character variable (an internal file) is supported")
+	}
+	if iostat != nil && !internal {
+		return nil, c.errf(iostat, "iostat= is supported on internal files only")
 	}
 	sp := rt.Spec{NonAdvancing: nonAdv}
 	switch f := format.(type) {
@@ -90,6 +103,9 @@ func (c *compiler) print(s *syntax.IOStmt) (stmtFn, error) {
 			return nil, c.errf(f, "%v", err)
 		}
 		sp.Format, sp.HasFormat = tv.Const.S, true
+	}
+	if internal {
+		return c.internalIO(s, unit, sp, iostat)
 	}
 	items := make([]item, len(s.Items))
 	for i, it := range s.Items {

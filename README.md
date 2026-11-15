@@ -82,11 +82,10 @@ copies are listed in the package documentation (`go doc ./rt`): `F0.d` prints
 `.50`, `E0.d` an E+000 exponent, `G8.1` of 0.95 is `1.`, `I5.8` is refused, `A`
 and `L` accept integers, a repeat count cannot cross kinds on input, and so on.
 `testdata/programs/formatted_output.f90` is reproduced on rt
-(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 12 and
+(`TestGoldenFormattedOutput`); of the 14 golden programs, `eval` runs 13 and
 they are byte-identical to their goldens (stdout, stderr, exit status); the
-other 2 use derived types, and character variables of non-constant length,
-substrings and internal files (M3-A parts 5 and 6), `TestGoldenPrograms` counts
-the runs and the refusals.
+other one uses derived types (M3-A part 6), `TestGoldenPrograms` counts the
+runs and the refusals.
 
 ### Performance
 
@@ -635,8 +634,14 @@ go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
   transpose, matmul, dot_product, pack, spread, cshift and eoshift (rank 1).
   The real(8) arrays of rank 1 and 2 declared with bounds 1 that the gate
   kernels use keep their go-ndarray storage and are not mixed with the general
-  arrays in one expression. Still refused: derived types, character
-  variables of non-constant length, character arrays and substrings, complex
+  arrays in one expression. Part 5 (v0.15.0) added substrings (read and
+  assigned), character variables whose length is an expression of the dummy
+  arguments (`character(len(x)) :: y`), `character(len=:), allocatable`
+  (reallocated on assignment), merge, scan, verify, and internal files: WRITE
+  to and READ from a character variable, list-directed or formatted, scalar
+  integer, real, logical and character items, with `iostat=` (the iostat
+  values are the runtime's, libgfortran's). Still refused: derived types,
+  character arrays, READ from a unit, complex
   variables, vector subscripts, `elsewhere`, a dim= or mask= argument of a
   reduction, optional arguments, an initialised local variable of a procedure
   (it is saved between calls), host- and module-associated arrays, internal

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("program p\n  implicit none\n  character(len=10) :: t\n  character(len=:), allocatable :: u\n  integer :: n, ios\n  t = 'abcdef'\n  u = t(2:4) // merge('x', 'y', t(1:1) == 'a')\n  write (t, '(i0,1x,a)') 42, u\n  read (t, *, iostat = ios) n\n  print *, n, ios, len(u), scan(t, 'xyz'), verify(t, '0123456789 ')\nend program p\n")

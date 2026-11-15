@@ -94,9 +94,8 @@ contains
   end subroutine show
 end program p
 `)
-	var e *Error
-	if !errors.As(err, &e) {
-		t.Fatalf("accepted (err %v)", err)
+	if err != nil {
+		t.Fatal(err) // substrings are supported since part 5
 	}
 }
 
@@ -153,8 +152,7 @@ func TestPart3Refusals(t *testing.T) {
 		"module of another file": "program p\n  use ieee_arithmetic\n  implicit none\nend program p\n",
 		"derived type":           "module m\n  type t\n    integer :: a\n  end type t\nend module m\nprogram p\n  use m\n  implicit none\nend program p\n",
 		"character array":        "program p\n  implicit none\n  character(len=3) :: a(2)\nend program p\n",
-		"deferred length":        "program p\n  implicit none\n  character(len=:), allocatable :: a\nend program p\n",
-		"substring":              "program p\n  implicit none\n  character(len=3) :: a\n  a = 'abc'\n  a = a(1:2)\nend program p\n",
+		"pointer character":      "program p\n  implicit none\n  character(len=3), pointer :: a\nend program p\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := compile(t, src)

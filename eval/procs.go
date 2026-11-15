@@ -228,14 +228,10 @@ func (c *compiler) hostStore(s *sym, v *ex, n int, at syntax.Node) (stmtFn, erro
 		fn := v.b
 		return func(f *frame) { x := fn(f); f.hop(n).ints[slot] = b2i(x) }, nil
 	case s.k == kStr && v.k == kStr:
-		fn, ln := v.s, s.clen
+		fn := v.s
 		return func(f *frame) {
 			x, h := fn(f), f.hop(n)
-			if ln < 0 {
-				h.strs[slot] = fitLen(x, int64(len(h.strs[slot])))
-			} else {
-				h.strs[slot] = fitLen(x, ln)
-			}
+			h.strs[slot] = s.fit(h, x)
 		}, nil
 	case s.k == kReal && (v.k == kReal || v.k == kInt):
 		fn := v.asReal().r
