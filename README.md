@@ -6,6 +6,11 @@ in the browser through WebAssembly: it will back the ` ```fortran ` cells of
 [go-notebook](https://github.com/go-notebook), as
 [go-embedded-c/c](https://github.com/go-embedded-c/c) backs its C cells.
 
+[Landing](https://go-embedded-fortran.github.io/) ·
+[Documentation](https://go-embedded-fortran.github.io/docs/) ·
+[Brand](https://github.com/go-embedded-fortran/brand) ·
+[Organisation](https://github.com/go-embedded-fortran)
+
 The plan is [go-scikit/roadmap `bib/fortran.md`](https://github.com/go-scikit/roadmap/blob/main/bib/fortran.md).
 Every stage is checked against a reference, never against expectations written
 by hand.
@@ -712,7 +717,8 @@ statements.
 - The flang path is not exercised in CI, and the Linux memory limit is tested
   only in CI (the development machine is macOS).
 - Reading soypat/go-fortran in depth (bib §10, M0) is not done.
-- The org landing page and the docs site wait for M5; this README is the only
-  user-facing page at M0.
+- The org's landing page, documentation and brand exist (see the links at the
+  top); they state what this README states, at v0.16.0, and this README stays
+  the source of truth.
 
 Licence: BSD 3-Clause (see `LICENSE`, and `NOTICE` for what is only run).
