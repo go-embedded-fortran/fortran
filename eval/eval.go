@@ -348,11 +348,13 @@ type ex struct {
 	ci   int64
 	cr   float64
 	slot int // >= 0 when the expression is a plain scalar variable
-	// aff is set when an integer expression is ints[avs]+avo of this frame
+	// aff is set when an integer expression is ints[avs]+avo of the frame avh
+	// static links up (see hops; 0: this frame)
 	// (a variable, or a variable plus or minus a constant): a subscript of that
 	// shape is read without a call (see idx).
 	aff  bool
 	avs  int
+	avh  int
 	avo  int64
 	rank int
 
@@ -1174,7 +1176,7 @@ func (c *compiler) intBinary(n *syntax.Binary, x, y *ex) (*ex, error) {
 	}
 	r := &ex{k: kInt, slot: -1, i: fn}
 	if x.aff && y.isC && (n.Op == "+" || n.Op == "-") {
-		r.aff, r.avs, r.avo = true, x.avs, x.avo+y.ci
+		r.aff, r.avs, r.avh, r.avo = true, x.avs, x.avh, x.avo+y.ci
 		if n.Op == "-" {
 			r.avo = x.avo - y.ci
 		}
@@ -1191,7 +1193,7 @@ type idx struct {
 }
 
 func newIdx(e *ex) idx {
-	if e.aff {
+	if e.aff && e.avh == 0 {
 		return idx{s: e.avs, o: e.avo}
 	}
 	return idx{s: -1, fn: e.i}

@@ -216,7 +216,7 @@ func hostRead(s *sym, n int) *ex {
 	case kStr:
 		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return f.hop(n).strs[slot] }}
 	case kInt:
-		return &ex{k: kInt, kd: s.kd, slot: -1, i: func(f *frame) int64 { return f.hop(n).ints[slot] }}
+		return &ex{k: kInt, kd: s.kd, slot: -1, aff: true, avs: slot, avh: n, i: func(f *frame) int64 { return f.hop(n).ints[slot] }}
 	case kLog:
 		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.hop(n).ints[slot] != 0 }}
 	}

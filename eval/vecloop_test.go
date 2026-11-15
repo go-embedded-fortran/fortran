@@ -161,3 +161,86 @@ func TestBudgetSpend(t *testing.T) {
 		b.spend(10 * chunk)
 	}()
 }
+
+// Loops whose variable, arrays or accumulator live outside the frame that runs
+// them (notebook cells, whose variables are a module's, and an internal
+// procedure over its host's variables) take the kernels too.
+func TestStripKernelsOutsideTheFrame(t *testing.T) {
+	cells := []string{
+		"real(8) :: a(2000), b(2000), s, t\ninteger :: i, m\nm = 3\n",
+		"do i = 1, 2000\n  b(i) = sin(real(i, 8))\nend do\n",
+		"do i = 1, 2000\n  a(i) = 2d0*b(i) + 1d0\nend do\n",
+		"s = 0d0\ndo i = 1, 2000\n  s = s + a(i)*b(i)\nend do\n",
+		"do i = 1, 1990\n  a(i+m) = a(i+m) + b(i)\nend do\n",
+		"t = 0d0\ndo i = 1, 2000\n  t = t + 1d0/real(i, 8)**2\nend do\nprint '(3es24.16)', s, t, sum(a)\n",
+	}
+	session := func(off bool) (string, int64) {
+		disableVec = off
+		defer func() { disableVec = false }()
+		s := NewSession(SessionOptions{})
+		var out, errb bytes.Buffer
+		before := atomic.LoadInt64(&vecHits)
+		for _, c := range cells {
+			if _, err := s.Run(context.Background(), c, &out, &errb); err != nil {
+				t.Fatalf("cell %q: %v", c, err)
+			}
+		}
+		return out.String(), atomic.LoadInt64(&vecHits) - before
+	}
+	plain, _ := session(true)
+	vec, hits := session(false)
+	if plain != vec || plain == "" {
+		t.Fatalf("cells differ\nordinary: %q\nkernel:   %q", plain, vec)
+	}
+	if hits < 5 {
+		t.Errorf("%d kernel runs in the cells, want 5", hits)
+	}
+
+	// an internal procedure over its host's variables
+	src := `program p
+  implicit none
+  integer :: i
+  real(8) :: a(1000), b(1000), s
+  b = 0.5d0
+  call work()
+  print '(2es24.16)', s, sum(a)
+contains
+  subroutine work()
+    integer :: k
+    do i = 1, 1000
+      a(i) = b(i)*real(i, 8)
+    end do
+    s = 0d0
+    do i = 1, 1000
+      s = s + a(i)*1d-3
+    end do
+    do k = 1, 1000
+      a(k) = a(k) - b(k)
+    end do
+  end subroutine work
+end program p
+`
+	pl, ve, h := runBoth(t, src)
+	if pl != ve || h < 3 {
+		t.Fatalf("host-associated: kernels %d, ordinary %q, kernel %q", h, pl, ve)
+	}
+}
+
+// A kernel loop in a cell is charged to the cell's step budget and refused when
+// it spends it, as the ordinary loop is.
+func TestStripKernelInCellChargesTheBudget(t *testing.T) {
+	s := NewSession(SessionOptions{MaxSteps: 1 << 17})
+	var out, errb bytes.Buffer
+	if _, err := s.Run(context.Background(), "real(8) :: a(400000), b(400000)\ninteger :: i\nb = 1d0\n", &out, &errb); err != nil {
+		t.Fatal(err)
+	}
+	before := atomic.LoadInt64(&vecHits)
+	_, err := s.Run(context.Background(), "do i = 1, 400000\n  a(i) = b(i) + 1d0\nend do\n", &out, &errb)
+	var ee *Error
+	if !errors.As(err, &ee) || !strings.Contains(ee.Msg, "step limit") {
+		t.Fatalf("error %v, want the step limit", err)
+	}
+	if atomic.LoadInt64(&vecHits) == before {
+		t.Errorf("the loop did not run as a kernel")
+	}
+}
