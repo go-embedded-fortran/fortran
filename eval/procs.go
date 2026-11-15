@@ -354,6 +354,7 @@ func (c *compiler) invoker(at syntax.Node, p *procCode, args []syntax.Arg) (func
 			binds[i].set(f, cf)
 		}
 		p.run(cf)
+		f.bud.exit(cf)
 		f.copied += cf.copied
 		for i := range binds {
 			if binds[i].back != nil {

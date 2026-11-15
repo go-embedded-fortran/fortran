@@ -226,17 +226,21 @@ func (c *compiler) compDefault(dc *dcomp, e syntax.Expr) (func(*frame) cv, error
 	return nil, c.errf(e, "the default of component %s is not supported", dc.name)
 }
 
-func (t *dtype) newObj(f *frame) *dobj {
+// newObj makes an object of type t. Its storage is charged to the frame own
+// (a variable's), or only checked when own is nil (a temporary: the value of a
+// structure constructor).
+func (t *dtype) newObj(f *frame, own *frame) *dobj {
+	f.bud.charge(f, own, t.objBytes()) // before anything of the object is allocated
 	o := &dobj{t: t, v: make([]cv, len(t.comps))}
 	for i, dc := range t.comps {
 		switch dc.k {
 		case kStr:
 			o.v[i].s = strings.Repeat(" ", int(min(dc.clen, MaxStringLen)))
 		case kD:
-			o.v[i].d = dc.dt.newObj(f)
+			o.v[i].d = dc.dt.newObj(f, own)
 		case kGA:
 			if !dc.alloc {
-				o.v[i].g = newGarr(f, dc.et, dc.kd, append([]int64(nil), dc.lb...), append([]int(nil), dc.ext...))
+				o.v[i].g = f.bud.retain(f, own, newGarr(f, dc.et, dc.kd, append([]int64(nil), dc.lb...), append([]int(nil), dc.ext...)))
 			}
 		}
 		if dc.def != nil {
@@ -246,7 +250,8 @@ func (t *dtype) newObj(f *frame) *dobj {
 				o.v[i].s = ""
 			}
 			if d.g != nil {
-				o.v[i].g = d.g
+				f.bud.release(o.v[i].g)
+				o.v[i].g = f.bud.retain(f, own, d.g)
 			}
 		}
 	}
@@ -255,16 +260,18 @@ func (t *dtype) newObj(f *frame) *dobj {
 
 // assign copies the value of src into o (intrinsic assignment of a derived
 // type: component by component, allocatable arrays are copied).
-func (o *dobj) assign(src *dobj) {
+func (o *dobj) assign(f *frame, src *dobj) {
 	for i, dc := range o.t.comps {
 		switch dc.k {
 		case kD:
-			o.v[i].d.assign(src.v[i].d)
+			o.v[i].d.assign(f, src.v[i].d)
 		case kGA:
+			f.bud.release(o.v[i].g)
 			if src.v[i].g == nil {
 				o.v[i].g = nil
 			} else {
-				o.v[i].g = src.v[i].g.clone()
+				f.bud.peek(f, garrBytes(src.v[i].g.size()))
+				o.v[i].g = f.bud.retain(f, f, src.v[i].g.clone())
 			}
 		default:
 			o.v[i] = src.v[i]
@@ -329,7 +336,7 @@ func (c *compiler) declD(ss *sema.Symbol, e syntax.Node, s *sym, init syntax.Exp
 		c.cur.nDs++
 		s.slot = slot
 		if ss.Flags&sema.FDummy == 0 {
-			c.cur.init = append(c.cur.init, func(f *frame) { f.dobjs[slot] = dt.newObj(f) })
+			c.cur.init = append(c.cur.init, func(f *frame) { f.dobjs[slot] = dt.newObj(f, f) })
 		}
 		if init != nil {
 			x, err := c.expr(init)
@@ -340,7 +347,7 @@ func (c *compiler) declD(ss *sema.Symbol, e syntax.Node, s *sym, init syntax.Exp
 				return c.errf(e, "the initialisation is not a value of type %s", dt.name)
 			}
 			fn := x.d
-			c.cur.init = append(c.cur.init, func(f *frame) { f.dobjs[slot].assign(fn(f)) })
+			c.cur.init = append(c.cur.init, func(f *frame) { f.dobjs[slot].assign(f, fn(f)) })
 		}
 		c.syms[ss] = s
 		return nil
@@ -364,9 +371,10 @@ func (c *compiler) declD(ss *sema.Symbol, e syntax.Node, s *sym, init syntax.Exp
 	c.cur.nDAs++
 	dslot := s.slot
 	c.cur.init = append(c.cur.init, func(f *frame) {
+		f.bud.charge(f, f, 8*int64(n)) // the slots, before they are allocated
 		a := make([]*dobj, n)
 		for i := range a {
-			a[i] = dt.newObj(f)
+			a[i] = dt.newObj(f, f)
 		}
 		f.das[dslot] = a
 	})
@@ -525,7 +533,7 @@ func (c *compiler) assignDerived(at syntax.Node, lhs syntax.Expr, rhs *ex) (stmt
 		return nil, c.errf(at, "this assignment of a derived type is not supported")
 	}
 	d, s := dst.d, rhs.d
-	return func(f *frame) { d(f).assign(s(f)) }, nil
+	return func(f *frame) { d(f).assign(f, s(f)) }, nil
 }
 
 func (c *compiler) assignScalarComp(at syntax.Node, o func(*frame) *dobj, dc *dcomp, i int, rhs *ex) (stmtFn, error) {
@@ -604,7 +612,7 @@ func (c *compiler) structCons(n *syntax.Index, sd *sema.DerivedType) (*ex, error
 				return nil, c.errf(a.Value, "component %s is of type %s", dc.name, dc.dt.name)
 			}
 			fn := x.d
-			sets = append(sets, func(f *frame, o *dobj) { o.v[i].d.assign(fn(f)) })
+			sets = append(sets, func(f *frame, o *dobj) { o.v[i].d.assign(f, fn(f)) })
 		case kGA:
 			if x.k != kGA {
 				return nil, c.errf(a.Value, "component %s is an array", dc.name)
@@ -617,7 +625,8 @@ func (c *compiler) structCons(n *syntax.Index, sd *sema.DerivedType) (*ex, error
 					a, b := src.at(k)
 					g.put(k, a, b)
 				}
-				o.v[i].g = g
+				f.bud.release(o.v[i].g)
+				o.v[i].g = f.bud.retain(f, f, g)
 			})
 		default:
 			set, err := c.assignScalarComp(a.Value, func(f *frame) *dobj { return f.tmpObj }, dc, i, x)
@@ -633,7 +642,7 @@ func (c *compiler) structCons(n *syntax.Index, sd *sema.DerivedType) (*ex, error
 		}
 	}
 	return &ex{k: kD, slot: -1, dt: dt, d: func(f *frame) *dobj {
-		o := dt.newObj(f)
+		o := dt.newObj(f, nil)
 		for _, s := range sets {
 			s(f, o)
 		}

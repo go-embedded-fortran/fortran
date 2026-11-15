@@ -29,6 +29,11 @@ type garr struct {
 	ext []int
 	i   []int64   // kInt and kLog (0 or 1)
 	r   []float64 // kReal
+
+	// chg is what the array was charged, and own the frame it was charged to
+	// (zero and nil for a temporary: see memory.go).
+	chg int64
+	own *frame
 }
 
 func (g *garr) size() int {
@@ -53,7 +58,7 @@ func newGarr(f *frame, et kind, kd int, lb []int64, ext []int) *garr {
 		}
 		n *= e
 	}
-	f.bud.checkAlloc(f, 8*int64(n))
+	f.bud.peek(f, garrBytes(n))
 	g := &garr{et: et, kd: kd, lb: lb, ext: ext}
 	if et == kReal {
 		g.r = make([]float64, n)
@@ -270,6 +275,17 @@ type gref struct {
 	kd    int
 	rank  int
 	alloc bool
+	// own is the frame the array's storage is charged to: the one that holds the
+	// variable (nil: the running one). See memory.go.
+	own func(*frame) *frame
+}
+
+// owner is the frame the array of r is charged to.
+func (r *gref) owner(f *frame) *frame {
+	if r.own != nil {
+		return r.own(f)
+	}
+	return f
 }
 
 func (r *gref) get(f *frame) *garr {
@@ -287,7 +303,7 @@ func (c *compiler) symRef(id *syntax.Ident, s *sym) (*gref, error) {
 		return nil, err
 	}
 	slot := s.slot
-	return &gref{ptr: func(f *frame) **garr { return &f.at(h).gas[slot] }, name: id.Name, et: s.et, kd: s.kd, rank: s.rank, alloc: s.alloc}, nil
+	return &gref{ptr: func(f *frame) **garr { return &f.at(h).gas[slot] }, own: func(f *frame) *frame { return f.at(h) }, name: id.Name, et: s.et, kd: s.kd, rank: s.rank, alloc: s.alloc}, nil
 }
 
 func (c *compiler) gaVar(id *syntax.Ident, s *sym) (gaFn, error) {
@@ -341,7 +357,7 @@ func (c *compiler) declGA(ss *sema.Symbol, e syntax.Node, s *sym, k kind) error 
 	}
 	slot, kd := s.slot, s.kd
 	c.cur.init = append(c.cur.init, func(f *frame) {
-		f.gas[slot] = newGarr(f, k, kd, append([]int64(nil), lb...), append([]int(nil), ext...))
+		f.gas[slot] = f.bud.retain(f, f, newGarr(f, k, kd, append([]int64(nil), lb...), append([]int(nil), ext...)))
 	})
 	return nil
 }
@@ -467,7 +483,8 @@ func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn)
 		if whole && alloc && src != nil {
 			// an allocatable array takes the shape of the value (F2018 10.2.1.3)
 			if d := *ref.ptr(f); d == nil || !sameShape(d.ext, src.ext) {
-				*ref.ptr(f) = newGarr(f, ref.et, ref.kd, ones(len(src.ext)), append([]int(nil), src.ext...))
+				f.bud.release(d)
+				*ref.ptr(f) = f.bud.retain(f, ref.owner(f), newGarr(f, ref.et, ref.kd, ones(len(src.ext)), append([]int(nil), src.ext...)))
 			}
 		}
 		if dst = *ref.ptr(f); dst == nil {
@@ -547,7 +564,10 @@ func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr) (stmtFn, error)
 		return nil, c.errf(o, "%s is not allocatable", ref.name)
 	}
 	if a.Dealloc {
-		return func(f *frame) { *ref.ptr(f) = nil }, nil
+		return func(f *frame) {
+			f.bud.release(*ref.ptr(f))
+			*ref.ptr(f) = nil
+		}, nil
 	}
 	if ix == nil || len(ix.Args) != ref.rank {
 		return nil, c.errf(o, "%s has rank %d", ref.name, ref.rank)
@@ -594,7 +614,7 @@ func (c *compiler) allocateGA(a *syntax.Allocate, o syntax.Expr) (stmtFn, error)
 				ext[d] = int(n)
 			}
 		}
-		*ref.ptr(f) = newGarr(f, et, kd, lb, ext)
+		*ref.ptr(f) = f.bud.retain(f, ref.owner(f), newGarr(f, et, kd, lb, ext))
 	}, nil
 }
 
