@@ -579,7 +579,9 @@ mixes declarations, statements and program units. A cell is then split:
 
 `CellInfo` carries what go-notebook's graph needs: `Defines` (variables and
 named constants: the names that cross, `Crosses`), `Procedures`, `Types` and
-`Modules` (they stay Fortran's), `Uses` (earlier cells' names this cell reads),
+`Modules` (they stay Fortran's), `Uses` (earlier cells' names this cell reads,
+including the derived types its declarations name and the modules its `use`
+statements name, not only the names in expressions),
 `Errors`, and what the back ends need: the transformed `File` and its `Info`.
 `sema.GoType` is the values table of bib §7 (`integer(k)` to `int8..int64`,
 `real` to `float32|float64`, `complex(4|8)` to `complex64|complex128`,
