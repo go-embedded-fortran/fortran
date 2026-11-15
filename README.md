@@ -617,6 +617,13 @@ statements.
   ends with `step limit reached` or the context's error (`errors.Is(err,
   context.DeadlineExceeded)`); the count, not a timer, is what holds in
   WebAssembly. `MaxArrayElems`, `MaxStringLen` and `MaxCallDepth` apply per run.
+  `MaxCallDepth` is 2^15 natively and 200 under `js` and `wasip1`: the host's
+  call stack is shallow (Chromium's default overflows between 600 and 2500
+  nested calls, by the statements around the call) and an overflow there is a
+  RangeError that kills the whole instance. `SessionOptions.MaxAlloc` bounds the
+  Go heap: an array of 64 KiB or more that would take it past the bound, after a
+  collection, is refused before it is allocated (zero is no bound; the heap is
+  the process's, so a host sharing it sets the bound above what the others hold).
   The budget costs 0.45 ns on a 2.85 ns scalar DO iteration (Apple M4 Max,
   `BenchmarkDoLoop`). A Go panic inside the evaluator is returned as an error,
   not raised.
@@ -652,7 +659,7 @@ statements.
   variables through the frame's static link) and external ones of the same
   file, with scalar integer, real and logical dummy arguments (copy-in,
   copy-out for a variable actual that is not `intent(in)`; keyword arguments),
-  `result(r)`, `recursive` (bounded by `MaxCallDepth`, 2^15 nested calls: a
+  `result(r)`, `recursive` (bounded by `MaxCallDepth`, 2^15 nested calls natively, 200 in WebAssembly: a
   deeper call is a run-time error), `return`, and the bit functions (iand,
   ior, ieor, not, ishft, popcnt, poppar, leadz, trailz, btest, ibset, ibclr).
   Part 3 (v0.13.0) added modules of the file (variables with initial values and

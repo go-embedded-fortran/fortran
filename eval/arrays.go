@@ -53,6 +53,7 @@ func newGarr(f *frame, et kind, kd int, lb []int64, ext []int) *garr {
 		}
 		n *= e
 	}
+	f.bud.checkAlloc(f, 8*int64(n))
 	g := &garr{et: et, kd: kd, lb: lb, ext: ext}
 	if et == kReal {
 		g.r = make([]float64, n)

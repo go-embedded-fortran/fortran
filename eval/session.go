@@ -25,6 +25,13 @@ type SessionOptions struct {
 	MaxSteps int64
 	// Limits bound what the analyser accepts of a cell's source.
 	Limits sema.Limits
+	// MaxAlloc bounds the Go heap, in bytes, that an array of 64 KiB or more may
+	// grow: such an allocation that would take the heap past it, after a
+	// collection, is refused with an error before anything is allocated. Zero is
+	// no bound. It is the process's heap, not only this session's, so a host
+	// that shares the process with other runtimes sets it above what they hold
+	// (the playground: 512 MiB, R's bound).
+	MaxAlloc int64
 }
 
 // DefaultMaxSteps is the step bound of a cell: about a minute of the
@@ -90,7 +97,9 @@ func (s *Session) Run(ctx context.Context, src string, out, stderr io.Writer) (s
 	if max == 0 {
 		max = DefaultMaxSteps
 	}
-	f := &frame{out: out, tab: tab, start: time.Now(), bud: newBudget(ctx, max)}
+	bud := newBudget(ctx, max)
+	bud.maxHeap = s.opt.MaxAlloc
+	f := &frame{out: out, tab: tab, start: time.Now(), bud: bud}
 	first := len(s.mods)
 	for _, m := range c.modules[first:] { // every new module's frame exists before any initialisation runs
 		s.mods = append(s.mods, m.newFrame(nil, nil))
