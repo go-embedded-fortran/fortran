@@ -264,3 +264,41 @@ func TestBudgetResetsTheTemporariesOfARepeatedExpression(t *testing.T) {
 		t.Errorf("eight live 32 MB temporaries in 100 MiB: %v", err)
 	}
 }
+
+// The paths the audit of runtimeAllocs (allocs_test.go) found allocating outside
+// the budget: the elements an array constructor accumulates, and the subscripts
+// and offsets of a section; a whole-array assignment no longer builds offsets at
+// all, and pack no longer keeps an intermediate list.
+func TestBudgetCoversConstructorsAndSections(t *testing.T) {
+	run := func(maxAlloc int64, src string) (string, error) {
+		var out strings.Builder
+		_, err := NewSession(SessionOptions{MaxAlloc: maxAlloc}).Run(context.Background(), src, &out, io.Discard)
+		return strings.TrimSpace(out.String()), err
+	}
+	// go-notebook's case: 268 copies of an 8 MB array, about 2 GiB, in one
+	// constructor (assigned, so that it is built: size() of it may not build it)
+	if _, err := run(100<<20, "integer :: b(1000000), j\ninteger, allocatable :: c(:)\nb = 1\nc = [(b, j = 1, 268)]\n"); !memErr(err) {
+		t.Errorf("a 2 GiB constructor under 100 MiB: %v", err)
+	}
+	// a constructor that fits runs
+	if out, err := run(100<<20, "integer :: b(1000), j, n\nb = 1\nn = size([(b, j = 1, 10)])\nprint *, n\n"); err != nil || out != "10000" {
+		t.Errorf("a small constructor: %q, %v", out, err)
+	}
+	// a section target of 32 MB costs its subscripts and offsets (2 x 32 MB) on
+	// top of the 32 MB array: refused under 50 MiB
+	if _, err := run(50<<20, "integer :: g(4000000)\ng(1:4000000) = 1\n"); !memErr(err) {
+		t.Errorf("a 32 MB section assignment under 50 MiB: %v", err)
+	}
+	// the whole array builds no offsets: the same array, assigned whole, runs
+	if out, err := run(50<<20, "integer :: g(4000000)\ng = 1\nprint *, sum(g(1:4))\n"); err != nil || out != "4" {
+		t.Errorf("a whole-array assignment of 32 MB under 50 MiB: %q, %v", out, err)
+	}
+	// sections in a loop of one statement each do not accumulate
+	if out, err := run(50<<20, "integer :: g(4000000), i\ng = 0\ndo i = 1, 100000\n  g(1:10) = i\nend do\nprint *, g(10)\n"); err != nil || out != "100000" {
+		t.Errorf("100000 section assignments under 50 MiB: %q, %v", out, err)
+	}
+	// pack copies straight into its result
+	if out, err := run(0, "integer :: v(6)\nv = [1, 2, 3, 4, 5, 6]\nprint *, pack(v, v > 3)\n"); err != nil || strings.Join(strings.Fields(out), " ") != "4 5 6" {
+		t.Errorf("pack: %q, %v", out, err)
+	}
+}
