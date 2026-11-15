@@ -23,7 +23,8 @@ type RunVerdict string
 
 // The verdicts of the execution differential.
 const (
-	RunSame     RunVerdict = "identical"       // stdout, stderr and exit status equal
+	RunSame     RunVerdict = "identical"       // stdout, stderr and exit status equal, and the status is 0
+	RunBothFail RunVerdict = "both-failed"     // stdout, stderr and exit status equal, and the status is not 0
 	RunDiffers  RunVerdict = "differs"         // eval ran it (or failed while running) and some of the three differ
 	RunRefused  RunVerdict = "refused-by-us"   // the analyser or the compiler of eval refused it: nothing ran
 	RunGfFailed RunVerdict = "gfortran-failed" // gfortran did not build it, or did not run it within the limits
@@ -95,6 +96,13 @@ func Classify(gf, ours Outcome) (RunVerdict, string) {
 		return RunDiffers, "stderr " + firstDiff(ours.Stderr, gf.Stderr)
 	case gf.Exit != ours.Exit:
 		return RunDiffers, fmt.Sprintf("exit %d, gfortran %d", ours.Exit, gf.Exit)
+	case gf.Exit != 0:
+		// The test stopped itself on both sides (a gfortran.dg test reports a
+		// failed check with STOP n): gfortran, the reference, failed it too,
+		// usually for want of the dg-options this differential does not pass.
+		// Agreeing with a failing reference proves nothing, so it is not
+		// counted as identical.
+		return RunBothFail, fmt.Sprintf("both exit %d", gf.Exit)
 	}
 	return RunSame, ""
 }
@@ -201,7 +209,7 @@ func RunReport(w io.Writer, recs []RunRec) {
 // CountRun counts the verdicts; every verdict is present, zero included, so a
 // report never hides a class by leaving it out.
 func CountRun(recs []RunRec) map[RunVerdict]int {
-	c := map[RunVerdict]int{RunSame: 0, RunDiffers: 0, RunRefused: 0, RunGfFailed: 0, RunSkipped: 0}
+	c := map[RunVerdict]int{RunSame: 0, RunBothFail: 0, RunDiffers: 0, RunRefused: 0, RunGfFailed: 0, RunSkipped: 0}
 	for _, r := range recs {
 		c[r.Verdict]++
 	}

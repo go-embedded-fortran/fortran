@@ -400,7 +400,8 @@ zero failures:
 
 | class | meaning |
 |---|---|
-| identical | stdout, stderr and exit status equal |
+| identical | stdout, stderr and exit status equal, and the status is 0 |
+| both-failed | the same, with a status that is not 0: the test stopped itself on both sides, so gfortran, the reference, failed it too (usually for want of the `dg-options` this differential does not pass) |
 | differs | `eval` ran it, or failed while running, and they are not |
 | refused-by-us | `eval`'s analyser or compiler refused it: nothing ran (`eval.Error.Refused`) |
 | gfortran-failed | gfortran did not build it, or did not run it within bounds |
@@ -425,6 +426,16 @@ differs, and none left identical. The 23 that differ are programs `eval` runs
 and gets wrong (most stop on their own self-check): they are listed, with the
 first differing line of each side as the report now gives it, in
 [#40](https://github.com/go-embedded-fortran/fortran/issues/40).
+
+**Identical used to count tests that failed on both sides.** Until this run,
+equal outputs with a nonzero exit status counted as identical: a gfortran.dg
+test that stops itself on a failed check (`STOP n`) on BOTH sides. The
+reference failed it too, usually because the differential does not pass the
+test's `dg-options` (`save_1` needs `-fno-automatic`). Such a file is now
+`both-failed`. On main at a53d3d9 (scalar pointers): 3151 files, **identical
+182**, both-failed 23, differs 23, refused-by-us 2172, gfortran-failed 434,
+skipped 317. So the identical counts above (192, 201) and in the pull requests
+up to v0.29.0 include tests that both sides failed.
 
 ## Semantic analysis (M2, part 1)
 

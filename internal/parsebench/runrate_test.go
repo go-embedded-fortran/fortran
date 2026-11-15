@@ -10,12 +10,16 @@ import (
 
 func TestClassify(t *testing.T) {
 	ok := Outcome{Stdout: []byte("1\n"), Stderr: []byte("STOP 2\n"), Exit: 2}
+	pass := Outcome{Stdout: []byte("1\n"), Exit: 0}
 	for _, tc := range []struct {
 		name     string
 		gf, ours Outcome
 		want     RunVerdict
 	}{
-		{"identical", ok, ok, RunSame},
+		{"identical", pass, pass, RunSame},
+		// equal, but the reference stopped itself: the test failed on both sides
+		{"both failed", ok, ok, RunBothFail},
+		{"a test gfortran fails and eval passes differs", ok, pass, RunDiffers},
 		{"gfortran failed wins over anything", Outcome{Failure: "x"}, Outcome{Refused: true, Failure: "y"}, RunGfFailed},
 		{"refused", ok, Outcome{Refused: true, Failure: "real(16) is not supported"}, RunRefused},
 		{"failed while running", ok, Outcome{Failure: "subscript out of range"}, RunDiffers},
@@ -73,7 +77,7 @@ func TestSkipReason(t *testing.T) {
 // Every class is in the count, zero included.
 func TestCountRunHasEveryClass(t *testing.T) {
 	c := CountRun(nil)
-	for _, v := range []RunVerdict{RunSame, RunDiffers, RunRefused, RunGfFailed, RunSkipped} {
+	for _, v := range []RunVerdict{RunSame, RunBothFail, RunDiffers, RunRefused, RunGfFailed, RunSkipped} {
 		if n, ok := c[v]; !ok || n != 0 {
 			t.Errorf("%s: %d, %v", v, n, ok)
 		}
