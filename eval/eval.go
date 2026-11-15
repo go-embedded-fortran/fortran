@@ -558,7 +558,7 @@ func (c *compiler) stmt(s syntax.Stmt, out *[]stmtFn) error {
 		}
 	case *syntax.AttrStmt:
 		switch s.Attr {
-		case "private", "public", "save":
+		case "private", "public", "save", "target": // target: see decl
 		default:
 			return c.errf(s, "the %s statement is not supported yet", s.Attr)
 		}
@@ -683,7 +683,9 @@ func (c *compiler) symOf(id *syntax.Ident) (*sym, *sema.Symbol, error) {
 func (c *compiler) decl(d *syntax.Decl) error {
 	for _, a := range d.Attrs {
 		switch a.Name {
-		case "parameter", "allocatable", "dimension", "intent", "value", "external", "private", "public", "save":
+		case "parameter", "allocatable", "dimension", "intent", "value", "external", "private", "public", "save",
+			"target": // only lets a pointer be associated with the variable; without pointers (refused) it changes nothing that runs
+
 		default:
 			return c.errf(d, "attribute %q is not supported", a.Name)
 		}
