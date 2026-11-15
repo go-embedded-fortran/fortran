@@ -331,6 +331,12 @@ type ex struct {
 	ci   int64
 	cr   float64
 	slot int // >= 0 when the expression is a plain scalar variable
+	// aff is set when an integer expression is ints[avs]+avo of this frame
+	// (a variable, or a variable plus or minus a constant): a subscript of that
+	// shape is read without a call (see idx).
+	aff  bool
+	avs  int
+	avo  int64
 	rank int
 
 	// array expressions that go-ndarray can write into an existing array.
@@ -1026,7 +1032,7 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		return e, nil
 	case s.k == kInt:
 		slot := s.slot
-		return &ex{k: kInt, kd: s.kd, slot: slot, i: func(f *frame) int64 { return f.ints[slot] }}, nil
+		return &ex{k: kInt, kd: s.kd, slot: slot, aff: true, avs: slot, i: func(f *frame) int64 { return f.ints[slot] }}, nil
 	case s.k == kLog:
 		slot := s.slot
 		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.ints[slot] != 0 }}, nil
@@ -1149,7 +1155,36 @@ func (c *compiler) intBinary(n *syntax.Binary, x, y *ex) (*ex, error) {
 	default:
 		fn = func(f *frame) int64 { return ipow(a(f), b(f)) }
 	}
-	return &ex{k: kInt, slot: -1, i: fn}, nil
+	r := &ex{k: kInt, slot: -1, i: fn}
+	if x.aff && y.isC && (n.Op == "+" || n.Op == "-") {
+		r.aff, r.avs, r.avo = true, x.avs, x.avo+y.ci
+		if n.Op == "-" {
+			r.avo = x.avo - y.ci
+		}
+	}
+	return r, nil
+}
+
+// idx is a compiled subscript: ints[s]+o when s >= 0, else fn(f). The common
+// subscripts (i, i-1, i+1) are a load and an add, not a closure call.
+type idx struct {
+	s  int
+	o  int64
+	fn intFn
+}
+
+func newIdx(e *ex) idx {
+	if e.aff {
+		return idx{s: e.avs, o: e.avo}
+	}
+	return idx{s: -1, fn: e.i}
+}
+
+func (x *idx) get(f *frame) int64 {
+	if x.s >= 0 {
+		return f.ints[x.s] + x.o
+	}
+	return x.fn(f)
 }
 
 // powInt is x**k for a constant integer k.
@@ -1334,7 +1369,7 @@ func (c *compiler) element(n *syntax.Index, name string, s *sym) (*ex, error) {
 	if len(n.Args) != s.rank {
 		return nil, c.errf(n, "%s has rank %d, subscripted with %d", name, s.rank, len(n.Args))
 	}
-	var ix [2]intFn
+	var ix [2]idx
 	for i, a := range n.Args {
 		if a.Keyword != "" || a.Value == nil {
 			return nil, c.errf(n, "a keyword or alternate-return subscript is not supported")
@@ -1342,18 +1377,21 @@ func (c *compiler) element(n *syntax.Index, name string, s *sym) (*ex, error) {
 		if _, sec := a.Value.(*syntax.Triplet); sec {
 			return nil, c.errf(n, "array sections are not supported")
 		}
-		fn, err := c.intExpr(a.Value)
+		e, err := c.expr(a.Value)
 		if err != nil {
 			return nil, err
 		}
-		ix[i] = fn
+		if e.k != kInt {
+			return nil, c.errf(a.Value, "an integer expression is required")
+		}
+		ix[i] = newIdx(e)
 	}
 	slot := s.slot
 	h, err := c.hops(s, n)
 	if err != nil {
 		return nil, err
 	}
-	i0, i1 := ix[0], ix[1]
+	i0, i1 := &ix[0], &ix[1]
 	var fn realFn
 	if s.rank == 1 {
 		fn = func(f *frame) float64 {
@@ -1361,7 +1399,7 @@ func (c *compiler) element(n *syntax.Index, name string, s *sym) (*ex, error) {
 			if a == nil {
 				unallocated(f, name)
 			}
-			i := i0(f) - 1
+			i := i0.get(f) - 1
 			if uint64(i) >= uint64(a.n1) {
 				bounds(f, name, 1, i+1, a.n1)
 			}
@@ -1373,7 +1411,7 @@ func (c *compiler) element(n *syntax.Index, name string, s *sym) (*ex, error) {
 			if a == nil {
 				unallocated(f, name)
 			}
-			i, j := i0(f)-1, i1(f)-1
+			i, j := i0.get(f)-1, i1.get(f)-1
 			if uint64(i) >= uint64(a.n1) {
 				bounds(f, name, 1, i+1, a.n1)
 			}
@@ -1819,20 +1857,23 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 }
 
 func (c *compiler) assignElement(l *syntax.Index, name string, s *sym, val realFn) (stmtFn, error) {
-	var ix [2]intFn
+	var ix [2]idx
 	for i, a := range l.Args {
-		fn, err := c.intExpr(a.Value)
+		e, err := c.expr(a.Value)
 		if err != nil {
 			return nil, err
 		}
-		ix[i] = fn
+		if e.k != kInt {
+			return nil, c.errf(l, "an integer expression is required")
+		}
+		ix[i] = newIdx(e)
 	}
 	slot := s.slot
 	h, err := c.hops(s, l)
 	if err != nil {
 		return nil, err
 	}
-	i0, i1 := ix[0], ix[1]
+	i0, i1 := &ix[0], &ix[1]
 	if s.rank == 1 {
 		return func(f *frame) {
 			v := val(f)
@@ -1840,7 +1881,7 @@ func (c *compiler) assignElement(l *syntax.Index, name string, s *sym, val realF
 			if a == nil {
 				unallocated(f, name)
 			}
-			i := i0(f) - 1
+			i := i0.get(f) - 1
 			if uint64(i) >= uint64(a.n1) {
 				bounds(f, name, 1, i+1, a.n1)
 			}
@@ -1853,7 +1894,7 @@ func (c *compiler) assignElement(l *syntax.Index, name string, s *sym, val realF
 		if a == nil {
 			unallocated(f, name)
 		}
-		i, j := i0(f)-1, i1(f)-1
+		i, j := i0.get(f)-1, i1.get(f)-1
 		if uint64(i) >= uint64(a.n1) {
 			bounds(f, name, 1, i+1, a.n1)
 		}
