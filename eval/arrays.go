@@ -202,6 +202,7 @@ func resolve(f *frame, g *garr, name string, ss []sub) (offs []int, ext []int) {
 	}
 	dims := make([]dim, len(ss))
 	total := 1
+	sect := false // a triplet: the result is a section, not one element
 	for d, s := range ss {
 		if !s.trip {
 			dims[d] = dim{idx: []int64{s.scalar(f)}, scalar: true}
@@ -229,6 +230,12 @@ func resolve(f *frame, g *garr, name string, ss []sub) (offs []int, ext []int) {
 		if n > MaxArrayElems {
 			fail(f, "section of %s is out of range", name)
 		}
+		// the subscripts of a triplet and, below, the offsets of the section are
+		// temporaries of the statement: charged before they are allocated (an
+		// element, with scalar subscripts only, allocates no list and is not
+		// charged, so a loop of element assignments does not accumulate)
+		f.bud.peek(f, 8*n)
+		sect = true
 		idx := make([]int64, 0, n)
 		for k, v := int64(0), lo; k < n; k, v = k+1, v+st {
 			idx = append(idx, v)
@@ -239,6 +246,9 @@ func resolve(f *frame, g *garr, name string, ss []sub) (offs []int, ext []int) {
 		if total > MaxArrayElems {
 			fail(f, "section of %s is out of range", name)
 		}
+	}
+	if sect {
+		f.bud.peek(f, 8*int64(total))
 	}
 	offs = make([]int, 0, total)
 	if total == 0 {
@@ -457,6 +467,12 @@ func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn)
 		if ss, err = c.subs(ix, ref.rank); err != nil {
 			return nil, err
 		}
+		if !allScalar(ss) {
+			// a section target's offsets are temporaries of the statement
+			// (resolve charges them): the statement must start from none of the
+			// last one's, as stmts does for a statement that makes temporaries
+			c.tmps = true
+		}
 	}
 	if rhs.k == kArr {
 		return nil, c.errf(at, "an assignment between a real(8) array of the kernels' kind and another array is not supported")
@@ -490,24 +506,24 @@ func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn)
 		if dst = *ref.ptr(f); dst == nil {
 			fail(f, "array %s is not allocated", name)
 		}
+		// offs maps element k of the target to its offset in dst; a whole array
+		// needs no map (offset k), so none is built: it was one int per element,
+		// at every assignment, outside the memory budget
 		var offs []int
 		var ext []int
+		var n int
 		if whole {
-			n := dst.size()
-			offs = make([]int, n)
-			for k := range offs {
-				offs[k] = k
-			}
-			ext = dst.ext
+			n, ext = dst.size(), dst.ext
 		} else {
 			offs, ext = resolve(f, dst, name, ss)
+			n = len(offs)
 			if len(ss) > 0 && allScalar(ss) {
 				ext = nil
 			}
 		}
 		var m *garr
 		if mask != nil {
-			if m = mask(f); len(m.i) != len(offs) {
+			if m = mask(f); len(m.i) != n {
 				fail(f, "the mask of WHERE does not conform with %s", name)
 			}
 		}
@@ -516,9 +532,13 @@ func (c *compiler) assignGA(at syntax.Node, lhs syntax.Expr, rhs *ex, mask gaFn)
 				fail(f, "arrays of extents %v and %v are not conformable", ext, src.ext)
 			}
 		}
-		for k, o := range offs {
+		for k := 0; k < n; k++ {
 			if m != nil && m.i[k] == 0 {
 				continue
+			}
+			o := k
+			if !whole {
+				o = offs[k]
 			}
 			if src != nil {
 				a, b := src.at(k)
@@ -858,8 +878,16 @@ type acc struct {
 }
 
 func (a *acc) add(f *frame, iv int64, rv float64) {
-	if len(a.i)+len(a.r) >= MaxArrayElems {
+	n := len(a.i) + len(a.r)
+	if n >= MaxArrayElems {
 		fail(f, "array constructor of more than %d elements", MaxArrayElems)
+	}
+	if c := cap(a.i) + cap(a.r); n == c {
+		// the next append moves the elements to a larger backing array: that
+		// array is a temporary of the statement, charged before it is made (at
+		// most twice the old one, Go's growth; the old one becomes garbage, so
+		// this over-counts, never under-counts)
+		f.bud.peek(f, 8*int64(max(2*c, 8)))
 	}
 	if a.et == kReal {
 		a.r = append(a.r, rv)

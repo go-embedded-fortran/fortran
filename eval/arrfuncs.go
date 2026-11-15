@@ -356,8 +356,14 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 				return nil, err
 			}
 		}
+		rank := tv.Rank
 		return arr(tv.Rank, rk, func(f *frame) *garr {
 			s, sh := src(f), shp(f)
+			if len(sh.i) != rank {
+				// the analyser fixed the result's rank from the shape's size; a
+				// shape of another size would also size the lists below by data
+				fail(f, "reshape: the shape has %d elements, the result rank is %d", len(sh.i), rank)
+			}
 			ext := make([]int, len(sh.i))
 			for d, v := range sh.i {
 				if v < 0 {
@@ -437,17 +443,23 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 			if !sameShape(s.ext, mk.ext) {
 				fail(f, "pack: array and mask of extents %v and %v", s.ext, mk.ext)
 			}
-			var is []int64
-			var rs []float64
+			// counted first, then copied into the result, which newGarr charges:
+			// no intermediate list (it was 16 bytes per element kept, outside the
+			// memory budget)
+			n := 0
+			for _, v := range mk.i {
+				if v != 0 {
+					n++
+				}
+			}
+			out := newGarr(f, rk, kd, []int64{1}, []int{n})
+			j := 0
 			for k, v := range mk.i {
 				if v != 0 {
 					x, y := s.at(k)
-					is, rs = append(is, x), append(rs, y)
+					out.put(j, x, y)
+					j++
 				}
-			}
-			out := newGarr(f, rk, kd, []int64{1}, []int{len(is)})
-			for k := range is {
-				out.put(k, is[k], rs[k])
 			}
 			return out
 		}), nil
