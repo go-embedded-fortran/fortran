@@ -59,7 +59,11 @@ func TestArrayPointerFailures(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ name, src string }{
-		{"a scalar pointer", "integer, pointer :: s\n"},
+		{"a character pointer", "character(len=3), pointer :: s\n"},
+		{"a pointer as the do variable", "integer, target :: j\ninteger, pointer :: i\ni => j\ndo i = 1, 2\nend do\n"},
+		// found by the execution differential: four gfortran.dg tests reached the
+		// result's slot -1 and failed as internal errors (the safety net held)
+		{"a function with a pointer result", "program q\ninteger, pointer :: p\nallocate(p)\np = f()\ncontains\nfunction f()\ninteger, pointer :: f\nallocate(f)\nf = 1\nend function\nend program\n"},
 		{"a pointer to a section", "integer, target :: a(4)\ninteger, pointer :: p(:)\np => a(1:2)\n"},
 		{"a pointer initialised to a target", "integer, target :: a(4)\ninteger, pointer :: p(:) => a\n"},
 	} {
@@ -68,6 +72,53 @@ func TestArrayPointerFailures(t *testing.T) {
 		if !errors.As(err, &e) || !e.Refused {
 			t.Errorf("%s: %v, want a refusal", tc.name, err)
 		}
+	}
+}
+
+func TestScalarPointers(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"both ways through a variable",
+			"integer, target :: x\ninteger, pointer :: p\nx = 1\np => x\np = 5\nprint *, x\nx = 7\nprint *, p, associated(p), associated(p, x)\n",
+			"5 7 T T"},
+		{"an element of an array",
+			"integer, target :: a(3)\ninteger, pointer :: p\na = 0\np => a(2)\np = 9\nprint *, a, associated(p, a(2)), associated(p, a(1))\n",
+			"0 9 0 T F"},
+		{"allocate and deallocate",
+			"real(8), pointer :: r\nallocate(r)\nr = 1.5d0\nprint *, r * 2\ndeallocate(r)\nprint *, associated(r)\n",
+			"3.0000000000000000 F"},
+		{"a pointer to what a pointer points at, logical and real(4)",
+			"logical, target :: b\nlogical, pointer :: p, q\nreal, target :: s\nreal, pointer :: ps\nb = .false.\np => b\nq => p\nq = .true.\ns = 0.1\nps => s\nprint *, b, associated(q, b), ps\n",
+			"T T 0.100000001"},
+		{"nullify and => null()",
+			"integer, target :: x\ninteger, pointer :: p => null()\nprint *, associated(p)\np => x\nnullify(p)\nprint *, associated(p)\n",
+			"F F"},
+		{"through a host's pointer in an internal procedure",
+			"program h\ninteger, target :: x\ninteger, pointer :: p\nx = 1\np => x\ncall bump()\nprint *, x\ncontains\nsubroutine bump()\np = p + 41\nend subroutine\nend program\n",
+			"42"},
+	} {
+		got, err := runPtr(t, 0, tc.src)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+	for _, tc := range []struct{ name, src, want string }{
+		{"a read through a disassociated pointer", "integer, pointer :: p\nnullify(p)\nprint *, p\n", "pointer p is not associated"},
+		{"an assignment through a disassociated pointer", "integer, pointer :: p\nnullify(p)\np = 1\n", "pointer p is not associated"},
+		{"deallocate of a variable's target", "integer, target :: x\ninteger, pointer :: p\np => x\ndeallocate(p)\n", "did not make through a pointer"},
+	} {
+		_, err := runPtr(t, 0, tc.src)
+		var e *Error
+		if !errors.As(err, &e) || e.Refused || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want a run-time failure saying %q", tc.name, err, tc.want)
+		}
+	}
+	// ALLOCATE of a scalar pointer is the heap's too: left behind they pile up,
+	// given back they do not
+	if _, err := runPtr(t, 1<<20, "integer, pointer :: p\ninteger :: i\ndo i = 1, 100000\nallocate(p)\nend do\n"); !memErr(err) {
+		t.Errorf("100000 scalar targets left behind under 1 MiB: %v", err)
+	}
+	if out, err := runPtr(t, 1<<20, "integer, pointer :: p\ninteger :: i\ndo i = 1, 100000\nallocate(p)\np = i\ndeallocate(p)\nend do\nprint *, i\n"); err != nil || out != "100001" {
+		t.Errorf("100000 allocate/deallocate of a scalar under 1 MiB: %q, %v", out, err)
 	}
 }
 

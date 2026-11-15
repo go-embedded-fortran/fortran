@@ -132,6 +132,11 @@ func (c *compiler) declareProc(p *procCode) error {
 			if s.isC || s.k == kArr {
 				return c.errf(p.unit, "function %s: only scalar integer, real, logical and character results are supported yet", p.name)
 			}
+			if s.ptr {
+				// the result is read through its slot after the call (callFn),
+				// which a pointer does not have (pointers.go)
+				return c.errf(p.unit, "function %s: a pointer result is not supported yet", p.name)
+			}
 			p.result = s
 		}
 		if p.result == nil {
@@ -478,6 +483,9 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 // storeVar compiles an assignment to a scalar variable of this unit or of an
 // enclosing one.
 func (c *compiler) storeVar(s *sym, v *ex, at syntax.Node) (stmtFn, error) {
+	if s.ptr && !s.ga {
+		return c.ptrStore(s, v, at)
+	}
 	n, err := c.hops(s, at)
 	if err != nil {
 		return nil, err

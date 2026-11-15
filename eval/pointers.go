@@ -24,9 +24,253 @@ import (
 //
 // A pointer never owns what it points at: the exit of its frame credits
 // nothing for it (its frame was charged nothing for it). Not here yet, and
-// refused with a positioned error: scalar, character and derived-type
-// pointers, pointer components, pointer dummy arguments and results, a
-// pointer to a section, bounds remapping.
+// refused with a positioned error: character and derived-type pointers,
+// pointer components, pointer dummy arguments and results, a pointer to a
+// section, bounds remapping, a pointer as a DO variable. Scalar pointers are
+// below.
+
+// Scalar pointers (part 2). A scalar pointer of integer, real or logical keeps
+// its target in frame.ptrs[pslot]: an sref, which names a scalar variable
+// (slot s of frame f) or an element of a general array (offset off of g), or
+// nil when the pointer is disassociated. Reads and assignments go through it
+// (ptrRead, ptrStore); the pointer's own scalar slot is -1, so a path that does
+// not know pointers fails instead of reading another variable. ALLOCATE(p)
+// makes a one-slot frame of its own, charged to the heap.
+
+// sref is the target of a scalar pointer.
+type sref struct {
+	f      *frame // a scalar variable: slot s of frame f
+	s      int
+	g      *garr // or an element: offset off of g
+	off    int
+	palloc bool  // ALLOCATE made it through a pointer (the only target DEALLOCATE may free)
+	chg    int64 // what ALLOCATE charged the heap for it
+}
+
+// same reports two pointers associated with one target.
+func (r *sref) same(o *sref) bool {
+	return r != nil && o != nil && r.f == o.f && r.s == o.s && r.g == o.g && r.off == o.off
+}
+
+func (r *sref) getInt() int64 {
+	if r.g != nil {
+		return r.g.i[r.off]
+	}
+	return r.f.ints[r.s]
+}
+
+func (r *sref) getReal() float64 {
+	if r.g != nil {
+		return r.g.r[r.off]
+	}
+	return r.f.reals[r.s]
+}
+
+func (r *sref) setInt(v int64) {
+	if r.g != nil {
+		r.g.i[r.off] = v
+		return
+	}
+	r.f.ints[r.s] = v
+}
+
+func (r *sref) setReal(v float64) {
+	if r.g != nil {
+		r.g.r[r.off] = v
+		return
+	}
+	r.f.reals[r.s] = v
+}
+
+// scalarPtr is the slot of the scalar pointer an expression names, or ok false
+// when it does not name one.
+func (c *compiler) scalarPtr(at syntax.Node, e syntax.Expr) (acc func(*frame) **sref, s *sym, ok bool, err error) {
+	id, isID := e.(*syntax.Ident)
+	if !isID {
+		return nil, nil, false, nil
+	}
+	s, _, err = c.symOf(id)
+	if err != nil || !s.ptr || s.ga {
+		return nil, s, false, nil
+	}
+	acc, err = c.ptrSlot(s, at)
+	return acc, s, err == nil, err
+}
+
+// ptrSlot is the slot of the scalar pointer s, in the frame that holds it.
+func (c *compiler) ptrSlot(s *sym, at syntax.Node) (func(*frame) **sref, error) {
+	h, err := c.hops(s, at)
+	if err != nil {
+		return nil, err
+	}
+	ps := s.pslot
+	return func(f *frame) **sref { return &f.at(h).ptrs[ps] }, nil
+}
+
+// assoc is the target of an associated scalar pointer, or a failure.
+func assoc(f *frame, acc func(*frame) **sref, name string) *sref {
+	r := *acc(f)
+	if r == nil {
+		fail(f, "pointer %s is not associated", name)
+	}
+	return r
+}
+
+// ptrRead is the value of a scalar pointer: its target's.
+func (c *compiler) ptrRead(n *syntax.Ident, s *sym) (*ex, error) {
+	acc, _, ok, err := c.scalarPtr(n, n)
+	if err != nil || !ok {
+		return nil, c.errf(n, "internal error: %s is not a scalar pointer", n.Name)
+	}
+	name := n.Name
+	switch s.k {
+	case kInt:
+		return &ex{k: kInt, kd: s.kd, slot: -1, i: func(f *frame) int64 { return assoc(f, acc, name).getInt() }}, nil
+	case kLog:
+		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return assoc(f, acc, name).getInt() != 0 }}, nil
+	case kReal:
+		return &ex{k: kReal, kd: s.kd, slot: -1, r: func(f *frame) float64 { return assoc(f, acc, name).getReal() }}, nil
+	}
+	return nil, c.errf(n, "a pointer of this type is not supported yet")
+}
+
+// ptrStore is "p = value" for a scalar pointer: an assignment to its target,
+// with the conversions of an assignment to the variable itself (store).
+func (c *compiler) ptrStore(s *sym, v *ex, at syntax.Node) (stmtFn, error) {
+	name := "the pointer"
+	if a, ok := at.(*syntax.Assignment); ok {
+		if x, ok := a.LHS.(*syntax.Ident); ok {
+			name = x.Name
+		}
+	}
+	acc, err := c.ptrSlot(s, at)
+	if err != nil {
+		return nil, err
+	}
+	kd := s.kd
+	switch {
+	case s.k == kInt && v.k == kInt:
+		fn := v.i
+		return func(f *frame) { x := fn(f); assoc(f, acc, name).setInt(narrow(kd, x)) }, nil
+	case s.k == kInt && v.k == kReal:
+		fn := v.r
+		return func(f *frame) { x := fn(f); assoc(f, acc, name).setInt(narrow(kd, int64(x))) }, nil
+	case s.k == kLog && v.k == kLog:
+		fn := v.b
+		return func(f *frame) { x := fn(f); assoc(f, acc, name).setInt(b2i(x)) }, nil
+	case s.k == kReal && (v.k == kReal || v.k == kInt):
+		fn := v.asReal().r
+		return func(f *frame) {
+			x := fn(f)
+			if kd == 4 {
+				x = float64(float32(x))
+			}
+			assoc(f, acc, name).setReal(x)
+		}, nil
+	}
+	return nil, c.errf(at, "this assignment through a pointer is not supported")
+}
+
+// scalarTarget compiles what a scalar pointer of sym p may be associated with:
+// a scalar variable of its type and kind, another scalar pointer (its target),
+// or an element of a general array.
+func (c *compiler) scalarTarget(at syntax.Node, p *sym, e syntax.Expr) (func(*frame) *sref, error) {
+	if acc, t, ok, err := c.scalarPtr(at, e); err != nil {
+		return nil, err
+	} else if ok {
+		if t.k != p.k || t.kd != p.kd {
+			return nil, c.errf(at, "pointer association between different types or kinds")
+		}
+		return func(f *frame) *sref { return *acc(f) }, nil
+	}
+	switch x := e.(type) {
+	case *syntax.Ident:
+		t, _, err := c.symOf(x)
+		if err != nil {
+			return nil, err
+		}
+		if t.isC || t.ga || t.slot < 0 || (t.k != kInt && t.k != kReal && t.k != kLog) || t.k != p.k || t.kd != p.kd {
+			return nil, c.errf(at, "pointer association with %s: only a scalar variable of the pointer's type and kind is supported yet", x.Name)
+		}
+		h, err := c.hops(t, at)
+		if err != nil {
+			return nil, err
+		}
+		slot := t.slot
+		return func(f *frame) *sref { return &sref{f: f.at(h), s: slot} }, nil
+	case *syntax.Index:
+		ref, ix, err := c.lhsRef(at, x)
+		if err != nil {
+			return nil, err
+		}
+		if ix == nil || ref.et != p.k || ref.kd != p.kd {
+			return nil, c.errf(at, "pointer association with an array element of another type or kind")
+		}
+		ss, err := c.subs(ix, ref.rank)
+		if err != nil {
+			return nil, err
+		}
+		if !allScalar(ss) {
+			return nil, c.errf(at, "a scalar pointer is associated with an element, not a section")
+		}
+		name := ref.name
+		return func(f *frame) *sref {
+			g := ref.get(f)
+			offs, _ := resolve(f, g, name, ss)
+			return &sref{g: g, off: offs[0]}
+		}, nil
+	}
+	return nil, c.errf(at, "pointer association with this target is not supported yet")
+}
+
+// scalarPtrAssign is p => target and p => null() for a scalar pointer.
+func (c *compiler) scalarPtrAssign(s *syntax.PointerAssign, acc func(*frame) **sref, p *sym) (stmtFn, error) {
+	if isNullCall(s.RHS) {
+		return func(f *frame) { *acc(f) = nil }, nil
+	}
+	tgt, err := c.scalarTarget(s, p, s.RHS)
+	if err != nil {
+		return nil, err
+	}
+	return func(f *frame) { *acc(f) = tgt(f) }, nil
+}
+
+// allocScalarPtr is ALLOCATE(p) for a scalar pointer: a one-slot frame of its
+// own, charged to the heap; and DEALLOCATE(p).
+func allocScalarPtr(acc func(*frame) **sref, k kind, name string, dealloc bool) stmtFn {
+	const cost = 8 + objectOverhead
+	if dealloc {
+		return func(f *frame) {
+			r := *acc(f)
+			if r == nil {
+				fail(f, "deallocate: pointer %s is not associated", name)
+			}
+			if !r.palloc {
+				fail(f, "deallocate: pointer %s is associated with a target that ALLOCATE did not make through a pointer", name)
+			}
+			if h := f.bud.heapFrame(); h != nil && r.chg > 0 {
+				f.bud.credit(f, h, r.chg)
+			}
+			r.palloc, r.chg = false, 0
+			*acc(f) = nil
+		}
+	}
+	return func(f *frame) {
+		h := f.bud.heapFrame()
+		var chg int64
+		if h != nil {
+			f.bud.charge(f, h, cost)
+			chg = cost
+		}
+		t := &frame{}
+		if k == kReal {
+			t.reals = []float64{0}
+		} else {
+			t.ints = []int64{0}
+		}
+		*acc(f) = &sref{f: t, palloc: true, chg: chg}
+	}
+}
 
 // isNullCall reports the reference null() (no MOLD).
 func isNullCall(e syntax.Expr) bool {
@@ -82,6 +326,11 @@ func (c *compiler) pointerRef(at syntax.Node, e syntax.Expr, what string) (*gref
 
 // pointerAssign compiles p => target and p => null().
 func (c *compiler) pointerAssign(s *syntax.PointerAssign) (stmtFn, error) {
+	if acc, p, ok, err := c.scalarPtr(s, s.LHS); err != nil {
+		return nil, err
+	} else if ok {
+		return c.scalarPtrAssign(s, acc, p)
+	}
 	ref, err := c.pointerRef(s, s.LHS, "pointer assignment")
 	if err != nil {
 		return nil, err
@@ -108,7 +357,14 @@ func (c *compiler) pointerAssign(s *syntax.PointerAssign) (stmtFn, error) {
 // nullify compiles NULLIFY(p, ...).
 func (c *compiler) nullify(s *syntax.Nullify) (stmtFn, error) {
 	var refs []*gref
+	var accs []func(*frame) **sref
 	for _, o := range s.Objects {
+		if acc, _, ok, err := c.scalarPtr(s, o); err != nil {
+			return nil, err
+		} else if ok {
+			accs = append(accs, acc)
+			continue
+		}
 		ref, err := c.pointerRef(s, o, "nullify")
 		if err != nil {
 			return nil, err
@@ -118,6 +374,9 @@ func (c *compiler) nullify(s *syntax.Nullify) (stmtFn, error) {
 	return func(f *frame) {
 		for _, r := range refs {
 			*r.ptr(f) = nil
+		}
+		for _, a := range accs {
+			*a(f) = nil
 		}
 	}, nil
 }
@@ -141,6 +400,18 @@ func (c *compiler) associatedGA(n *syntax.Index) (*ex, error) {
 	}
 	if pe == nil {
 		return nil, c.errf(n, "associated: the pointer argument is missing")
+	}
+	if acc, p, ok, err := c.scalarPtr(n, pe); err != nil {
+		return nil, err
+	} else if ok {
+		if te == nil {
+			return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return *acc(f) != nil }}, nil
+		}
+		tgt, err := c.scalarTarget(n, p, te)
+		if err != nil {
+			return nil, err
+		}
+		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return (*acc(f)).same(tgt(f)) }}, nil
 	}
 	ref, err := c.pointerRef(n, pe, "associated")
 	if err != nil {
