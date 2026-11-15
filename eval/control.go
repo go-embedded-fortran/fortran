@@ -169,6 +169,9 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 		if err != nil || sy.k != kInt || sy.isC || ss == nil {
 			return nil, c.errf(d, "the do variable %s must be a declared integer", d.Var.Name)
 		}
+		if sy.ptr {
+			return nil, c.errf(d, "a pointer as the do variable is not supported yet")
+		}
 		slot = sy.slot
 		if vh, err = c.hops(sy, d); err != nil {
 			return nil, err

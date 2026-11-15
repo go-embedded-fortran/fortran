@@ -68,6 +68,7 @@ type frame struct {
 	gas    []*garr   // general arrays
 	dobjs  []*dobj   // derived-type scalars
 	das    [][]*dobj // arrays of derived type
+	ptrs   []*sref   // scalar pointers: their targets, nil when disassociated (pointers.go)
 	tmpObj *dobj     // the object a structure constructor is filling
 	bud    *budget   // the step budget of the run, shared by every frame of it
 	vs     []float64 // the scratch strips of the loop kernels (see vecloop.go)
@@ -200,6 +201,7 @@ type procCode struct {
 	nInts, nReals, nArrs int
 	nStrs, nGAs          int
 	nDs, nDAs            int
+	nPtrs                int // scalar pointers (frame.ptrs)
 	init                 []stmtFn
 	body                 stmtFn
 	params               []*sym
@@ -228,6 +230,7 @@ func (p *procCode) newFrame(caller, up *frame) *frame {
 		gas:   make([]*garr, p.nGAs),
 		dobjs: make([]*dobj, p.nDs),
 		das:   make([][]*dobj, p.nDAs),
+		ptrs:  make([]*sref, p.nPtrs),
 		up:    up,
 	}
 	if caller != nil {
@@ -349,7 +352,8 @@ type sym struct {
 	owner  *procCode
 	ga     bool   // an array of the general kind: slot indexes frame.gas
 	alloc  bool   // an allocatable array
-	ptr    bool   // a pointer array: its slot holds the target's storage, or nil (pointers.go)
+	ptr    bool   // a pointer: an array's slot holds the target's storage, a scalar's frame.ptrs[pslot] its target (pointers.go)
+	pslot  int    // a scalar pointer's slot in frame.ptrs (its slot is -1: a path that ignores ptr fails, never reads a wrong slot)
 	et     kind   // the class of the elements of a general array
 	cs     string // the value of a character named constant
 	clen   int64  // the declared length of a character variable; -1 assumed (character(*)), -2 deferred (len=:)
@@ -776,8 +780,8 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 && (elem == kStr || ss.Flags&sema.FOptional != 0) || ss.Flags&(sema.FOptional|sema.FPointer|sema.FAllocatable) != 0) {
 			return c.errf(e, "dummy argument %s: only scalar, non-optional dummy arguments are supported yet", name)
 		}
-		if ss.Flags&sema.FPointer != 0 && (ss.Rank == 0 || ss.Type.Basic == sema.Derived) {
-			return c.errf(e, "%s: only pointer arrays of integer, real or logical are supported yet (scalar and derived-type pointers are not)", name)
+		if ss.Flags&sema.FPointer != 0 && ss.Type.Basic == sema.Derived {
+			return c.errf(e, "%s: derived-type pointers are not supported yet", name)
 		}
 		if init != nil && (c.cur.unit.Kind == syntax.SubroutineUnit || c.cur.unit.Kind == syntax.FunctionUnit) {
 			return c.errf(e, "%s: an initialised variable of a procedure is saved between calls, which is not supported yet", name)
@@ -789,6 +793,17 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 				return c.errf(e, "a named constant of derived type is not supported yet")
 			}
 			return c.declD(ss, e, s, init)
+		}
+		if ss.Flags&sema.FPointer != 0 && ss.Rank == 0 {
+			if k != kInt && k != kReal && k != kLog {
+				return c.errf(e, "%s: only scalar pointers of integer, real or logical are supported yet", name)
+			}
+			// its target is in frame.ptrs[pslot]; slot -1 makes a path that does
+			// not know pointers fail instead of reading another variable
+			s.ptr, s.slot, s.pslot = true, -1, c.cur.nPtrs
+			c.cur.nPtrs++
+			c.syms[ss] = s
+			return nil
 		}
 		switch {
 		case ss.Rank != 0 && !kernelArray(ss, k):
@@ -1126,6 +1141,9 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		return c.objIdent(n, s)
 	case kDA:
 		return c.daIdent(n, s)
+	}
+	if s.ptr && !s.ga {
+		return c.ptrRead(n, s)
 	}
 	if !s.isC {
 		h, err := c.hops(s, n)
@@ -2146,6 +2164,13 @@ func (c *compiler) allocate(a *syntax.Allocate) (stmtFn, error) {
 	}
 	var fns []stmtFn
 	for _, o := range a.Objects {
+		// a scalar pointer
+		if acc, p, ok, err := c.scalarPtr(o, o); err != nil {
+			return nil, err
+		} else if ok {
+			fns = append(fns, allocScalarPtr(acc, p.k, o.(*syntax.Ident).Name, a.Dealloc))
+			continue
+		}
 		// an array of the general kind
 		var gid *syntax.Ident
 		var base syntax.Expr = o

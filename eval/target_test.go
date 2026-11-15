@@ -15,9 +15,11 @@ func TestTargetIsAcceptedPointerIsRefused(t *testing.T) {
 	if strings.TrimSpace(out) != "6" {
 		t.Errorf("target: %q, want 6", out)
 	}
-	_, _, _, err := runCell(t, NewSession(SessionOptions{}), "integer, pointer :: p\n")
+	// (array and scalar pointers of integer, real or logical are pointers.go's;
+	// a character pointer still is a refusal)
+	_, _, _, err := runCell(t, NewSession(SessionOptions{}), "character(len=4), pointer :: p\n")
 	var e *Error
 	if !errors.As(err, &e) || !e.Refused {
-		t.Errorf("pointer: %v, want a refusal", err)
+		t.Errorf("a character pointer: %v, want a refusal", err)
 	}
 }
