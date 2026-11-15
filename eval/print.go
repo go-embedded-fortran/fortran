@@ -302,7 +302,11 @@ func (c *compiler) impliedDo(d *syntax.ImpliedDo) (item, error) {
 		}
 		v := a
 		room := f.bud.valRoom()
+		base, start := f.bud.mark(), len(l)
 		for ; n > 0 && len(l) < room; n-- { // past the room, nothing printed would be kept
+			// the temporaries of the last iteration are garbage; the values built
+			// so far stay reserved
+			f.bud.reset(base + int64(len(l)-start)*valBytes)
 			f.ints[slot] = v
 			before := len(l)
 			for _, it := range items {

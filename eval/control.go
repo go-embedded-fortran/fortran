@@ -185,9 +185,22 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 			}
 		}
 	case d.While != nil:
+		outer := c.tmps
+		c.tmps = false
 		if while, err = c.boolExpr(d.While); err != nil {
 			return nil, err
 		}
+		if c.tmps {
+			// the condition makes temporaries and is evaluated at every
+			// iteration of one statement: each evaluation starts with none of the
+			// last one's reserved (memory.go)
+			cond := while
+			while = func(f *frame) bool {
+				f.bud.reset(f.tmpBase)
+				return cond(f)
+			}
+		}
+		c.tmps = c.tmps || outer
 	case !unbound:
 		return nil, c.errf(d, "this form of DO is not supported")
 	}

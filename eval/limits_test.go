@@ -233,3 +233,34 @@ func TestPrintStopsAtTheOutputCap(t *testing.T) {
 		t.Errorf("an uncapped print of 4 million values in 100 MiB: %v", err)
 	}
 }
+
+// A loop condition that makes an array temporary is evaluated at every
+// iteration of one statement: each evaluation reserves its temporary afresh,
+// not on top of the last one's. 1000 iterations of an 8 MB temporary under a
+// 100 MiB budget run to completion. The same for the items of an implied-do in
+// an array constructor and in an output list.
+func TestBudgetResetsTheTemporariesOfARepeatedExpression(t *testing.T) {
+	s := NewSession(SessionOptions{MaxAlloc: 100 << 20})
+	var out strings.Builder
+	run := func(src string) error {
+		out.Reset()
+		_, err := s.Run(context.Background(), src, &out, io.Discard)
+		return err
+	}
+	if err := run("real(8) :: a(1000000)\ninteger :: i\na = 1\ni = 0\ndo while (sum(a + 1.0d0) > 0 .and. i < 1000)\n  i = i + 1\nend do\nprint *, i\n"); err != nil || strings.TrimSpace(out.String()) != "1000" {
+		t.Errorf("do while: %q, %v", out.String(), err)
+	}
+	if err := run("integer :: g(1000000), n\ng = 1\nn = 0\ndo while (sum(g + 1) > 0 .and. n < 1000)\n  n = n + 1\nend do\nprint *, n\n"); err != nil || strings.TrimSpace(out.String()) != "1000" {
+		t.Errorf("do while over a general array: %q, %v", out.String(), err)
+	}
+	if err := run("integer :: b(1000000), c(1000), j\nb = 1\nc = [(sum(b + 1), j = 1, 1000)]\nprint *, c(1000)\n"); err != nil || strings.TrimSpace(out.String()) == "" {
+		t.Errorf("implied-do in a constructor: %q, %v", out.String(), err)
+	}
+	if err := run("real(8) :: d(1000000)\ninteger :: k\nd = 1\nprint *, (sum(d + 1.0d0), k = 1, 200)\n"); err != nil {
+		t.Errorf("implied-do in an output list: %v", err)
+	}
+	// the reservation is still a bound: one statement that holds more at once is refused
+	if err := run("real(8) :: e(4000000)\ne = 1\ne = (e+1.0d0)+((e+2.0d0)+((e+3.0d0)+((e+4.0d0)+((e+5.0d0)+((e+6.0d0)+((e+7.0d0)+(e+8.0d0)))))))\n"); !memErr(err) {
+		t.Errorf("eight live 32 MB temporaries in 100 MiB: %v", err)
+	}
+}

@@ -990,7 +990,7 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 	if e.k != want || ((want == kArr || want == kGA) && e.rank != tv.Rank) {
 		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
 	}
-	if (e.k == kGA || e.k == kStr || e.k == kD) && !e.isC {
+	if (e.k == kGA || e.k == kArr || e.k == kStr || e.k == kD) && !e.isC {
 		c.tmps = true // the value is a temporary: see stmts
 	}
 	return e, nil
@@ -1365,6 +1365,7 @@ func (c *compiler) arrayBinary(n *syntax.Binary, x, y *ex) (*ex, error) {
 		fn := func(f *frame) *array {
 			p, q := a(f), b(f)
 			conform(f, p, q)
+			f.bud.peek(f, tempBytes(p)) // the result is a temporary of the statement
 			nd, err := op(p.nd, q.nd)
 			if err != nil {
 				fail(f, "%v", err)
@@ -1385,6 +1386,7 @@ func (c *compiler) arrayBinary(n *syntax.Binary, x, y *ex) (*ex, error) {
 	mul := n.Op == "*"
 	fn := func(f *frame) *array {
 		p, v := a(f), s(f)
+		f.bud.peek(f, tempBytes(p))
 		if mul {
 			return wrap(f, p.nd.MulScalar(v), p)
 		}
@@ -1398,6 +1400,9 @@ func conform(f *frame, p, q *array) {
 		fail(f, "arrays of extents (%d,%d) and (%d,%d) are not conformable", p.n1, p.n2, q.n1, q.n2)
 	}
 }
+
+// tempBytes is the storage of a temporary of the shape of p.
+func tempBytes(p *array) int64 { return 8*int64(p.n1)*int64(max(p.n2, 1)) + arrayOverhead }
 
 // wrap adopts the result of a go-ndarray operation as an array of the shape of
 // like (the result's storage is its own, so no copy is made).

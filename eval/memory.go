@@ -110,8 +110,10 @@ func (b *budget) chargeDelta(f *frame, own *frame, d int64) {
 }
 
 // exit credits what the frame of a procedure that returns still holds, and
-// marks the frame dead: storage that is charged to it and outlives it (an
-// array an allocatable dummy took) is not credited a second time.
+// marks the frame dead, so that storage charged to it and credited with it is
+// not credited a second time by release (a guard: the compiler refuses an
+// allocatable dummy argument today, the one case where an array charged to a
+// callee's frame would be reached by its caller).
 func (b *budget) exit(f *frame) {
 	if b == nil {
 		return
@@ -133,6 +135,21 @@ func held(mods []*frame) int64 {
 		n += m.mem
 	}
 	return n
+}
+
+// mark is the temporaries reserved now, and reset(v) goes back to a mark: the
+// loops that evaluate an expression again and again in one statement.
+func (b *budget) mark() int64 {
+	if b == nil {
+		return 0
+	}
+	return b.tmp
+}
+
+func (b *budget) reset(v int64) {
+	if b != nil {
+		b.tmp = v
+	}
 }
 
 // valBytes is what a value of an output list costs, as it waits for the
