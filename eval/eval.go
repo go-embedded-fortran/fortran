@@ -67,6 +67,7 @@ type frame struct {
 	das    [][]*dobj // arrays of derived type
 	tmpObj *dobj     // the object a structure constructor is filling
 	bud    *budget   // the step budget of the run, shared by every frame of it
+	vs     []float64 // the scratch strips of the loop kernels (see vecloop.go)
 }
 
 // chunk is the number of steps between two looks at the budget's total and at
@@ -99,6 +100,22 @@ func (b *budget) tick() {
 	b.left--
 	if b.left < 0 {
 		b.refill()
+	}
+}
+
+// spend charges n steps at once (a strip kernel): as n ticks would, it fails when
+// the total is spent or the context is done.
+func (b *budget) spend(n int64) {
+	b.left -= n
+	for b.left < 0 {
+		b.rest -= chunk
+		if b.rest <= 0 {
+			panic(&Error{Msg: "step limit reached: the cell ran too many loop iterations and calls"})
+		}
+		if err := b.ctx.Err(); err != nil {
+			panic(&Error{Msg: "stopped: " + err.Error(), Err: err})
+		}
+		b.left += chunk
 	}
 }
 
