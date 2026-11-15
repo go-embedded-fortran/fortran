@@ -694,6 +694,22 @@ statements.
   MaxOutput` bounds what an output statement builds to the values that could be
   printed within the cap. A module's storage is held for the session. It is the session's own count, not the process's heap:
   no collection, no stop-the-world.
+  Pointers stay inside the budget:
+  - A target ALLOCATEd through a pointer is the session heap's, and only
+    `deallocate` credits it. `nullify`, re-pointing, or ALLOCATE again through
+    the same pointer leaves the old target charged for the rest of the session
+    even when nothing reaches it any more: a bounded over-count, on the safe
+    side.
+  - Pointer assignment charges nothing.
+  - A pointer that outlives the frame of its target (a module's, a caller's or
+    a host's pointer, or a function's pointer result, to a procedure's local)
+    keeps the target: an array's charge moves to the heap when its frame
+    returns, and a scalar moves into an 8-byte box of its own, so the pointer
+    never keeps the frame and its arrays. A pointer local to the target's frame
+    keeps nothing, so a procedure that points at its own arrays costs nothing
+    after it returns.
+  - A second `deallocate` of a target, through another pointer, says "already
+    deallocated".
   The budget costs 0.45 ns on a 2.85 ns scalar DO iteration (Apple M4 Max,
   `BenchmarkDoLoop`). A Go panic inside the evaluator is returned as an error,
   not raised.

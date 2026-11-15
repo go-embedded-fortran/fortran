@@ -61,19 +61,22 @@ type frame struct {
 	target string
 	// up is the frame of the host of the procedure (its static link), depth
 	// the number of activations below this one.
-	up     *frame
-	depth  int
-	mods   []*frame  // the frames of the modules
-	strs   []string  // character scalars
-	gas    []*garr   // general arrays
-	dobjs  []*dobj   // derived-type scalars
-	das    [][]*dobj // arrays of derived type
-	ptrs   []*sref   // scalar pointers: their targets, nil when disassociated (pointers.go)
-	tmpObj *dobj     // the object a structure constructor is filling
-	bud    *budget   // the step budget of the run, shared by every frame of it
-	vs     []float64 // the scratch strips of the loop kernels (see vecloop.go)
-	mem    int64     // the storage charged to this frame (see memory.go)
-	weight int       // what the calls below this one weigh (see callWeight)
+	up    *frame
+	depth int
+	mods  []*frame  // the frames of the modules
+	strs  []string  // character scalars
+	gas   []*garr   // general arrays
+	dobjs []*dobj   // derived-type scalars
+	das   [][]*dobj // arrays of derived type
+	ptrs  []*sref   // scalar pointers: their targets, nil when disassociated (pointers.go)
+	// escaped are the scalar variables of this frame that a pointer outliving
+	// it is associated with: boxed when it returns (pointers.go)
+	escaped []*sref
+	tmpObj  *dobj     // the object a structure constructor is filling
+	bud     *budget   // the step budget of the run, shared by every frame of it
+	vs      []float64 // the scratch strips of the loop kernels (see vecloop.go)
+	mem     int64     // the storage charged to this frame (see memory.go)
+	weight  int       // what the calls below this one weigh (see callWeight)
 	// tmpBase is what the caller's statement had reserved for temporaries when
 	// it called this frame; dead is set when the frame has returned.
 	tmpBase int64
