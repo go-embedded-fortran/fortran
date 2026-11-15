@@ -213,7 +213,9 @@ func TestDifferentialReals(t *testing.T) {
 		"(1PD12.4)", "(1PG12.4)", "(SP,F10.3)", "(SP,ES12.4)", "(SS,F10.3)", "(RU,F6.1)", "(RD,F6.1)", "(RZ,F6.1)",
 		"(RN,F6.1)", "(RC,F6.1)", "(RP,F6.1)", "(RU,ES10.2)", "(RD,ES10.2)", "(RZ,ES10.2)", "(RC,ES10.2)",
 		"(RU,EN10.2)", "(RD,F4.0)", "(RU,F4.0)", "(RC,F4.0)", "(RZ,F4.0)", "(DC,F8.3)", "(DC,ES10.3)", "(F12.3,3X)",
-		"(EX20.5)", "(EX0)", "(EX12.0)", "(EX20)", "(EX10.2)", "(EX20.30)", "(EX20.3E2)")
+		"(EX20.5)", "(EX0)", "(EX12.0)", "(EX20)", "(EX10.2)", "(EX20.30)", "(EX20.3E2)",
+		// d = 0 with a scale factor: -d < k < d+2 allows k = 1 only (fmt_e.f90)
+		"(1PE12.0)", "(1PE5.0E1)", "(1PD12.0)", "(2PE12.0)", "(-1PE12.0)", "(1PE12.1)", "(2PE12.1)", "(3PE12.1)")
 	var cases []dcase
 	for _, f := range fmts {
 		// RT_DIFF_ONLY=E0.17,G0.9 restricts the corpus while a quirk is chased
