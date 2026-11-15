@@ -154,16 +154,20 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 		counted  = d.HasVar && d.While == nil
 		unbound  = !d.HasVar && d.While == nil
 		slot     int
+		vh       int // the hops to the frame of the do variable
 		hasStepE = d.Step != nil
 	)
 	switch {
 	case counted:
 		var ss *sema.Symbol
 		sy, ss, err = c.symOf(&d.Var)
-		if err != nil || sy.k != kInt || sy.isC || ss == nil || sy.owner != c.cur {
+		if err != nil || sy.k != kInt || sy.isC || ss == nil {
 			return nil, c.errf(d, "the do variable %s must be a declared integer", d.Var.Name)
 		}
 		slot = sy.slot
+		if vh, err = c.hops(sy, d); err != nil {
+			return nil, err
+		}
 		if lo, err = c.intExpr(d.Lo); err != nil {
 			return nil, err
 		}
@@ -208,28 +212,32 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 			}
 			n := (h - l + st) / st
 			v := l
+			vf := f.at(vh) // the frame of the do variable: a session's variable is a module's
 			if !jumps {
 				for ; n > 0; n-- {
-					f.ints[slot] = v
+					f.bud.tick()
+					vf.ints[slot] = v
 					body(f)
 					v += st
 				}
-				f.ints[slot] = v
+				vf.ints[slot] = v
 				return
 			}
 			for ; n > 0; n-- {
-				f.ints[slot] = v
+				f.bud.tick()
+				vf.ints[slot] = v
 				body(f)
 				if f.ctl != ctlNone && leave(f) {
 					return
 				}
 				v += st
 			}
-			f.ints[slot] = v
+			vf.ints[slot] = v
 		}, nil
 	case while != nil:
 		return func(f *frame) {
 			for while(f) {
+				f.bud.tick()
 				body(f)
 				if f.ctl != ctlNone && leave(f) {
 					return
@@ -239,6 +247,7 @@ func (c *compiler) do(d *syntax.Do) (stmtFn, error) {
 	}
 	return func(f *frame) {
 		for {
+			f.bud.tick()
 			body(f)
 			if f.ctl != ctlNone && leave(f) {
 				return

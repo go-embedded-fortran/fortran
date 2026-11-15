@@ -156,3 +156,46 @@ func TestGoType(t *testing.T) {
 		}
 	}
 }
+
+// A derived type named in a declaration and a module named in a use statement
+// are uses of the cell that defines them (go-embedded-fortran/fortran#20): the
+// notebook's graph needs the edge to order and to block cells. The implicit uses
+// of the session are not.
+func TestSessionUsesTypesAndModules(t *testing.T) {
+	s := NewSession(SessionOptions{})
+	st := s.Begin()
+	c0, st := run(t, s, st, 0, "integer :: n\ntype :: p\n  integer :: a\nend type\nsubroutine sub()\nend subroutine\nmodule mm\n  integer :: mv\nend module\n")
+	if len(c0.Errors) != 0 {
+		t.Fatal(c0.Errors)
+	}
+	if len(c0.Uses) != 0 {
+		t.Errorf("the first cell uses %v", c0.Uses)
+	}
+	for _, tc := range []struct {
+		src  string
+		want []string
+	}{
+		{"call sub()\n", []string{"sub"}},
+		{"print *, n\n", []string{"n"}},
+		{"type(p) :: q\n", []string{"p"}},
+		{"use mm\nmv = 1\n", []string{"mm", "mv"}},
+		{"integer :: z\n", nil},
+		{"type :: r\n  type(p) :: inner\nend type\n", []string{"p"}},
+		{"subroutine inner_use()\n  use mm\nend subroutine\n", []string{"mm"}},
+		{"use iso_fortran_env\n", nil},
+	} {
+		c, _ := run(t, s, st, 1, tc.src)
+		if len(c.Errors) != 0 {
+			t.Errorf("%q: %v", tc.src, c.Errors)
+			continue
+		}
+		if !reflect.DeepEqual(c.Uses, tc.want) && len(c.Uses)+len(tc.want) != 0 {
+			t.Errorf("%q: uses %v, want %v", tc.src, c.Uses, tc.want)
+		}
+	}
+	// a cell that redefines the type uses no earlier one
+	c, _ := run(t, s, st, 1, "type :: p\n  real(8) :: b\nend type\ntype(p) :: q\n")
+	if len(c.Errors) != 0 || len(c.Uses) != 0 {
+		t.Errorf("redefinition: %v %v", c.Errors, c.Uses)
+	}
+}

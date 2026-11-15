@@ -196,6 +196,25 @@ func (s *Session) AnalyzeNext(state any, index int, src string) (*CellInfo, any)
 			uses[sym.Name] = true
 		}
 	}
+	// A name in a declaration's type (type(p), class(p), extends(p)) or in a use
+	// statement is not an expression, so info.Uses has none of them: they are read
+	// from the tree. Only a module or a type an earlier cell defines is a use.
+	refs := map[string]bool{}
+	for _, u := range units {
+		skip := 0
+		if u == modUnit {
+			skip = len(st.order) // the implicit USEs the session put first
+		}
+		collectRefs(u, skip, refs)
+	}
+	for n := range refs {
+		if own[n] || uses[n] {
+			continue
+		}
+		if st.modules[n] != nil || definesType(st, n) {
+			uses[n] = true
+		}
+	}
 	for n := range uses {
 		ci.Uses = append(ci.Uses, n)
 	}
@@ -230,6 +249,55 @@ func (s *Session) AnalyzeNext(state any, index int, src string) (*CellInfo, any)
 		next.vars[n] = v
 	}
 	return ci, next
+}
+
+// definesType reports whether a module of the session defines the derived type
+// name.
+func definesType(st *sessionState, name string) bool {
+	for _, sc := range st.modules {
+		if s := sc.Names[name]; s != nil && s.Kind == SymType {
+			return true
+		}
+	}
+	return false
+}
+
+// collectRefs adds to refs the module names of the use statements and the
+// derived type names of the declarations of u and the units it contains,
+// leaving out the first skip statements of u's own body.
+func collectRefs(u *syntax.Unit, skip int, refs map[string]bool) {
+	var stmts func(body []syntax.Stmt)
+	spec := func(t *syntax.TypeSpec) {
+		if t != nil && t.Derived != "" && t.Derived != "*" {
+			refs[t.Derived] = true
+		}
+	}
+	stmts = func(body []syntax.Stmt) {
+		for _, s := range body {
+			switch s := s.(type) {
+			case *syntax.UseStmt:
+				refs[s.Module.Name] = true
+			case *syntax.Decl:
+				spec(s.Type)
+			case *syntax.TypeDef:
+				for _, a := range s.Attrs {
+					if a.Name != "extends" {
+						continue
+					}
+					for _, x := range a.Args {
+						if id, ok := x.(*syntax.Ident); ok {
+							refs[id.Name] = true
+						}
+					}
+				}
+				stmts(s.Body)
+			}
+		}
+	}
+	stmts(u.Body[min(skip, len(u.Body)):])
+	for _, c := range u.Contains {
+		collectRefs(c, 0, refs)
+	}
 }
 
 func isNested(u *syntax.Unit, top []*syntax.Unit) bool {

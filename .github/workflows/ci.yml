@@ -39,6 +39,9 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go build ./...
+      - name: eval builds for WebAssembly (the playground runs Fortran cells with it)
+        if: matrix.os == 'ubuntu-latest'
+        run: GOOS=js GOARCH=wasm go build ./eval ./rt ./sema ./syntax
       - run: go test -race -timeout=30m ./...
       # The parser's bomb tests assert a REFUSAL under a memory limit: GOMEMLIMIT
       # for the Go heap and, on Linux, ulimit -v for the address space.

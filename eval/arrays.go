@@ -281,11 +281,12 @@ func (r *gref) get(f *frame) *garr {
 
 // symRef is the reference to a general array variable of this unit.
 func (c *compiler) symRef(id *syntax.Ident, s *sym) (*gref, error) {
-	if s.owner != c.cur {
-		return nil, c.errf(id, "array %s of another program unit: host- and module-associated arrays are not supported yet", id.Name)
+	h, err := c.hops(s, id)
+	if err != nil {
+		return nil, err
 	}
 	slot := s.slot
-	return &gref{ptr: func(f *frame) **garr { return &f.gas[slot] }, name: id.Name, et: s.et, kd: s.kd, rank: s.rank, alloc: s.alloc}, nil
+	return &gref{ptr: func(f *frame) **garr { return &f.at(h).gas[slot] }, name: id.Name, et: s.et, kd: s.kd, rank: s.rank, alloc: s.alloc}, nil
 }
 
 func (c *compiler) gaVar(id *syntax.Ident, s *sym) (gaFn, error) {

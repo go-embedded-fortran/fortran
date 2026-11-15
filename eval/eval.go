@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -19,7 +20,12 @@ import (
 type Error struct {
 	Pos string
 	Msg string
+	// Err is the cause when there is one: the context's error of a run that was
+	// stopped (errors.Is(err, context.DeadlineExceeded)).
+	Err error
 }
+
+func (e *Error) Unwrap() error { return e.Err }
 
 func (e *Error) Error() string {
 	if e.Pos == "" {
@@ -60,6 +66,51 @@ type frame struct {
 	dobjs  []*dobj   // derived-type scalars
 	das    [][]*dobj // arrays of derived type
 	tmpObj *dobj     // the object a structure constructor is filling
+	bud    *budget   // the step budget of the run, shared by every frame of it
+}
+
+// chunk is the number of steps between two looks at the budget's total and at
+// the context: a step costs one decrement, the rest is paid once per chunk.
+const chunk = 1 << 16
+
+// budget bounds a run: every iteration of a DO loop and every procedure call is
+// a step. A run that spends it, or whose context is done, fails with an *Error
+// at the next chunk boundary, so an infinite loop in untrusted code ends. It is
+// counted, not timed, so that it also holds where no timer can fire while the
+// program runs (WebAssembly in a browser).
+type budget struct {
+	left int64 // steps left in the current chunk
+	rest int64 // steps left in all
+	ctx  context.Context
+}
+
+func newBudget(ctx context.Context, max int64) *budget {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if max <= 0 {
+		max = math.MaxInt64
+	}
+	return &budget{left: chunk, rest: max, ctx: ctx}
+}
+
+// tick spends one step.
+func (b *budget) tick() {
+	b.left--
+	if b.left < 0 {
+		b.refill()
+	}
+}
+
+func (b *budget) refill() {
+	b.rest -= chunk
+	if b.rest <= 0 {
+		panic(&Error{Msg: "step limit reached: the cell ran too many loop iterations and calls"})
+	}
+	if err := b.ctx.Err(); err != nil {
+		panic(&Error{Msg: "stopped: " + err.Error(), Err: err})
+	}
+	b.left = chunk - 1
 }
 
 // Values of frame.ctl.
@@ -135,10 +186,11 @@ func (p *procCode) newFrame(caller, up *frame) *frame {
 		up:    up,
 	}
 	if caller != nil {
-		f.out, f.tab, f.start, f.depth, f.mods = caller.out, caller.tab, caller.start, caller.depth+1, caller.mods
+		f.out, f.tab, f.start, f.depth, f.mods, f.bud = caller.out, caller.tab, caller.start, caller.depth+1, caller.mods, caller.bud
 		if f.depth > MaxCallDepth {
 			fail(f, "procedure %s: more than %d nested calls", p.name, MaxCallDepth)
 		}
+		f.bud.tick()
 	}
 	return f
 }
@@ -175,10 +227,10 @@ func (p *Program) Run(out io.Writer) (Stats, error) { return p.RunIO(out, io.Dis
 // and ERROR STOP).
 func (p *Program) RunIO(out, stderr io.Writer) (st Stats, err error) {
 	f := p.main.newFrame(nil, nil)
-	f.out, f.tab, f.start = out, rt.NewTable(out, stderr, nil, nil), time.Now()
+	f.out, f.tab, f.start, f.bud = out, rt.NewTable(out, stderr, nil, nil), time.Now(), newBudget(nil, 0)
 	for _, m := range p.mods { // every module frame exists before any module's initialisation runs
 		mf := m.newFrame(nil, nil)
-		mf.out, mf.tab, mf.start = f.out, f.tab, f.start
+		mf.out, mf.tab, mf.start, mf.bud = f.out, f.tab, f.start, f.bud
 		f.mods = append(f.mods, mf)
 	}
 	for _, mf := range f.mods {
@@ -301,6 +353,7 @@ type compiler struct {
 	cur       *procCode
 	lenExpr   syntax.Expr // the length of the character entity being declared
 	typedefs  map[string]*syntax.TypeDef
+	tdFile    *syntax.File // the file typedefs was last read from
 	dtypes    map[*sema.DerivedType]*dtype
 	procs     map[*syntax.Unit]*procCode
 	externals map[string]*syntax.Unit // the external subroutines and functions of the file
@@ -636,6 +689,10 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 			if k == kStr {
 				return c.errf(e, "character arrays are not supported yet")
 			}
+			if init != nil {
+				// this path used to drop the initialisation silently
+				return c.errf(e, "%s: an array with an initialisation is not supported yet (assign it in a statement)", name)
+			}
 			if err := c.declGA(ss, e, s, k); err != nil {
 				return err
 			}
@@ -652,7 +709,7 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 					s.shape = append(s.shape, constInt(dm.Hi).i)
 				}
 				c.syms[ss] = s
-				c.cur.init = append(c.cur.init, allocFn(s.slot, s.shape))
+				c.cur.init = append(c.cur.init, allocFn(0, s.slot, s.shape))
 				return nil
 			}
 			for _, dm := range ss.Dims {
@@ -733,14 +790,14 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 	return nil
 }
 
-func allocFn(slot int, shape []intFn) stmtFn {
+func allocFn(h, slot int, shape []intFn) stmtFn {
 	return func(f *frame) {
 		var n [2]int
 		n[1] = 1
 		for i, sh := range shape {
 			n[i] = int(sh(f))
 		}
-		f.arrs[slot] = newArray(f, len(shape), n[0], n[1])
+		f.at(h).arrs[slot] = newArray(f, len(shape), n[0], n[1])
 	}
 }
 
@@ -945,7 +1002,7 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		}
 		if h != 0 {
 			if s.k == kArr {
-				return nil, c.errf(n, "array %s of an enclosing unit: host-associated arrays are not supported yet", n.Name)
+				return arrIdent(n.Name, s, h), nil
 			}
 			return hostRead(s, h), nil
 		}
@@ -977,14 +1034,20 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		slot := s.slot
 		return &ex{k: kReal, kd: s.kd, slot: slot, r: func(f *frame) float64 { return f.reals[slot] }}, nil
 	}
-	slot, name := s.slot, n.Name
+	return arrIdent(n.Name, s, 0), nil
+}
+
+// arrIdent is the whole array s, which lives in the frame h static links up
+// (h < 0: a module's; see hops).
+func arrIdent(name string, s *sym, h int) *ex {
+	slot := s.slot
 	return &ex{k: kArr, slot: -1, rank: s.rank, v: s, a: func(f *frame) *array {
-		a := f.arrs[slot]
+		a := f.at(h).arrs[slot]
 		if a == nil {
 			fail(f, "array %s is not allocated", name)
 		}
 		return a
-	}}, nil
+	}}
 }
 
 func (c *compiler) negate(n syntax.Node, x *ex) (*ex, error) {
@@ -1264,9 +1327,6 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	if s.k != kArr {
 		return nil, c.errf(n, "%s is not an array", id.Name)
 	}
-	if s.owner != c.cur {
-		return nil, c.errf(n, "array %s of an enclosing unit: host-associated arrays are not supported yet", id.Name)
-	}
 	return c.element(n, id.Name, s)
 }
 
@@ -1289,11 +1349,15 @@ func (c *compiler) element(n *syntax.Index, name string, s *sym) (*ex, error) {
 		ix[i] = fn
 	}
 	slot := s.slot
+	h, err := c.hops(s, n)
+	if err != nil {
+		return nil, err
+	}
 	i0, i1 := ix[0], ix[1]
 	var fn realFn
 	if s.rank == 1 {
 		fn = func(f *frame) float64 {
-			a := f.arrs[slot]
+			a := f.at(h).arrs[slot]
 			if a == nil {
 				unallocated(f, name)
 			}
@@ -1305,7 +1369,7 @@ func (c *compiler) element(n *syntax.Index, name string, s *sym) (*ex, error) {
 		}
 	} else {
 		fn = func(f *frame) float64 {
-			a := f.arrs[slot]
+			a := f.at(h).arrs[slot]
 			if a == nil {
 				unallocated(f, name)
 			}
@@ -1720,9 +1784,6 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 			return c.assignDerived(s, l, rhs)
 		}
 		if sy.k == kArr {
-			if sy.owner != c.cur {
-				return nil, c.errf(l, "array %s of an enclosing unit: host-associated arrays are not supported yet", l.Name)
-			}
 			return c.assignArray(s, sy, l.Name, rhs)
 		}
 		return c.storeVar(sy, rhs, s)
@@ -1746,8 +1807,8 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		if err == nil && sy.k == kStr {
 			return c.assignSubstring(s, l, id, sy, rhs)
 		}
-		if err != nil || sy.k != kArr || sy.owner != c.cur {
-			return nil, c.errf(l, "%s is not an array of this unit", id.Name)
+		if err != nil || sy.k != kArr {
+			return nil, c.errf(l, "%s is not an array", id.Name)
 		}
 		if rhs.k == kArr {
 			return nil, c.errf(s, "an array value into an element")
@@ -1767,11 +1828,15 @@ func (c *compiler) assignElement(l *syntax.Index, name string, s *sym, val realF
 		ix[i] = fn
 	}
 	slot := s.slot
+	h, err := c.hops(s, l)
+	if err != nil {
+		return nil, err
+	}
 	i0, i1 := ix[0], ix[1]
 	if s.rank == 1 {
 		return func(f *frame) {
 			v := val(f)
-			a := f.arrs[slot]
+			a := f.at(h).arrs[slot]
 			if a == nil {
 				unallocated(f, name)
 			}
@@ -1784,7 +1849,7 @@ func (c *compiler) assignElement(l *syntax.Index, name string, s *sym, val realF
 	}
 	return func(f *frame) {
 		v := val(f)
-		a := f.arrs[slot]
+		a := f.at(h).arrs[slot]
 		if a == nil {
 			unallocated(f, name)
 		}
@@ -1803,8 +1868,12 @@ func (c *compiler) assignElement(l *syntax.Index, name string, s *sym, val realF
 // the result of a top-level + - * / straight into the destination.
 func (c *compiler) assignArray(at syntax.Node, s *sym, name string, rhs *ex) (stmtFn, error) {
 	slot := s.slot
+	h, err := c.hops(s, at)
+	if err != nil {
+		return nil, err
+	}
 	dest := func(f *frame) *array {
-		d := f.arrs[slot]
+		d := f.at(h).arrs[slot]
 		if d == nil {
 			fail(f, "array %s is not allocated", name)
 		}
@@ -1878,11 +1947,15 @@ func (c *compiler) call(s *syntax.Call) (stmtFn, error) {
 		return nil, c.errf(s, "cpu_time needs a real variable")
 	}
 	sy, _, err := c.symOf(t)
-	if err != nil || sy.k != kReal || sy.isC || sy.owner != c.cur {
+	if err != nil || sy.k != kReal || sy.isC {
 		return nil, c.errf(s, "cpu_time needs a declared real(8) variable")
 	}
+	h, err := c.hops(sy, s)
+	if err != nil {
+		return nil, err
+	}
 	slot := sy.slot
-	return func(f *frame) { f.reals[slot] = time.Since(f.start).Seconds() }, nil
+	return func(f *frame) { f.at(h).reals[slot] = time.Since(f.start).Seconds() }, nil
 }
 
 func (c *compiler) allocate(a *syntax.Allocate) (stmtFn, error) {
@@ -1927,8 +2000,12 @@ func (c *compiler) allocate(a *syntax.Allocate) (stmtFn, error) {
 			return nil, c.errf(o, "allocate needs a name")
 		}
 		sy, _, err := c.symOf(id)
-		if err != nil || sy.k != kArr || sy.shape != nil || sy.owner != c.cur {
+		if err != nil || sy.k != kArr || sy.shape != nil {
 			return nil, c.errf(o, "%s is not an allocatable array", id.Name)
+		}
+		h, err := c.hops(sy, o)
+		if err != nil {
+			return nil, err
 		}
 		if len(ix.Args) != sy.rank {
 			return nil, c.errf(o, "%s has rank %d", id.Name, sy.rank)
@@ -1947,7 +2024,7 @@ func (c *compiler) allocate(a *syntax.Allocate) (stmtFn, error) {
 			}
 			shape = append(shape, fn)
 		}
-		fns = append(fns, allocFn(sy.slot, shape))
+		fns = append(fns, allocFn(h, sy.slot, shape))
 	}
 	return func(f *frame) {
 		for _, fn := range fns {

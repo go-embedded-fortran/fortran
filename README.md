@@ -19,7 +19,7 @@ by hand.
 | M2 front end, part 2 | semantics to a typed tree, the v1 subset, cell splitter and session module | in progress: package `sema` (scopes, symbols, implicit typing, kinds, constants, expression typing, `use`, derived types: PR 1), the cell splitter, session module and go-notebook-facing analysis (PR 4), generic resolution, argument association, explicit-interface requirements and `intent` at calls (PR 2), shape conformance (PR 3), and `eval` consumes the typed tree; the playground side of the gate and the remaining semantics (see "Not yet") are open |
 | M3 back end | as the gate decides: A = closure compiler over the typed tree, B = lowering to go-embedded-c's IR | planned |
 | M4 runtime | I/O (ported from flang-rt), intrinsics on go-ndarray and go-fft | in progress: package `rt` (formatted and list-directed input and output, units, internal files; "The I/O runtime" below), and `eval`'s print and write run on it; the elemental intrinsics and the rest of the runtime are open |
-| M5 notebook bridge | values table, `file:line` errors, cells on desktop and playground | planned |
+| M5 notebook bridge | values table, `file:line` errors, cells on desktop and playground | in progress: `eval.Session` runs cells one after the other ("Running cells" below); go-notebook's `fcells` package links it; variables do not cross to other languages yet |
 | M6 conformance | FCVS, gfortran.dg run tests, reference LAPACK built by our front end; performance table | planned |
 
 There is no Fortran evaluator here yet: nothing in this repository executes
@@ -579,7 +579,9 @@ mixes declarations, statements and program units. A cell is then split:
 
 `CellInfo` carries what go-notebook's graph needs: `Defines` (variables and
 named constants: the names that cross, `Crosses`), `Procedures`, `Types` and
-`Modules` (they stay Fortran's), `Uses` (earlier cells' names this cell reads),
+`Modules` (they stay Fortran's), `Uses` (earlier cells' names this cell reads,
+including the derived types its declarations name and the modules its `use`
+statements name, not only the names in expressions),
 `Errors`, and what the back ends need: the transformed `File` and its `Info`.
 `sema.GoType` is the values table of bib §7 (`integer(k)` to `int8..int64`,
 `real` to `float32|float64`, `complex(4|8)` to `complex64|complex128`,
@@ -587,6 +589,39 @@ named constants: the names that cross, `Crosses`), `Procedures`, `Types` and
 derived types opaque; `integer(16)`, `real(10)` and `real(16)` have none). The
 adapter that fills `analysis.Cell` belongs to the language registration in
 go-notebook and is not written. `FuzzSession` is in the CI fuzz matrix.
+
+### Running cells (M5)
+
+`eval.Session` is `sema.Session` plus the evaluator: `Run(ctx, src, out, stderr)`
+analyses, compiles and runs one cell. What a cell defines stays for the cells
+after it: its variables keep their values (they are variables of the session
+module `__cell<N>`, whose frame lives as long as the session), its modules,
+types, subroutines and functions are in scope, and a redefinition shadows
+(`sema.Session`'s rule). A `program` unit in a cell runs after the cell's loose
+statements.
+
+- Output is per cell: standard output to `out`, standard error and the text of
+  `STOP` to `stderr`; a record left open (`advance='no'`) ends with the cell.
+  `STOP` and `ERROR STOP` end the cell, not the session (`Stats.Exit`).
+- A cell the analyser or the compiler refuses is an `*Error` with a
+  `cellN.f90:line:col` position and leaves the session as it was. A cell that
+  fails while it runs keeps what it had done.
+- Untrusted input: every DO iteration and procedure call is one step against
+  `SessionOptions.MaxSteps` (default 2^32; negative is none) and the context is
+  looked at every 2^16 steps, so an infinite loop or an exponential recursion
+  ends with `step limit reached` or the context's error (`errors.Is(err,
+  context.DeadlineExceeded)`); the count, not a timer, is what holds in
+  WebAssembly. `MaxArrayElems`, `MaxStringLen` and `MaxCallDepth` apply per run.
+  The budget costs 0.45 ns on a 2.85 ns scalar DO iteration (Apple M4 Max,
+  `BenchmarkDoLoop`). A Go panic inside the evaluator is returned as an error,
+  not raised.
+- `Session.Get(name)` reads a scalar variable of the session as a Go value (the
+  type of `sema.GoType`). Arrays and derived types are not read yet; nothing
+  crosses to other languages yet (go-notebook's Fortran cells are `Isolated`).
+- Host and module association of arrays and of the DO variable now works (a
+  session's variables are a module's, and its procedures are module procedures).
+  An array declared with an initialisation, which used to be dropped silently,
+  is refused until it is implemented.
 
 ## Not yet
 
