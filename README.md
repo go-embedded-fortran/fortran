@@ -264,6 +264,8 @@ is provisioned.
 | `foracle gate [--smoke] [--wait-load D]` | the whole §4.2 gate: the contenders on the kernels, checksum bounds, the decision rule (see "The gate"); refuses above 1-minute load 8, or with `--wait-load` waits up to D and reruns a round the load spoiled |
 | `foracle parse-rate --dir D` | parses every Fortran file below D with the `syntax` package and compares with `gfortran -fsyntax-only` (see "The parser") |
 | `foracle parse-bench --dir D` | parse throughput against `gfortran -fsyntax-only` on the largest files both accept; refused above load 8 |
+| `foracle sema-rate --dir D` | parses and analyses every file with `syntax` and `sema` and compares with `gfortran -fsyntax-only` (see "Semantic analysis") |
+| `foracle run-rate --dir D` | runs every `dg-do run` file with `eval` and with gfortran and compares stdout, stderr and exit status (see "The execution differential") |
 | `foracle toolchain --home H [--flang]` | installs the pinned toolchain |
 | `foracle version` | prints the pinned versions and whether the toolchain was found |
 
@@ -385,6 +387,35 @@ refused or need other files.
 
 Counts per corpus are not given here: the first CI run of the corpora job
 produces them (artefact `corpora-oracle`) and nothing was measured before.
+
+### The execution differential (M6)
+
+`foracle run-rate --dir D` takes every file below D that contains `dg-do run`
+(the gfortran.dg tests meant to be run), builds it with gfortran and runs it,
+runs it with `eval` in one session with implicit typing, and compares stdout,
+stderr and exit status. Both sides are bounded (`--timeout` each; `eval`'s
+memory 1 GiB, output 1 MiB). Each file gets one class, and every class is
+printed, zero included; a run that read nothing is refused, not reported as
+zero failures:
+
+| class | meaning |
+|---|---|
+| identical | stdout, stderr and exit status equal |
+| differs | `eval` ran it, or failed while running, and they are not |
+| refused-by-us | `eval`'s analyser or compiler refused it: nothing ran (`eval.Error.Refused`) |
+| gfortran-failed | gfortran did not build it, or did not run it within bounds |
+| skipped | fixed form (`eval.Session` reads free form), or `dg-shouldfail` |
+
+**First run** (2026-11-15, this branch, gfortran.dg of gcc 15.2.0, local, 60 s
+per side): 3151 files, **identical 192**, differs 22, refused-by-us 2186,
+gfortran-failed 434, skipped 317. The most frequent refusals: `contains` in a
+main program without a `program` statement (170), `open` (94), the `target`
+attribute (75), the `pointer` attribute (76), `use iso_c_binding` (45), array
+named constants (40). `--notes N` lists them; `--out` writes one line per file.
+
+Writing it found that `eval` never ran an implicitly typed variable: the
+analyser typed it, and the compiler refused it as not declared. It now gets its
+storage like a declared one.
 
 ## Semantic analysis (M2, part 1)
 

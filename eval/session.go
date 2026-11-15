@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -84,14 +85,19 @@ func (s *Session) Run(ctx context.Context, src string, out, stderr io.Writer) (s
 	ci, next := s.an.AnalyzeNext(s.state, s.n, src)
 	if len(ci.Errors) > 0 {
 		e := ci.Errors[0]
-		return st, &Error{Pos: e.Pos.String(), Msg: e.Msg}
+		return st, &Error{Pos: e.Pos.String(), Msg: e.Msg, Refused: true}
 	}
 	c := s.c
 	nMods := len(c.modules)
 	mains, err := c.cell(ci)
 	if err != nil {
 		c.modules = c.modules[:nMods]
-		return st, err
+		var e *Error
+		if errors.As(err, &e) {
+			e.Refused = true
+			return st, e
+		}
+		return st, &Error{Msg: err.Error(), Err: err, Refused: true}
 	}
 	s.state = next
 	for n, v := range ci.Vars {

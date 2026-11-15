@@ -138,6 +138,20 @@ func (c *compiler) declareProc(p *procCode) error {
 			return c.errf(p.unit, "function %s has no result variable", p.name)
 		}
 	}
+	// A variable typed by the implicit rules has no declaration statement to
+	// give it storage: give it here, once the unit's declarations are compiled
+	// (the analyser typed it; without this the compiler refused it as "not
+	// declared" whatever ImplicitTyping said).
+	for _, ss := range p.scope.Order {
+		if ss.Kind != sema.SymVar || ss.Flags&sema.FImplicit == 0 {
+			continue
+		}
+		if _, ok := c.syms[ss]; !ok {
+			if err := c.declSym(ss, p.unit, nil); err != nil {
+				return err
+			}
+		}
+	}
 	p.declared = true
 	return nil
 }

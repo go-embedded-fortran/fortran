@@ -18,7 +18,8 @@ type Limits struct {
 	// Timeout is the wall-clock bound (10 s when zero).
 	Timeout time.Duration
 	// MemoryBytes bounds the address space of the process (1 GiB when zero),
-	// through RLIMIT_AS set by a re-executed helper (see Init). It is enforced
+	// through RLIMIT_AS set by /bin/sh before it execs the program (see
+	// limitScript). It is enforced
 	// on Linux; macOS ignores RLIMIT_AS, so there it is a request, not a bound
 	// (Result.MemoryLimited says which). A negative value asks for no limit.
 	MemoryBytes int64

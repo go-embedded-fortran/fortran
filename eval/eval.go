@@ -23,6 +23,9 @@ type Error struct {
 	// Err is the cause when there is one: the context's error of a run that was
 	// stopped (errors.Is(err, context.DeadlineExceeded)).
 	Err error
+	// Refused is set when the analyser or the compiler refused the source, so
+	// nothing ran (Session.Run); a failure while running leaves it false.
+	Refused bool
 }
 
 func (e *Error) Unwrap() error { return e.Err }
