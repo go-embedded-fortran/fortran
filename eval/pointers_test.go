@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -247,5 +248,94 @@ func TestPointerTargetsAreChargedToTheHeap(t *testing.T) {
 	}
 	if _, err := runPtr(t, 100<<20, strings.Replace(dangle, "g => loc\n", "", 1)); err != nil {
 		t.Errorf("the control, no pointer to the local: %v", err)
+	}
+}
+
+// A pointer that dies with the frame of its target holds nothing after the
+// return: a conforming procedure that points a LOCAL pointer at its own 32 MB
+// array, called 20 times (640 MB in all) under 100 MiB, runs.
+func TestALocalPointerToALocalTargetIsCreditedOnReturn(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"array", "integer, target :: a(2**22)\ninteger, pointer :: q(:)\nq => a\nq = k\nk = q(1)\n"},
+		{"element", "integer, target :: a(2**22)\ninteger, pointer :: q\nq => a(1)\nq = k\nk = q\n"},
+	} {
+		src := "module ml\ncontains\nsubroutine s(k)\ninteger :: k\n" + tc.body + "end subroutine\nend module\nprogram p\nuse ml\ninteger :: i, k\ndo i = 1, 20\nk = i\ncall s(k)\nend do\nprint *, k\nend program\n"
+		if out, err := runPtr(t, 100<<20, src); err != nil || out != "20" {
+			t.Errorf("%s: 20 calls with a local pointer to a local 32 MB array, under 100 MiB: %q, %v", tc.name, out, err)
+		}
+	}
+}
+
+// A scalar pointer left on a procedure's local scalar must not keep the
+// procedure's frame alive uncounted: the frame holds a 32 MB array. Three
+// module pointers left on the scalar of three calls, then 96 MB more, under
+// 100 MiB: either the frames are counted (refused) or they are not kept (the
+// pointer holds the scalar alone), and Go's live heap says which.
+func TestAScalarPointerToALocalDoesNotKeepItsFrame(t *testing.T) {
+	const src = "module mf\ninteger, pointer :: p1, p2, p3\ncontains\nsubroutine grab(k)\ninteger :: k\ninteger, target :: n\ninteger :: big(2**22)\nbig(1) = k\nn = k\nselect case (k)\ncase (1)\np1 => n\ncase (2)\np2 => n\ncase (3)\np3 => n\nend select\nend subroutine\nend module\nprogram q\nuse mf\ncall grab(1)\ncall grab(2)\ncall grab(3)\nprint *, p1 + p2 + p3\nend program\n"
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	s := NewSession(SessionOptions{MaxAlloc: 100 << 20})
+	var out strings.Builder
+	_, err := s.Run(context.Background(), src, &out, io.Discard)
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	if err != nil || strings.TrimSpace(out.String()) != "6" {
+		t.Fatalf("the three pointers: %q, %v", out.String(), err)
+	}
+	// the session (and the pointers in it) is alive here; ReadMemStats counts
+	// what is reachable after the collection, and three frames are 96 MB
+	held := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	if held > 16<<20 {
+		t.Errorf("three pointers to a local scalar keep %d MB alive (the frames of the calls, with their 32 MB arrays)", held>>20)
+	}
+	runtime.KeepAlive(s)
+}
+
+// Every path by which a pointer can outlive the frame of its target keeps the
+// target counted (32 MB kept, then 96 MB more under 100 MiB is refused), and
+// its control, the same program with the pointer kept local, runs.
+func TestEveryEscapeKeepsTheTargetCounted(t *testing.T) {
+	const tail = "end module\nprogram q\nuse me\ninteger, allocatable :: c(:)\ncall keep()\nallocate(c(12582912))\nend program\n"
+	for _, tc := range []struct{ name, escape, local string }{
+		// a module scalar pointer to an element of a local array holds the array
+		{"element", "module me\ninteger, pointer :: g\ncontains\nsubroutine keep()\ninteger, target :: a(2**22)\na = 1\ng => a(1)\nend subroutine\n",
+			"module me\ncontains\nsubroutine keep()\ninteger, target :: a(2**22)\ninteger, pointer :: g\na = 1\ng => a(1)\nend subroutine\n"},
+		// a local pointer to a local array, copied into a module pointer
+		{"through a local pointer", "module me\ninteger, pointer :: g(:)\ncontains\nsubroutine keep()\ninteger, target :: a(2**22)\ninteger, pointer :: q(:)\na = 1\nq => a\ng => q\nend subroutine\n",
+			"module me\ncontains\nsubroutine keep()\ninteger, target :: a(2**22)\ninteger, pointer :: q(:), g(:)\na = 1\nq => a\ng => q\nend subroutine\n"},
+		// a function's pointer result to its own local array goes to the caller
+		{"function result", "module me\ninteger, pointer :: g(:)\ncontains\nfunction f() result(r)\ninteger, pointer :: r(:)\ninteger, target :: a(2**22)\na = 1\nr => a\nend function\nsubroutine keep()\ng => f()\nend subroutine\n",
+			"module me\ncontains\nsubroutine keep()\ninteger, target :: a(2**22)\ninteger, pointer :: r(:)\na = 1\nr => a\nend subroutine\n"},
+	} {
+		if _, err := runPtr(t, 100<<20, tc.escape+tail); !memErr(err) {
+			t.Errorf("%s: 96 MB after a pointer kept a 32 MB local, under 100 MiB: %v, want a refusal", tc.name, err)
+		}
+		if _, err := runPtr(t, 100<<20, tc.local+tail); err != nil {
+			t.Errorf("%s, kept local: %v", tc.name, err)
+		}
+	}
+}
+
+// A scalar target boxed when its frame returns keeps its last value, and two
+// pointers associated with it in one call stay associated with each other.
+func TestABoxedScalarKeepsItsValueAndItsAssociation(t *testing.T) {
+	const src = "module mb\nreal, pointer :: p1, p2\ninteger, pointer :: i1\ncontains\nsubroutine grab()\nreal, target :: x\ninteger, target :: n\nx = 1.5\nn = 3\np1 => x\np2 => x\ni1 => n\nx = 2.5\nn = 4\nend subroutine\nend module\nprogram q\nuse mb\ncall grab()\nprint *, p1, i1, associated(p1, p2)\np2 = 7.0\nprint *, p1\nend program\n"
+	out, err := runPtr(t, 100<<20, src)
+	if err != nil || out != "2.50000000 4 T 7.00000000" {
+		t.Errorf("boxed scalars after the return: %q, %v", out, err)
+	}
+}
+
+// A second DEALLOCATE of a target, through another pointer, says so.
+func TestASecondDeallocateSaysAlreadyDeallocated(t *testing.T) {
+	for _, src := range []string{
+		"integer, pointer :: p(:), q(:)\nallocate(p(3))\nq => p\ndeallocate(p)\ndeallocate(q)\n",
+		"integer, pointer :: p, q\nallocate(p)\nq => p\ndeallocate(p)\ndeallocate(q)\n",
+	} {
+		if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), "already deallocated") {
+			t.Errorf("%q: %v, want already deallocated", src, err)
+		}
 	}
 }

@@ -40,6 +40,7 @@ var runtimeAllocs = map[string]struct {
 	"arrays.go:resolve":                 {8, "charged: a triplet's subscripts and a section's offsets are peeked before they are made, and the statement resets its temporaries (assignGA sets c.tmps for a section target); dims and the counters are rank-sized; an element (scalar subscripts) allocates no list"},
 	"arrfuncs.go:compiler.arrIntrinsic": {11, "bounded: extent, order, stride and index lists, one entry per dimension (reshape checks the shape's size against the result rank first); results are newGarr, peeked; pack copies into its result, no intermediate list"},
 	"arrfuncs.go:compiler.elementalGA":  {2, "bounded: one array per argument (source); the result is newGarr, peeked"},
+	"pointers.go:escapeScalar":          {1, "bounded: one entry per scalar variable of the frame (its declarations), reused by every later association with it; boxEscaped then empties it"},
 	"derived.go:compiler.compDefault":   {2, "bounded: lb and ext copies (rank); the component's array is newGarr, peeked"},
 	"derived.go:compiler.declD":         {1, "charged: the slots of an array of objects, charge(8*n) before make; each object is newObj, charged"},
 	"derived.go:compiler.structCons":    {1, "bounded: ext copy (rank); the component's array is newGarr, peeked"},

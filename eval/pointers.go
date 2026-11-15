@@ -39,12 +39,100 @@ import (
 
 // sref is the target of a scalar pointer.
 type sref struct {
-	f      *frame // a scalar variable: slot s of frame f
+	f      *frame // a scalar variable: slot s of frame f (f.reals when rl)
 	s      int
+	rl     bool
 	g      *garr // or an element: offset off of g
 	off    int
 	palloc bool  // ALLOCATE made it through a pointer (the only target DEALLOCATE may free)
+	freed  bool  // DEALLOCATE freed it, through this pointer or another one
 	chg    int64 // what ALLOCATE charged the heap for it
+}
+
+// Which targets outlive their frame. A pointer held in a frame that outlives
+// the frame of its target keeps the target after that frame returns (Go keeps
+// it; Fortran calls such a pointer undefined, and nothing here reads it as
+// anything but what it was). The live frames are a stack, so the pointer's
+// frame outlives the target's when it is less deep: a module's frame, the
+// main program's, a caller's, a host's. A function's result goes to its
+// caller, so a result pointer counts one level up. A pointer in the target's
+// own frame, or deeper, dies first and keeps nothing.
+//
+//   - an array target that escapes is marked aliased when it is associated,
+//     and when its frame returns its charge moves to the heap (memory.go
+//     exit) instead of being credited: it stays counted;
+//   - a scalar target that escapes is noted in its frame (escaped), and when
+//     the frame returns each such target moves into a box of its own holding
+//     its value, so the pointer keeps 8 bytes and never the frame (with its
+//     arrays). A box is not charged: the boxes alive are at most the scalar
+//     pointers alive, and each of those is in a frame that is.
+
+// escapes reports that a pointer held in holder (a function's result when
+// result) outlives own, the frame its target lives in.
+func escapes(holder *frame, result bool, own *frame) bool {
+	if holder == nil || own == nil {
+		return false
+	}
+	d := holder.depth
+	if result {
+		d--
+	}
+	return d < own.depth
+}
+
+// escapeArray notes that g is held by a pointer that outlives g's frame.
+func escapeArray(f *frame, g *garr) {
+	if g != nil && !g.aliased {
+		g.aliased = true
+		if f.bud != nil {
+			f.bud.aliased = true
+		}
+	}
+}
+
+// escapeScalar notes that r, a scalar variable of its frame, is held by a
+// pointer that outlives that frame, and returns the one sref that stands for
+// that variable from now on: the frame keeps one per variable, so that a loop
+// of associations grows nothing.
+func escapeScalar(r *sref) *sref {
+	t := r.f
+	for _, x := range t.escaped {
+		if x.s == r.s && x.rl == r.rl {
+			return x
+		}
+	}
+	// at most one per scalar variable of the frame: bounded by its declarations
+	t.escaped = append(t.escaped, r)
+	return r
+}
+
+// boxEscaped moves the scalar targets of f that outlive it into boxes of their
+// own, as f returns.
+func boxEscaped(f *frame) {
+	for _, r := range f.escaped {
+		if r.rl {
+			r.f = &frame{reals: []float64{f.reals[r.s]}}
+		} else {
+			r.f = &frame{ints: []int64{f.ints[r.s]}}
+		}
+		r.s = 0
+	}
+	f.escaped = nil
+}
+
+// escapeTarget applies the rules above to r, the target a pointer held in
+// holder is being associated with, and returns what the pointer must hold.
+func escapeTarget(f, holder *frame, result bool, r *sref) *sref {
+	switch {
+	case r == nil:
+	case r.g != nil:
+		if escapes(holder, result, r.g.own) {
+			escapeArray(f, r.g)
+		}
+	case escapes(holder, result, r.f):
+		return escapeScalar(r)
+	}
+	return r
 }
 
 // same reports two pointers associated with one target.
@@ -196,8 +284,8 @@ func (c *compiler) scalarTarget(at syntax.Node, p *sym, e syntax.Expr) (func(*fr
 		if err != nil {
 			return nil, err
 		}
-		slot := t.slot
-		return func(f *frame) *sref { return &sref{f: f.at(h), s: slot} }, nil
+		slot, rl := t.slot, t.k == kReal
+		return func(f *frame) *sref { return &sref{f: f.at(h), s: slot, rl: rl} }, nil
 	case *syntax.Index:
 		if c.isFuncRef(x) {
 			// p => f(): the target of f's pointer result
@@ -228,13 +316,8 @@ func (c *compiler) scalarTarget(at syntax.Node, p *sym, e syntax.Expr) (func(*fr
 		return func(f *frame) *sref {
 			g := ref.get(f)
 			offs, _ := resolve(f, g, name, ss)
-			if !g.aliased {
-				// the pointer holds the whole array (see memory.go exit)
-				g.aliased = true
-				if f.bud != nil {
-					f.bud.aliased = true
-				}
-			}
+			// the pointer holds the whole array: whether that outlives the
+			// array's frame is decided by the association (escapeTarget)
 			return &sref{g: g, off: offs[0]}
 		}, nil
 	}
@@ -250,7 +333,27 @@ func (c *compiler) scalarPtrAssign(s *syntax.PointerAssign, acc func(*frame) **s
 	if err != nil {
 		return nil, err
 	}
-	return func(f *frame) { *acc(f) = tgt(f) }, nil
+	holder, err := c.holderOf(p, s)
+	if err != nil {
+		return nil, err
+	}
+	result := c.isResult(p)
+	return func(f *frame) { *acc(f) = escapeTarget(f, holder(f), result, tgt(f)) }, nil
+}
+
+// holderOf is the frame that holds the variable s.
+func (c *compiler) holderOf(s *sym, at syntax.Node) (func(*frame) *frame, error) {
+	h, err := c.hops(s, at)
+	if err != nil {
+		return nil, err
+	}
+	return func(f *frame) *frame { return f.at(h) }, nil
+}
+
+// isResult reports that s is the result variable of the function being
+// compiled: what it holds goes to the caller.
+func (c *compiler) isResult(s *sym) bool {
+	return c.cur != nil && c.cur.result == s
 }
 
 // allocScalarPtr is ALLOCATE(p) for a scalar pointer: a one-slot frame of its
@@ -263,13 +366,16 @@ func allocScalarPtr(acc func(*frame) **sref, k kind, name string, dealloc bool) 
 			if r == nil {
 				fail(f, "deallocate: pointer %s is not associated", name)
 			}
+			if r.freed {
+				fail(f, "deallocate: the target of pointer %s was already deallocated", name)
+			}
 			if !r.palloc {
 				fail(f, "deallocate: pointer %s is associated with a target that ALLOCATE did not make through a pointer", name)
 			}
 			if h := f.bud.heapFrame(); h != nil && r.chg > 0 {
 				f.bud.credit(f, h, r.chg)
 			}
-			r.palloc, r.chg = false, 0
+			r.palloc, r.freed, r.chg = false, true, 0
 			*acc(f) = nil
 		}
 	}
@@ -332,11 +438,14 @@ func deallocPointer(ref *gref) stmtFn {
 		if g == nil {
 			fail(f, "deallocate: pointer %s is not associated", name)
 		}
+		if g.freed {
+			fail(f, "deallocate: the target of pointer %s was already deallocated", name)
+		}
 		if !g.palloc {
 			fail(f, "deallocate: pointer %s is associated with a target that ALLOCATE did not make through a pointer", name)
 		}
 		f.bud.release(f, g)
-		g.palloc = false
+		g.palloc, g.freed = false, true
 		*ref.ptr(f) = nil
 	}
 }
@@ -371,6 +480,19 @@ func (c *compiler) pointerAssign(s *syntax.PointerAssign) (stmtFn, error) {
 	if isNullCall(s.RHS) {
 		return func(f *frame) { *ref.ptr(f) = nil }, nil
 	}
+	ps, _, err := c.symOf(s.LHS.(*syntax.Ident))
+	if err != nil {
+		return nil, err
+	}
+	result := c.isResult(ps)
+	// assign associates the pointer with g, which stays counted after its
+	// frame returns when the pointer outlives that frame (escapes)
+	assign := func(f *frame, g *garr) {
+		if g != nil && escapes(ref.own(f), result, g.own) {
+			escapeArray(f, g)
+		}
+		*ref.ptr(f) = g
+	}
 	if c.isFuncRef(s.RHS) {
 		// p => f(): the target of f's pointer result
 		x, err := c.expr(s.RHS)
@@ -384,7 +506,7 @@ func (c *compiler) pointerAssign(s *syntax.PointerAssign) (stmtFn, error) {
 			return nil, c.errf(s, "pointer assignment: %s and the function's result differ in type, kind or rank", ref.name)
 		}
 		pg := x.pg
-		return func(f *frame) { *ref.ptr(f) = pg(f) }, nil
+		return func(f *frame) { assign(f, pg(f)) }, nil
 	}
 	if _, ok := s.RHS.(*syntax.Ident); !ok {
 		return nil, c.errf(s, "pointer assignment: only a whole array variable or a function's pointer result is supported yet as the target (not a section or an expression)")
@@ -399,16 +521,7 @@ func (c *compiler) pointerAssign(s *syntax.PointerAssign) (stmtFn, error) {
 	if tref.et != ref.et || tref.kd != ref.kd || tref.rank != ref.rank {
 		return nil, c.errf(s, "pointer assignment: %s and %s differ in type, kind or rank", ref.name, tref.name)
 	}
-	return func(f *frame) {
-		g := *tref.ptr(f)
-		if g != nil && !g.aliased {
-			g.aliased = true
-			if f.bud != nil {
-				f.bud.aliased = true
-			}
-		}
-		*ref.ptr(f) = g
-	}, nil
+	return func(f *frame) { assign(f, *tref.ptr(f)) }, nil
 }
 
 // nullify compiles NULLIFY(p, ...).

@@ -115,15 +115,19 @@ func (b *budget) chargeDelta(f *frame, own *frame, d int64) {
 // allocatable dummy argument today, the one case where an array charged to a
 // callee's frame would be reached by its caller).
 func (b *budget) exit(f *frame) {
+	if len(f.escaped) > 0 {
+		boxEscaped(f)
+	}
 	if b == nil {
 		return
 	}
 	if b.aliased && b.heap != nil {
-		// an array of this frame that a pointer was associated with outlives
-		// the frame in fact (the pointer still holds it, and Go keeps it): its
-		// charge moves to the heap rather than being credited, so the memory
-		// stays counted. A pointer to a local that is not SAVEd is undefined
-		// in Fortran after the return; counting it is the safe side.
+		// an array of this frame that a pointer outliving the frame was
+		// associated with outlives the frame in fact (the pointer may still
+		// hold it, and Go keeps it): its charge moves to the heap rather than
+		// being credited, so the memory stays counted. A pointer to a local
+		// that is not SAVEd is undefined in Fortran after the return;
+		// counting it is the safe side (pointers.go escapes).
 		for _, g := range f.gas {
 			if g != nil && g.aliased && g.own == f && g.chg > 0 {
 				f.mem -= g.chg
