@@ -59,6 +59,17 @@ func TestSessionImplicitTyping(t *testing.T) {
 	}
 }
 
+// A cell may be a main program without a PROGRAM statement that has internal
+// procedures: statements, CONTAINS, the procedures, END (the shape of most
+// gfortran.dg run tests). It runs like the same program with the statement.
+func TestSessionImplicitMainWithContains(t *testing.T) {
+	s := NewSession(SessionOptions{})
+	out := mustRun(t, s, "integer :: n\nn = 2\ncall s(n)\nprint *, n\ncontains\nsubroutine s(k)\ninteger :: k\nk = k * 21\nend subroutine\nend\n")
+	if strings.TrimSpace(out) != "42" {
+		t.Fatalf("an implicit main with an internal subroutine: %q, want 42", out)
+	}
+}
+
 func TestSessionVariablePersists(t *testing.T) {
 	s := NewSession(SessionOptions{})
 	mustRun(t, s, "integer :: n = 40\nreal(8) :: x\nx = 1.5d0\n")
