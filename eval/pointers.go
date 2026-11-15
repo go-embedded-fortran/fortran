@@ -228,6 +228,13 @@ func (c *compiler) scalarTarget(at syntax.Node, p *sym, e syntax.Expr) (func(*fr
 		return func(f *frame) *sref {
 			g := ref.get(f)
 			offs, _ := resolve(f, g, name, ss)
+			if !g.aliased {
+				// the pointer holds the whole array (see memory.go exit)
+				g.aliased = true
+				if f.bud != nil {
+					f.bud.aliased = true
+				}
+			}
 			return &sref{g: g, off: offs[0]}
 		}, nil
 	}
@@ -392,7 +399,16 @@ func (c *compiler) pointerAssign(s *syntax.PointerAssign) (stmtFn, error) {
 	if tref.et != ref.et || tref.kd != ref.kd || tref.rank != ref.rank {
 		return nil, c.errf(s, "pointer assignment: %s and %s differ in type, kind or rank", ref.name, tref.name)
 	}
-	return func(f *frame) { *ref.ptr(f) = *tref.ptr(f) }, nil
+	return func(f *frame) {
+		g := *tref.ptr(f)
+		if g != nil && !g.aliased {
+			g.aliased = true
+			if f.bud != nil {
+				f.bud.aliased = true
+			}
+		}
+		*ref.ptr(f) = g
+	}, nil
 }
 
 // nullify compiles NULLIFY(p, ...).

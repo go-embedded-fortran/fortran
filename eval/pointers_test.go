@@ -72,6 +72,24 @@ func TestArrayPointerFailures(t *testing.T) {
 	}
 }
 
+// SAVE in a procedure was accepted and ignored: the variables of a procedure
+// are made anew at each call, so a counter SAVEd across two calls printed 1
+// then 1 where gfortran prints 1 then 2 (found while writing the alias tests).
+// It is refused in all three forms; in the main program it changes nothing.
+func TestSaveInAProcedureIsRefused(t *testing.T) {
+	for _, form := range []string{"integer, save :: n\n", "integer :: n\nsave n\n", "integer :: n\nsave\n"} {
+		src := "program p\ncall c()\ncall c()\ncontains\nsubroutine c()\n" + form + "n = 1\nprint *, n\nend subroutine\nend program\n"
+		_, err := runPtr(t, 0, src)
+		var e *Error
+		if !errors.As(err, &e) || !e.Refused || !strings.Contains(err.Error(), "SAVE in a procedure") {
+			t.Errorf("%q: %v, want a refusal", form, err)
+		}
+	}
+	if out, err := runPtr(t, 0, "integer, save :: n\nn = 2\nprint *, n\n"); err != nil || out != "2" {
+		t.Errorf("SAVE in a cell's main program: %q, %v", out, err)
+	}
+}
+
 func TestScalarPointers(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
 		{"both ways through a variable",
@@ -198,5 +216,36 @@ func TestPointerTargetsAreChargedToTheHeap(t *testing.T) {
 	control := strings.Replace(escape, "call mk()\n", "", 1)
 	if _, err := runPtr(t, 100<<20, control); err != nil {
 		t.Errorf("the control, 96 MB alone under 100 MiB: %v", err)
+	}
+	// pointer assignment allocates nothing: a million reassignments between
+	// two 32 MB targets in a 100 MiB budget run, and the budget still holds the
+	// two targets only (one more 32 MB array fits, a 64 MB one does not)
+	const reassign = "integer, target :: a(2**22), b(2**22)\ninteger, pointer :: p(:)\ninteger :: i\na = 1\nb = 2\ndo i = 1, 1000000\np => a\np => b\nend do\nprint *, sum(p(1:2))\n"
+	if out, err := runPtr(t, 100<<20, reassign); err != nil || out != "4" {
+		t.Errorf("a million pointer reassignments: %q, %v", out, err)
+	}
+	more := strings.Replace(strings.Replace(reassign, "integer :: i\n", "integer :: i\ninteger, allocatable :: c(:)\n", 1), "print *", "allocate(c(2**23))\nprint *", 1)
+	if _, err := runPtr(t, 100<<20, more); !memErr(err) {
+		t.Errorf("64 MB more after the reassignments (64 MB held) under 100 MiB: %v, want a refusal", err)
+	}
+	// an alias of a local array that goes out of scope: DEALLOCATE through it
+	// is refused (ALLOCATE did not make it through a pointer), so it is never
+	// credited a second time and the counter never goes below zero (which would
+	// fail the cell as an internal error)
+	const alias = "module ma\ninteger, pointer :: g(:)\ncontains\nsubroutine keep()\ninteger, target :: loc(4)\nloc = 3\ng => loc\nend subroutine\nend module\nprogram q\nuse ma\ncall keep()\ndeallocate(g)\nend program\n"
+	if _, err := runPtr(t, 100<<20, alias); err == nil || !strings.Contains(err.Error(), "did not make through a pointer") {
+		t.Errorf("DEALLOCATE through an alias of a local array: %v, want a refusal of the deallocate", err)
+	}
+	// the escape a review asked about: a module pointer to a LOCAL array (not
+	// SAVEd) keeps it alive after the procedure returns (Go holds it, Fortran
+	// calls the pointer undefined). Its charge moves to the heap instead of
+	// being credited, so it stays counted: 32 MB held after the call, and 96 MB
+	// more do not fit in 100 MiB; without the pointer (the control) they do.
+	const dangle = "module md\ninteger, pointer :: g(:)\ncontains\nsubroutine keep()\ninteger, target :: loc(2**22)\nloc = 3\ng => loc\nend subroutine\nend module\nprogram q\nuse md\ninteger, allocatable :: c(:)\ncall keep()\nallocate(c(12582912))\nend program\n"
+	if _, err := runPtr(t, 100<<20, dangle); !memErr(err) {
+		t.Errorf("96 MB after a pointer kept a 32 MB local alive, under 100 MiB: %v (the kept array is no longer counted)", err)
+	}
+	if _, err := runPtr(t, 100<<20, strings.Replace(dangle, "g => loc\n", "", 1)); err != nil {
+		t.Errorf("the control, no pointer to the local: %v", err)
 	}
 }
