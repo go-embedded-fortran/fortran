@@ -380,6 +380,14 @@ func TestExplicitShapeDummyHasItsDeclaredShape(t *testing.T) {
 	if out, err := runPtr(t, 100<<20, src); err != nil || out != "4 2 8.00000000 4 2 6 3 2 3 1 5 0 4" {
 		t.Errorf("explicit-shape dummies: %q, %v", out, err)
 	}
+	// a bound may name a dummy declared after the array (guality/arg1): the
+	// analyser types it at the end of the unit, and eval compiles it then
+	for _, decl := range []string{"integer :: a(n), n", "integer :: a(n)\ninteger :: n", "integer :: n, a(n)"} {
+		src := "integer :: a(10), b(12)\ncall sub (a, 10)\ncall sub (b, 12)\nwrite (*,*) a, b\nend\nsubroutine sub (a, n)\n" + decl + "\ninteger :: i\ndo i = 1, n\na(i) = i\nend do\nend subroutine\n"
+		if out, err := runPtr(t, 100<<20, src); err != nil || out != "1 2 3 4 5 6 7 8 9 10 1 2 3 4 5 6 7 8 9 10 11 12" {
+			t.Errorf("%s: %q, %v", decl, out, err)
+		}
+	}
 	// a dummy larger than its actual is stopped, not read past the storage
 	const big = "program p\ninteger :: a(3)\na = 1\ncall s(a, 4)\ncontains\nsubroutine s(b, n)\ninteger :: n\ninteger :: b(n)\nprint *, b(n)\nend subroutine\nend program\n"
 	if _, err := runPtr(t, 100<<20, big); err == nil || !strings.Contains(err.Error(), "more than the 3 of its actual") {
@@ -422,6 +430,7 @@ func TestBozRealIsTheBitPattern(t *testing.T) {
 		"program p\nprint *, real(z\"1FFFFFFFF\")\nend program\n":          "wider than REAL(4)",
 		"program p\nprint *, dble(z\"1FFFFFFFFFFFFFFFFF\")\nend program\n": "wider than 64 bits",
 		"program p\nprint *, real(z\"3F800000\", 16)\nend program\n":       "REAL(16) is not supported",
+		"program p\nprint *, int(z'1', 16)\nend program\n":                 "INTEGER(16) is not supported",
 	} {
 		if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: want a refusal containing %q, got %v", src, want, err)

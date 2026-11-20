@@ -212,7 +212,8 @@ type procCode struct {
 	body                 stmtFn
 	params               []*sym
 	intent               []string
-	result               *sym // a function's result variable
+	afterDecls           []func() error // compiled once the specification part is (declareProc)
+	result               *sym           // a function's result variable
 	declared             bool
 	// module is set for a module: its frame lives for the whole run (frame.mods
 	// [modIdx]) and the module procedures link to it.

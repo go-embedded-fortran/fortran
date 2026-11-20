@@ -162,6 +162,14 @@ func (c *compiler) declareProc(p *procCode) error {
 			}
 		}
 	}
+	// the bounds of explicit-shape dummies, which may name variables declared
+	// after them ("integer :: a(n), n"): every name has its storage now
+	for _, fn := range p.afterDecls {
+		if err := fn(); err != nil {
+			return err
+		}
+	}
+	p.afterDecls = nil
 	p.declared = true
 	return nil
 }

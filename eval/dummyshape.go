@@ -23,6 +23,7 @@ func (c *compiler) explicitShapeDummy(ss *sema.Symbol, e syntax.Node, s *sym) er
 	}
 	rank := ss.Rank
 	los, his := make([]intFn, rank), make([]intFn, rank)
+	var later []syntax.Dim // bounds compiled once the specification part is
 	for d, dm := range ss.Dims {
 		switch {
 		case dm.HiKnown && (dm.LoKnown || dm.Lo == 0):
@@ -33,23 +34,34 @@ func (c *compiler) explicitShapeDummy(ss *sema.Symbol, e syntax.Node, s *sym) er
 			los[d] = func(*frame) int64 { return lo }
 			his[d] = func(*frame) int64 { return hi }
 		case len(c.dimSyntax) == rank && c.dimSyntax[d].Hi != nil && !c.dimSyntax[d].Star:
-			sd := c.dimSyntax[d]
-			hi, err := c.intExpr(sd.Hi)
-			if err != nil {
-				return err
-			}
-			his[d] = hi
-			los[d] = func(*frame) int64 { return 1 }
-			if sd.Lo != nil {
-				lo, err := c.intExpr(sd.Lo)
-				if err != nil {
-					return err
-				}
-				los[d] = lo
-			}
+			later = c.dimSyntax
 		default:
 			return c.errf(e, "dummy array %s: an explicit shape with bounds that are not constant needs them in its type declaration", ss.Name)
 		}
+	}
+	if later != nil {
+		p := c.cur
+		p.afterDecls = append(p.afterDecls, func() error {
+			for d, sd := range later {
+				if los[d] != nil {
+					continue
+				}
+				hi, err := c.intExpr(sd.Hi)
+				if err != nil {
+					return err
+				}
+				his[d] = hi
+				los[d] = func(*frame) int64 { return 1 }
+				if sd.Lo != nil {
+					lo, err := c.intExpr(sd.Lo)
+					if err != nil {
+						return err
+					}
+					los[d] = lo
+				}
+			}
+			return nil
+		})
 	}
 	slot, name := s.slot, ss.Name
 	c.cur.init = append(c.cur.init, func(f *frame) {
