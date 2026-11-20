@@ -888,6 +888,12 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 			s.slot, s.clen = c.cur.nStrs, ss.Type.Len
 			c.cur.nStrs++
 			_, star := c.lenExpr.(*syntax.Asterisk)
+			if star && ss.Flags&sema.FResult != 0 {
+				// the length comes from the caller's declaration of the function
+				// (an obsolescent form); it is not passed in, and running with
+				// length 0 gave wrong results (parent_result_ref_2 of gfortran.dg)
+				return c.errf(e, "an assumed-length character function result is not supported")
+			}
 			if _, deferred := c.lenExpr.(*syntax.Triplet); deferred {
 				s.clen = -2
 			} else if s.clen < 0 && !star && c.lenExpr != nil && ss.Flags&sema.FDummy == 0 && !param {

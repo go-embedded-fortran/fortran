@@ -358,6 +358,20 @@ func TestValueDummyIsNotCopiedBack(t *testing.T) {
 	}
 }
 
+// TestAssumedLengthResultIsRefused: the length of a character(*) function
+// result is the caller's; eval ran it with length 0 and printed "[] 0".
+func TestAssumedLengthResultIsRefused(t *testing.T) {
+	const src = "function g()\ncharacter(*) :: g\ng = \"efgh\"\nprint *, '[', g, ']', len(g)\nend function g\ncharacter(4), external :: g\nprint *, '[', g(), ']'\nend\n"
+	if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), "assumed-length character function result") {
+		t.Errorf("character(*) result: want a refusal, got %v", err)
+	}
+	// a character(*) dummy keeps the actual's length
+	const dummy = "program p\ncall s('abc')\ncontains\nsubroutine s(c)\ncharacter(*) :: c\nprint *, len(c)\nend subroutine\nend program\n"
+	if out, err := runPtr(t, 100<<20, dummy); err != nil || out != "3" {
+		t.Errorf("character(*) dummy: %q, %v", out, err)
+	}
+}
+
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
 // (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
 func TestBozRealIsTheBitPattern(t *testing.T) {
@@ -369,6 +383,14 @@ func TestBozRealIsTheBitPattern(t *testing.T) {
 	const other = "program p\nprint *, int(z\"10\"), real(3)\nend program\n"
 	if out, err := runPtr(t, 100<<20, other); err != nil || out != "16 3.00000000" {
 		t.Errorf("INT of BOZ and REAL of an integer: %q, %v", out, err)
+	}
+	// INT reads the bits as an integer of its kind (gfortran 15.2.0's line)
+	const ints = "program p\nprint *, int(z'FFFFFFFF', 4), int(z'FB2E', 2), int(z'FF', 1), int(z'7F', 1), int(z'FFFFFFFFFFFFFFFF', 8)\nend program\n"
+	if out, err := runPtr(t, 100<<20, ints); err != nil || out != "-1 -1234 -1 127 -1" {
+		t.Errorf("INT of BOZ: %q, %v", out, err)
+	}
+	if _, err := runPtr(t, 100<<20, "program p\nprint *, int(z'1FF', 1)\nend program\n"); err == nil || !strings.Contains(err.Error(), "wider than INTEGER(1)") {
+		t.Errorf("INT of a BOZ wider than its kind: want a refusal, got %v", err)
 	}
 	// what is not modelled is refused, never truncated or guessed
 	for src, want := range map[string]string{
