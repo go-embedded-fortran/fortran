@@ -308,9 +308,6 @@ func (c *checker) retypeDeferred(sc *Scope) {
 		}
 	}
 	c.retype = keep
-	if len(mine) == 0 {
-		return
-	}
 	errs, stop := len(c.errs), c.stop
 	for _, r := range mine {
 		c.expr(r.sc, r.e)
