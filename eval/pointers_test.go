@@ -350,6 +350,21 @@ func TestBozRealIsTheBitPattern(t *testing.T) {
 	if out, err := runPtr(t, 100<<20, src); err != nil || out != "T T 1.00000000 0.0000000000000000" {
 		t.Errorf("BOZ as real: %q, %v", out, err)
 	}
+	// INT keeps the integer value, and REAL of a non-BOZ argument converts
+	const other = "program p\nprint *, int(z\"10\"), real(3)\nend program\n"
+	if out, err := runPtr(t, 100<<20, other); err != nil || out != "16 3.00000000" {
+		t.Errorf("INT of BOZ and REAL of an integer: %q, %v", out, err)
+	}
+	// what is not modelled is refused, never truncated or guessed
+	for src, want := range map[string]string{
+		"program p\nprint *, real(z\"1FFFFFFFF\")\nend program\n":          "wider than REAL(4)",
+		"program p\nprint *, dble(z\"1FFFFFFFFFFFFFFFFF\")\nend program\n": "wider than 64 bits",
+		"program p\nprint *, real(z\"3F800000\", 16)\nend program\n":       "REAL(16) is not supported",
+	} {
+		if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: want a refusal containing %q, got %v", src, want, err)
+		}
+	}
 }
 
 // A type whose bindings act implicitly (FINAL, a type-bound defined assignment
