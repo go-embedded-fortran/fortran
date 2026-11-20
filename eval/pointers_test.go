@@ -387,6 +387,16 @@ func TestExplicitShapeDummyHasItsDeclaredShape(t *testing.T) {
 	}
 }
 
+// TestConstructorKeepsTheBoundsOfItsValue: an allocatable component given in
+// a structure constructor has the bounds of the expression, as an intrinsic
+// assignment would give (alloc_comp_bounds_1). gfortran 15.2.0's output.
+func TestConstructorKeepsTheBoundsOfItsValue(t *testing.T) {
+	const src = "program p\ntype :: s\ninteger, allocatable :: ib(:)\nend type\ninteger, allocatable :: ia(:)\ntype(s) :: x\nallocate(ia(-1:2))\nia = [5, 6, 7, 8]\nx = s(ia)\nprint *, lbound(x%ib), ubound(x%ib), x%ib(-1)\nx = s(ia(:))\nprint *, lbound(x%ib), ubound(x%ib), x%ib(1)\nx = s(ia(0:1))\nprint *, lbound(x%ib), ubound(x%ib), x%ib(1)\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "-1 2 5 1 4 5 1 2 6" {
+		t.Errorf("constructor bounds: %q, %v", out, err)
+	}
+}
+
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
 // (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
 func TestBozRealIsTheBitPattern(t *testing.T) {

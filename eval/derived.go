@@ -683,8 +683,12 @@ func (c *compiler) structCons(n *syntax.Index, sd *sema.DerivedType) (*ex, error
 			}
 			fn, et, kd := x.g, dc.et, dc.kd
 			sets = append(sets, func(f *frame, o *dobj) {
+				// an allocatable component gets the value as an intrinsic
+				// assignment would: with the bounds of the expression, so
+				// struct(ia) keeps ia's lower bounds and struct(ia(:)) has 1
+				// (alloc_comp_bounds_1 of gfortran.dg)
 				src := fn(f)
-				g := newGarr(f, et, kd, ones(len(src.ext)), append([]int(nil), src.ext...))
+				g := newGarr(f, et, kd, append([]int64(nil), src.lb...), append([]int(nil), src.ext...))
 				for k, n := 0, src.size(); k < n; k++ {
 					a, b := src.at(k)
 					g.put(k, a, b)

@@ -44,7 +44,7 @@ var runtimeAllocs = map[string]struct {
 	"pointers.go:escapeScalar":                  {1, "bounded: one entry per scalar variable of the frame (its declarations), reused by every later association with it; boxEscaped then empties it"},
 	"derived.go:compiler.compDefault":           {2, "bounded: lb and ext copies (rank); the component's array is newGarr, peeked"},
 	"derived.go:compiler.declD":                 {1, "charged: the slots of an array of objects, charge(8*n) before make; each object is newObj, charged"},
-	"derived.go:compiler.structCons":            {1, "bounded: ext copy (rank); the component's array is newGarr, peeked"},
+	"derived.go:compiler.structCons":            {2, "bounded: lb and ext copies (rank); the component's array is newGarr, peeked"},
 	"derived.go:dobj.vals":                      {5, "bounded: one value per scalar component of the type (source); array components go through printVals"},
 	"derived.go:dtype.newObj":                   {4, "charged: charge(objBytes) before anything of the object; the component slice is the type's component count (source); character components are within objBytes; arrays are newGarr, peeked, retained"},
 	"eval.go:Program.RunIO":                     {1, "bounded: one frame per module of the program (source)"},
