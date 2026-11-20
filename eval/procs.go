@@ -115,8 +115,18 @@ func (c *compiler) declareProc(p *procCode) error {
 		if s.isC || s.k == kArr {
 			return c.errf(p.unit, "dummy argument %s: only scalar integer, real, logical and character dummy arguments are supported yet", name.Name)
 		}
+		intent := ss.Intent
+		if ss.Flags&sema.FValue != 0 {
+			// F2018 8.5.18: a VALUE dummy is a copy of the actual made on entry,
+			// and nothing it becomes is copied back (value_7, pr57910 of
+			// gfortran.dg); scalars only, as the copy of an object is not built
+			if s.k != kInt && s.k != kReal && s.k != kLog && s.k != kStr {
+				return c.errf(p.unit, "dummy argument %s: the VALUE attribute is supported on scalar integer, real, logical and character dummies only", name.Name)
+			}
+			intent = "value"
+		}
 		p.params = append(p.params, s)
-		p.intent = append(p.intent, ss.Intent)
+		p.intent = append(p.intent, intent)
 	}
 	if p.unit.Kind == syntax.FunctionUnit {
 		for _, ss := range p.scope.Order {
@@ -390,7 +400,8 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	}
 	slot := ps.slot
 	var b binding
-	if v.ps != nil && intent != "in" && (ps.k == kInt || ps.k == kLog || ps.k == kReal) {
+	// intent is "value" for a VALUE dummy: copied in like any scalar, never back
+	if v.ps != nil && intent != "in" && intent != "value" && (ps.k == kInt || ps.k == kLog || ps.k == kReal) {
 		// a reference to a function with a pointer result is a variable (F2018
 		// 9.2): the function runs once, and the dummy is copied in from its
 		// target and out to it (ptr-func-4 of gfortran.dg)
@@ -469,7 +480,7 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	}
 	// copy-out: the actual is a plain variable and the dummy can be defined
 	id, ok := a.(*syntax.Ident)
-	if !ok || intent == "in" {
+	if !ok || intent == "in" || intent == "value" {
 		return b, nil
 	}
 	as, _, err := c.symOf(id)

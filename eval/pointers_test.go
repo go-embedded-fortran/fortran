@@ -343,6 +343,21 @@ func TestIntentOutDerivedIsDefaultInitialized(t *testing.T) {
 	}
 }
 
+// TestValueDummyIsNotCopiedBack pins F2018 8.5.18: a VALUE dummy changed in
+// the callee leaves the actual alone, and a result length declared from it is
+// taken on entry. The expected line is gfortran 15.2.0's output.
+func TestValueDummyIsNotCopiedBack(t *testing.T) {
+	const src = "program p\ninteger :: n\nreal :: x\ncharacter(len=5) :: s\nn = 3\nx = 1.5\ns = 'abc'\ncall sub(n, x, s)\nprint *, n, x, s, len(f(n)), n\ncontains\nsubroutine sub(i, r, c)\ninteger, value :: i\nreal, value :: r\ncharacter(len=5), value :: c\ni = i + 1\nr = r * 2\nc = 'xyz'\nprint *, i, r, c\nend subroutine\nfunction f(k)\ninteger, value :: k\ncharacter(len=k) :: f\nk = 17\nf = ' '\nend function\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "4 3.00000000 xyz 3 1.50000000 abc 3 3" {
+		t.Errorf("VALUE dummies: %q, %v", out, err)
+	}
+	// a VALUE dummy of derived type would need a copy of the object: refused
+	const dt = "module m\ntype :: t\ninteger :: i\nend type\ncontains\nsubroutine s(a)\ntype(t), value :: a\na%i = 1\nend subroutine\nend module\nprogram p\nuse m\ntype(t) :: x\nx%i = 0\ncall s(x)\nprint *, x%i\nend program\n"
+	if _, err := runPtr(t, 100<<20, dt); err == nil || !strings.Contains(err.Error(), "VALUE attribute") {
+		t.Errorf("VALUE derived-type dummy: want a refusal, got %v", err)
+	}
+}
+
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
 // (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
 func TestBozRealIsTheBitPattern(t *testing.T) {
