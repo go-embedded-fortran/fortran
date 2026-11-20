@@ -623,6 +623,13 @@ func (c *checker) intrinsicOf(sc *Scope, e *syntax.Index, name string, in intrin
 			tv.IsConst = tv.IsConst || !deferredDims(args[0].tv.Dims)
 		}
 	}
+	if k, refused := bozReal(name, acts, tv.Type); refused != "" {
+		c.errorf(e.Pos, "%s at (1)", refused)
+		return tv
+	} else if k != nil {
+		tv.Const = k
+		return tv
+	}
 	if tv.Rank == 0 || tv.Rank == RankUnknown {
 		if k := c.foldIntrinsic(name, args, tv.Type); k != nil {
 			tv.Const = k

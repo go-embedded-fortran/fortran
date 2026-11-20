@@ -69,6 +69,12 @@ func TestSkipReason(t *testing.T) {
 	if skipReason(corpus.Entry{Form: corpus.Free, Source: []byte("! { dg-do run }\n! { dg-shouldfail \"x\" }\n")}) == "" {
 		t.Error("dg-shouldfail is not skipped")
 	}
+	if skipReason(corpus.Entry{Form: corpus.Free, Source: []byte("! { dg-do run \"xfail *-*-*\" }\n")}) == "" {
+		t.Error("a run test expected to fail everywhere is not skipped")
+	}
+	if why := skipReason(corpus.Entry{Form: corpus.Free, Source: []byte("! { dg-do run { xfail powerpc*-*-* } }\n")}); why != "" {
+		t.Errorf("a run test expected to fail on powerpc only is skipped: %s", why)
+	}
 	if why := skipReason(corpus.Entry{Form: corpus.Free, Source: []byte("! { dg-do run }\n")}); why != "" {
 		t.Errorf("a plain run test is skipped: %s", why)
 	}

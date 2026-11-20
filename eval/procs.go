@@ -425,6 +425,14 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 			return binding{}, c.errf(a, "the actual argument is not of type %s", ps.dt.name)
 		}
 		fn := v.d
+		if intent == "out" {
+			b.set = func(f, cf *frame) {
+				o := fn(f)
+				o.becomeOut(f)
+				cf.dobjs[slot] = o
+			}
+			return b, nil
+		}
 		b.set = func(f, cf *frame) { cf.dobjs[slot] = fn(f) }
 		return b, nil
 	case kGA:

@@ -619,7 +619,11 @@ func editG(dst, buf []byte, x float64, bits int, t *tok, m *modes) ([]byte, *Err
 		return editE(dst, buf, x, bits, &et, m, true)
 	}
 	if t.hasD && t.d == 0 {
-		return nil, &Error{Stat: ErrFormat, Msg: "Positive width required in format specifier G"}
+		// Gw.0 and Gw.0Ee are kPEw.0 and kPEw.0Ee (F2018 13.7.5.2.2), with
+		// E's own checks: libgfortran's write_float.def (FORMAT_FLOAT, d == 0)
+		// rewrites the node as FMT_E with the same w, d and e, and formatted
+		// output passes comp_d = 0 (write.c write_float_0)
+		return editE(dst, buf, x, bits, &et, m, false)
 	}
 	expo := 1
 	if x != 0 {
