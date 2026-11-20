@@ -424,8 +424,9 @@ type compiler struct {
 	// cur is the program unit being compiled, procs all of them.
 	modules   []*procCode
 	cur       *procCode
-	tmps      bool        // the statement being compiled makes temporaries (see stmts)
-	lenExpr   syntax.Expr // the length of the character entity being declared
+	tmps      bool         // the statement being compiled makes temporaries (see stmts)
+	lenExpr   syntax.Expr  // the length of the character entity being declared
+	dimSyntax []syntax.Dim // its array spec as written, nil when not in its declaration
 	typedefs  map[string]*syntax.TypeDef
 	tdFile    *syntax.File // the file typedefs was last read from
 	dtypes    map[*sema.DerivedType]*dtype
@@ -767,6 +768,16 @@ func (c *compiler) decl(d *syntax.Decl) error {
 		if c.lenExpr == nil && d.Type != nil {
 			c.lenExpr = d.Type.Len
 		}
+		c.dimSyntax = nil
+		if e.HasDims {
+			c.dimSyntax = e.Dims
+		} else {
+			for _, a := range d.Attrs {
+				if a.Name == "dimension" {
+					c.dimSyntax = a.Dims
+				}
+			}
+		}
 		init := e.Init
 		if e.PtrInit {
 			// "=> null()": a pointer starts disassociated anyway; any other
@@ -778,7 +789,7 @@ func (c *compiler) decl(d *syntax.Decl) error {
 			init = nil
 		}
 		err := c.declSym(ss, e, init)
-		c.lenExpr = nil
+		c.lenExpr, c.dimSyntax = nil, nil
 		if err != nil {
 			return err
 		}

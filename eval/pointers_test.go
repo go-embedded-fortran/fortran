@@ -372,6 +372,21 @@ func TestAssumedLengthResultIsRefused(t *testing.T) {
 	}
 }
 
+// TestExplicitShapeDummyHasItsDeclaredShape: an explicit-shape dummy array is
+// the actual's element sequence with the declared bounds, which may depend on
+// other dummies (dependent_decls_3 of gfortran.dg). gfortran 15.2.0's output.
+func TestExplicitShapeDummyHasItsDeclaredShape(t *testing.T) {
+	const src = "program p\nreal :: x(8,4), w(4,2)\ninteger :: a(6)\na = [1, 2, 3, 4, 5, 6]\nw = 0\ncall sub(x, w)\nprint *, sum(w), shape(w)\ncall two(a)\ncall low(a, 5)\ncontains\nsubroutine sub(v, d)\nreal, intent(in) :: v(:,:)\nreal, intent(out), dimension(size(v,dim=1)/2, size(v,dim=2)/2) :: d\nd = 1.0\nprint *, shape(d)\nend subroutine\nsubroutine two(b)\ninteger :: b(2,3)\nprint *, b(2,3), b(1,2), shape(b)\nend subroutine\nsubroutine low(b, n)\ninteger :: n\ninteger :: b(0:n-1)\nprint *, b(0), b(n-1), lbound(b), ubound(b)\nend subroutine\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "4 2 8.00000000 4 2 6 3 2 3 1 5 0 4" {
+		t.Errorf("explicit-shape dummies: %q, %v", out, err)
+	}
+	// a dummy larger than its actual is stopped, not read past the storage
+	const big = "program p\ninteger :: a(3)\na = 1\ncall s(a, 4)\ncontains\nsubroutine s(b, n)\ninteger :: n\ninteger :: b(n)\nprint *, b(n)\nend subroutine\nend program\n"
+	if _, err := runPtr(t, 100<<20, big); err == nil || !strings.Contains(err.Error(), "more than the 3 of its actual") {
+		t.Errorf("dummy larger than its actual: want a stop, got %v", err)
+	}
+}
+
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
 // (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
 func TestBozRealIsTheBitPattern(t *testing.T) {
