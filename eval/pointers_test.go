@@ -328,6 +328,42 @@ func TestABoxedScalarKeepsItsValueAndItsAssociation(t *testing.T) {
 	}
 }
 
+// An INTENT(OUT) dummy of derived type gets its default initialization on
+// entry (F2018 8.5.10): gfortran 15.2.0 prints 0, then 0 5.
+func TestIntentOutDerivedIsDefaultInitialized(t *testing.T) {
+	const src = "module m\ntype :: t\ninteger :: i = 0\ninteger :: j\nend type\ncontains\nsubroutine mk(a)\ntype(t), intent(out) :: a\nprint *, a%i\na%j = 5\nend subroutine\nend module\nprogram p\nuse m\ntype(t) :: x\nx%i = 1\nx%j = 2\ncall mk(x)\nprint *, x%i, x%j\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "0 0 5" {
+		t.Errorf("intent(out) default initialization: %q, %v", out, err)
+	}
+	// an allocated allocatable component is deallocated, and a component of
+	// derived type gets its own defaults: gfortran prints F 7 twice
+	const nested = "module m\ntype :: u\ninteger :: k = 7\nend type\ntype :: t\ninteger, allocatable :: x(:)\ntype(u) :: s\nend type\ncontains\nsubroutine mk(a)\ntype(t), intent(out) :: a\nprint *, allocated(a%x), a%s%k\nend subroutine\nend module\nprogram p\nuse m\ntype(t) :: y\nallocate(y%x(3))\ny%s%k = 1\ncall mk(y)\nprint *, allocated(y%x), y%s%k\nend program\n"
+	if out, err := runPtr(t, 100<<20, nested); err != nil || out != "F 7 F 7" {
+		t.Errorf("intent(out) with an allocatable and a nested component: %q, %v", out, err)
+	}
+}
+
+// TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
+// (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
+func TestBozRealIsTheBitPattern(t *testing.T) {
+	const src = "program p\nreal :: r\ndouble precision :: d\nd = dble(z\"400921FB54411744\")\nr = real(z\"40490FDB\")\nprint *, d == 3.1415926535_8, r == 3.1415927\nprint *, real(b\"00111111100000000000000000000000\"), dble(o\"0\")\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "T T 1.00000000 0.0000000000000000" {
+		t.Errorf("BOZ as real: %q, %v", out, err)
+	}
+}
+
+// A type whose bindings act implicitly (FINAL, a type-bound defined assignment
+// or operator, derived-type I/O) is refused: ignoring them gives wrong results
+// silently (derived_init_7.f90 counted no finalization and stopped on 3).
+func TestImplicitTypeBoundProceduresAreRefused(t *testing.T) {
+	for _, b := range []string{"final :: fin", "generic :: assignment(=) => fin", "generic :: operator(+) => fin", "generic :: write(formatted) => fin"} {
+		src := "module m\ntype :: t\ninteger :: i = 0\ncontains\n" + b + "\nend type\ncontains\nsubroutine fin(a)\ntype(t), intent(inout) :: a\nend subroutine\nend module\nprogram p\nuse m\ntype(t) :: x\nx%i = 1\nprint *, x%i\nend program\n"
+		if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), "not supported") {
+			t.Errorf("%s: %v, want a refusal", b, err)
+		}
+	}
+}
+
 // A second DEALLOCATE of a target, through another pointer, says so.
 func TestASecondDeallocateSaysAlreadyDeallocated(t *testing.T) {
 	for _, src := range []string{

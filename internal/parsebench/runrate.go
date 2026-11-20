@@ -77,8 +77,22 @@ func skipReason(e corpus.Entry) string {
 		return "fixed form: eval.Session reads free form only"
 	case bytes.Contains(e.Source, []byte("dg-shouldfail")):
 		return "dg-shouldfail: the test is expected to fail"
+	case xfailEverywhere(e.Source):
+		return "dg-do run xfail *-*-*: the test is expected to fail on every target"
 	}
 	return ""
+}
+
+// xfailEverywhere reports a dg-do run directive marked xfail on every target
+// (dec_exp_3.f90: `dg-do run "xfail *-*-*"`). An xfail on some targets only
+// (`xfail powerpc*-*-*`) is still a test that runs here.
+func xfailEverywhere(src []byte) bool {
+	for line := range bytes.Lines(src) {
+		if bytes.Contains(line, []byte("dg-do run")) && bytes.Contains(line, []byte("xfail *-*-*")) {
+			return true
+		}
+	}
+	return false
 }
 
 // Classify compares the two outcomes.

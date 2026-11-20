@@ -405,7 +405,7 @@ zero failures:
 | differs | `eval` ran it, or failed while running, and they are not |
 | refused-by-us | `eval`'s analyser or compiler refused it: nothing ran (`eval.Error.Refused`) |
 | gfortran-failed | gfortran did not build it, or did not run it within bounds |
-| skipped | fixed form (`eval.Session` reads free form), or `dg-shouldfail` |
+| skipped | fixed form (`eval.Session` reads free form), `dg-shouldfail`, or `dg-do run` marked `xfail *-*-*` (expected to fail on every target) |
 
 **First run** (2026-11-15, this branch, gfortran.dg of gcc 15.2.0, local, 60 s
 per side): 3151 files, **identical 192**, differs 22, refused-by-us 2186,

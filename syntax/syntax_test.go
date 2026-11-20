@@ -141,9 +141,16 @@ func TestFreeFormContinuation(t *testing.T) {
 	if got := b[1].(*Assignment).RHS.(*StringLit).Value; got != "abcdef" {
 		t.Errorf("s: %q", got)
 	}
-	// a continued literal without the leading '&' continues at column 1 (gfortran only warns)
-	if got := b[2].(*Assignment).RHS.(*StringLit).Value; got != "ab   cd" {
+	// a continued literal without the leading '&' continues at the first
+	// nonblank character: gfortran 15.2.0 only warns, and makes "ab&\n   cd"
+	// into "abcd" (measured with foracle run; gfortran.dg/Wall.f90 relies on it)
+	if got := b[2].(*Assignment).RHS.(*StringLit).Value; got != "abcd" {
 		t.Errorf("t: %q", got)
+	}
+	// tabs are skipped too: gfortran makes "x &\n\t  y" into "x y"
+	g := mustParse(t, "q.f90", "program q\n  d = 'x &\n\t  y'\nend\n")
+	if got := g.Units[0].Body[0].(*Assignment).RHS.(*StringLit).Value; got != "x y" {
+		t.Errorf("d: %q", got)
 	}
 }
 

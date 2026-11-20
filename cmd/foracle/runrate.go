@@ -32,7 +32,8 @@ sides are bounded (--timeout each, eval's memory 1 GiB and output 1 MiB).
   differs          eval ran it, or failed while running, and they are not
   refused-by-us    eval's analyser or compiler refused it: nothing ran
   gfortran-failed  gfortran did not build it or did not run it within bounds
-  skipped          fixed form (eval.Session reads free form), or dg-shouldfail
+  skipped          fixed form (eval.Session reads free form), dg-shouldfail, or
+                   dg-do run marked xfail *-*-* (expected to fail everywhere)
 
 Every class is printed, zero included, with the total read: a run that read
 nothing is refused rather than reported as zero failures.`,

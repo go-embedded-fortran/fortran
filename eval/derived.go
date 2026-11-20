@@ -86,6 +86,34 @@ func (c *compiler) typeDefs() map[string]*syntax.TypeDef {
 	return c.typedefs
 }
 
+// implicitBindings refuses the bindings of a type that act without being
+// named: FINAL (F2018 7.5.6), and a generic binding for defined assignment, a
+// defined operator or derived-type I/O (7.5.5). The evaluator does not run
+// them, and ignoring them would give wrong results silently: an object never
+// finalized, an assignment or a PRINT that is the intrinsic one.
+// A specific binding (PROCEDURE) is only run when named, and naming it is
+// refused where it is used.
+func (c *compiler) implicitBindings(td *syntax.TypeDef) error {
+	for _, st := range td.Bound {
+		b, ok := st.(*syntax.ProcBinding)
+		if !ok {
+			continue
+		}
+		switch b.Kind {
+		case "final":
+			return c.errf(b, "type %s: final procedures are not supported yet (its objects would not be finalized)", td.Ident.Name)
+		case "generic":
+			for _, it := range b.Items {
+				n := strings.ToLower(it.Name)
+				if strings.HasPrefix(n, "assignment") || strings.HasPrefix(n, "operator") || strings.HasPrefix(n, "read") || strings.HasPrefix(n, "write") {
+					return c.errf(b, "type %s: a type-bound %s is not supported yet (it would not be used)", td.Ident.Name, it.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // dtypeOf builds the evaluator's layout of a derived type.
 func (c *compiler) dtypeOf(at syntax.Node, sd *sema.DerivedType) (*dtype, error) {
 	if dt, ok := c.dtypes[sd]; ok {
@@ -110,6 +138,9 @@ func (c *compiler) dtypeOf(at syntax.Node, sd *sema.DerivedType) (*dtype, error)
 	}
 	if len(td.Params) > 0 {
 		return nil, c.errf(td, "parameterised derived types are not supported")
+	}
+	if err := c.implicitBindings(td); err != nil {
+		return nil, err
 	}
 	dt := &dtype{name: sd.Name, idx: map[string]int{}, sd: sd}
 	inits := map[string]syntax.Expr{}
@@ -260,6 +291,35 @@ func (t *dtype) newObj(f *frame, own *frame) *dobj {
 		}
 	}
 	return o
+}
+
+// becomeOut is what an INTENT(OUT) dummy argument does to the object it is
+// associated with when the procedure is invoked: a component with default
+// initialization is initialized (F2018 8.5.10), an allocated allocatable
+// component is deallocated (9.7.3.2), and the rest becomes undefined, which
+// leaves it as it was.
+func (o *dobj) becomeOut(f *frame) {
+	for i, dc := range o.t.comps {
+		switch {
+		case dc.k == kD:
+			o.v[i].d.becomeOut(f)
+		case dc.k == kGA && dc.alloc:
+			f.bud.release(f, o.v[i].g)
+			o.v[i].g = nil
+		}
+		if dc.def == nil {
+			continue
+		}
+		d := dc.def(f)
+		o.v[i].i, o.v[i].r = d.i, d.r
+		if dc.k == kStr {
+			o.v[i].s = d.s
+		}
+		if d.g != nil {
+			f.bud.release(f, o.v[i].g)
+			o.v[i].g = f.bud.retain(f, o.own, d.g)
+		}
+	}
 }
 
 // assign copies the value of src into o (intrinsic assignment of a derived

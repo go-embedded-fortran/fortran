@@ -153,11 +153,12 @@ func (s *scanner) readFree(st *fileState) bool {
 			}
 			if src[i] == '&' {
 				i++
-			} else if quote != 0 {
-				// F2018 6.3.2.4 requires the '&'; gfortran only warns, and so
-				// do we not: the literal continues at the first column
-				i = ls
 			}
+			// In a character context F2018 6.3.2.4 requires the '&'. gfortran
+			// only warns, and continues the literal at the first nonblank
+			// character, blanks and tabs skipped: gfortran 15.2.0 makes
+			// "a&\n     b" into "ab" and "x &\n\t  y" into "x y"
+			// (gfortran.dg/Wall.f90, continuation_1.f90). So do we.
 			continuing = false
 			conts++
 			if conts > s.lim.MaxContinuations && !overflow {
