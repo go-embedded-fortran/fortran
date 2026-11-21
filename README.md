@@ -450,6 +450,16 @@ wrong results and are refused instead. The 3 left are not `eval` defects:
 `string_length_2` takes a substring out of bounds, and `short_circuiting_2`/`_3`
 assert opposite evaluation orders of one `.and.` (see #40).
 
+**Array named constants** (2026-11-21): 3151 files, **identical 224**,
+both-failed 22, differs 3, **refused-by-us 2149**, gfortran-failed 433, skipped
+320. Array named constants (`integer, parameter :: a(3) = [...]`, a
+`reshape`, a scalar broadcast) and initialised arrays of a main program or a
+cell now run; an initialised array of a procedure is still refused, since it
+would be saved between calls. Compared file by file with the previous run, 27
+files went from refused to identical and none left identical. One of them,
+`merge_1`, first differed: `MERGE` evaluated only the value the mask selected,
+and gfortran evaluates both (PR fortran/107874), which `eval` now does.
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the
