@@ -405,6 +405,49 @@ func TestConstructorKeepsTheBoundsOfItsValue(t *testing.T) {
 	}
 }
 
+// TestArrayNamedConstants: an array parameter (constructor, reshape, scalar
+// broadcast; in a main program and in a procedure) and an initialised array of
+// a main program have their values. gfortran 15.2.0's output.
+func TestArrayNamedConstants(t *testing.T) {
+	const src = "program p\ninteger, parameter :: a(3) = [10, 20, 30]\nreal, parameter :: r(2,2) = reshape([1., 2., 3., 4.], [2, 2])\nreal(8), parameter :: z(4) = 0.5d0\ninteger :: b(3) = [1, 2, 3]\nprint *, a, sum(a), a(2), size(a)\nprint *, r(2,1), r(1,2)\nprint *, z\nprint *, b + a\ncall s()\ncontains\nsubroutine s()\ninteger, parameter :: q(2) = [7, 8]\nprint *, q(2), q\nend subroutine\nend program\n"
+	const want = "10 20 30 60 20 3 2.00000000 3.00000000 0.50000000000000000 0.50000000000000000 0.50000000000000000 0.50000000000000000 11 22 33 8 7 8"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != want {
+		t.Errorf("array named constants: %q, %v", out, err)
+	}
+	// an initialised array of a procedure would be saved between calls: refused
+	const saved = "program p\ncall s()\ncontains\nsubroutine s()\ninteger :: c(2) = [1, 2]\nprint *, c\nend subroutine\nend program\n"
+	if _, err := runPtr(t, 100<<20, saved); err == nil || !strings.Contains(err.Error(), "saved between calls") {
+		t.Errorf("initialised array of a procedure: want a refusal, got %v", err)
+	}
+	// each refusal names its own cause: an initialised allocatable, an
+	// initialiser eval cannot compile, a value of another shape
+	for _, tc := range []struct{ src, want string }{
+		{"integer, allocatable :: a(:) = [1, 2]\nprint *, a\nend\n", "allocatable or pointer array with an initialisation"},
+		{"integer, parameter :: a(2) = [ishft(i=1, shift=2), 3]\nprint *, a\nend\n", "keyword arguments of intrinsics"},
+		{"integer :: a(2) = [1, 2, 3]\nprint *, a\nend\n", "Different shape for array assignment"},
+		// refused by the assignment itself: a value of the kernels' array kind
+		{"real(8) :: k(2)\nreal(8) :: a(2) = k\nprint *, a\nend\n", "real(8) array of the kernels' kind"},
+	} {
+		if _, err := runPtr(t, 100<<20, tc.src); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: want a refusal naming %q, got %v", tc.src, tc.want, err)
+		}
+	}
+}
+
+// TestMergeEvaluatesBothValues pins that MERGE evaluates tsource and fsource
+// whichever the mask selects, as gfortran does (PR fortran/107874); the
+// expected line is gfortran 15.2.0's output.
+func TestMergeEvaluatesBothValues(t *testing.T) {
+	const src = "program p\ninteger :: n = 0\ncharacter(3) :: s\nprint *, merge(ti(), fi(), .true.), n\nprint *, merge(tr(), fr(), .false.), n\ns = merge(ts(), fs(), n > 100)\nprint *, s, n\ncontains\ninteger function ti()\nn = n + 1\nti = 1\nend function\ninteger function fi()\nn = n + 10\nfi = 2\nend function\nreal function tr()\nn = n + 100\ntr = 1.5\nend function\nreal function fr()\nn = n + 1000\nfr = 2.5\nend function\ncharacter(3) function ts()\nn = n + 10000\nts = 'abc'\nend function\ncharacter(3) function fs()\nn = n + 100000\nfs = 'xyz'\nend function\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "1 11 2.50000000 1111 abc 111111" {
+		t.Errorf("merge evaluates both values: %q, %v", out, err)
+	}
+	const logical = "program p\nlogical :: called(2) = .false.\nprint *, merge(tl(), fl(), .true.), called\ncontains\nlogical function tl()\ntl = .true.\ncalled(1) = .true.\nend function\nlogical function fl()\nfl = .false.\ncalled(2) = .true.\nend function\nend program\n"
+	if out, err := runPtr(t, 100<<20, logical); err != nil || out != "T T T" {
+		t.Errorf("merge of logicals evaluates both values: %q, %v", out, err)
+	}
+}
+
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
 // (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
 func TestBozRealIsTheBitPattern(t *testing.T) {

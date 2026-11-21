@@ -96,39 +96,46 @@ func (c *compiler) strIntrinsic2(n *syntax.Index, name string, args []*ex) (*ex,
 		if len(args) != 3 || args[2].k != kLog || args[0].k != args[1].k {
 			return nil, c.errf(n, "merge takes two values of one type and a logical mask")
 		}
+		// every argument is evaluated, tsource, fsource then mask, whichever is
+		// selected: a function argument's side effects happen (gfortran, PR
+		// fortran/107874, gfortran.dg/merge_1.f90)
 		m, t, f2 := args[2].b, args[0], args[1]
 		switch t.k {
 		case kStr:
 			a, b := t.s, f2.s
 			return &ex{k: kStr, slot: -1, s: func(f *frame) string {
+				va, vb := a(f), b(f)
 				if m(f) {
-					return a(f)
+					return va
 				}
-				return b(f)
+				return vb
 			}}, nil
 		case kInt:
 			a, b := t.i, f2.i
 			return &ex{k: kInt, kd: t.kd, slot: -1, i: func(f *frame) int64 {
+				va, vb := a(f), b(f)
 				if m(f) {
-					return a(f)
+					return va
 				}
-				return b(f)
+				return vb
 			}}, nil
 		case kReal:
 			a, b := t.r, f2.r
 			return &ex{k: kReal, kd: t.kd, slot: -1, r: func(f *frame) float64 {
+				va, vb := a(f), b(f)
 				if m(f) {
-					return a(f)
+					return va
 				}
-				return b(f)
+				return vb
 			}}, nil
 		case kLog:
 			a, b := t.b, f2.b
 			return &ex{k: kLog, slot: -1, b: func(f *frame) bool {
+				va, vb := a(f), b(f)
 				if m(f) {
-					return a(f)
+					return va
 				}
-				return b(f)
+				return vb
 			}}, nil
 		}
 		return nil, c.errf(n, "merge of this type is not supported")

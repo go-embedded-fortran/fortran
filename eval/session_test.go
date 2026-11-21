@@ -245,8 +245,10 @@ func TestSessionDerivedTypeAcrossCells(t *testing.T) {
 func TestSessionArraysAcrossCells(t *testing.T) {
 	s := NewSession(SessionOptions{})
 	mustRun(t, s, "real(8) :: v(4)\nreal(8), allocatable :: w(:)\ninteger :: k(3)\ninteger :: i\nk = [1, 2, 3]\n")
-	if _, _, _, err := runCell(t, s, "integer :: bad(2) = [1, 2]\n"); err == nil || !strings.Contains(err.Error(), "initialisation") {
-		t.Fatalf("an initialised array must be refused, not silently left zero: %v", err)
+	// an initialised array has its value, in its cell and in the next ones
+	mustRun(t, s, "integer :: ini(2) = [1, 2]\ninteger, parameter :: pa(2) = [30, 40]\n")
+	if got := mustRun(t, s, "print *, ini + pa\n"); strings.Fields(got)[0] != "31" || strings.Fields(got)[1] != "42" {
+		t.Fatalf("initialised arrays across cells: %q", got)
 	}
 	mustRun(t, s, "do i = 1, 4\n  v(i) = i * 1.5d0\nend do\nallocate(w(2))\nw = 2.0d0\nk(2) = 20\n")
 	got := mustRun(t, s, "print *, sum(v), sum(w), k\n")
