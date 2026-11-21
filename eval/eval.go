@@ -368,6 +368,10 @@ type sym struct {
 	dlb    int64  // the lower bound of an array of derived type
 	cdyn   bool   // the length is an expression evaluated when the unit starts, kept in ints[clslot]
 	clslot int
+	// an optional dummy argument: ints[pres] is 1 when it is present (F2018
+	// 15.5.2.12); a frame starts with 0, so a call sets it for a present actual
+	opt  bool
+	pres int
 }
 
 // ex is a compiled expression.
@@ -745,8 +749,9 @@ func (c *compiler) decl(d *syntax.Decl) error {
 	for _, a := range d.Attrs {
 		switch a.Name {
 		case "parameter", "allocatable", "dimension", "intent", "value", "external", "private", "public", "save",
-			"target",  // lets a pointer be associated with the variable (pointers.go)
-			"pointer": // an array pointer; declSym refuses the kinds not supported yet
+			"optional", // a scalar dummy argument; declareProc refuses the others
+			"target",   // lets a pointer be associated with the variable (pointers.go)
+			"pointer":  // an array pointer; declSym refuses the kinds not supported yet
 			if a.Name == "save" {
 				if err := c.saveHere(d); err != nil {
 					return err
@@ -828,8 +833,8 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 				return c.errf(e, "character variable %s: only character(len=:), allocatable is supported as an allocatable character", name)
 			}
 		}
-		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 && (elem == kStr || ss.Flags&sema.FOptional != 0) || ss.Flags&(sema.FOptional|sema.FPointer|sema.FAllocatable) != 0) {
-			return c.errf(e, "dummy argument %s: only scalar, non-optional dummy arguments are supported yet", name)
+		if ss.Flags&sema.FDummy != 0 && (ss.Rank != 0 && (elem == kStr || ss.Flags&sema.FOptional != 0) || ss.Flags&(sema.FPointer|sema.FAllocatable) != 0) {
+			return c.errf(e, "dummy argument %s: only scalar dummy arguments, and arrays that are not optional, are supported yet", name)
 		}
 		if ss.Flags&sema.FPointer != 0 && ss.Type.Basic == sema.Derived {
 			return c.errf(e, "%s: derived-type pointers are not supported yet", name)
@@ -1662,6 +1667,12 @@ func bounds(f *frame, name string, dim int, i int64, n int) {
 }
 
 func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, error) {
+	if name == "present" {
+		return c.present(n)
+	}
+	if err := c.noOptionalAtOptional(n, name); err != nil {
+		return nil, err
+	}
 	if formals, ok := arrayFormals[name]; ok {
 		// the array intrinsics; sum and matmul of the kernels' arrays keep their own code
 		general := true

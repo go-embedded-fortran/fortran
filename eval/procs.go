@@ -125,6 +125,14 @@ func (c *compiler) declareProc(p *procCode) error {
 			}
 			intent = "value"
 		}
+		if ss.Flags&sema.FOptional != 0 {
+			// (pointer and allocatable dummies are refused by declSym)
+			if s.k != kInt && s.k != kReal && s.k != kLog && s.k != kStr {
+				return c.errf(p.unit, "dummy argument %s: OPTIONAL is supported on scalar integer, real, logical and character dummies only", name.Name)
+			}
+			s.opt, s.pres = true, p.nInts
+			p.nInts++
+		}
 		p.params = append(p.params, s)
 		p.intent = append(p.intent, intent)
 	}
@@ -368,11 +376,16 @@ func (c *compiler) invoker(at syntax.Node, p *procCode, args []syntax.Arg) (func
 	binds := make([]binding, 0, len(p.params))
 	for i, ps := range p.params {
 		if actual[i] == nil {
-			return nil, c.errf(at, "dummy argument %s of %s is absent: optional arguments are not supported yet", p.unit.Params[i].Name, p.name)
+			// an optional dummy that is not present (the analyser refuses a
+			// missing nonoptional one): its presence stays 0, nothing is copied
+			continue
 		}
 		b, err := c.bind(at, ps, p.intent[i], actual[i].Value)
 		if err != nil {
 			return nil, err
+		}
+		if ps.opt {
+			b = c.withPresence(ps, actual[i].Value, b)
 		}
 		binds = append(binds, b)
 	}
@@ -395,6 +408,109 @@ func (c *compiler) invoker(at syntax.Node, p *procCode, args []syntax.Arg) (func
 		}
 		return cf
 	}, nil
+}
+
+// withPresence makes the binding b also give the optional dummy ps its
+// presence (F2018 15.5.2.12): the presence of the actual when it is itself an
+// optional dummy (an absent one passed on stays absent, p4); for a scalar
+// pointer actual, whether it is associated (a disassociated one makes the
+// dummy absent, p1, and is then neither read nor written back:
+// pointer_check_9 of gfortran.dg); present otherwise.
+func (c *compiler) withPresence(ps *sym, a syntax.Expr, b binding) binding {
+	pres, set, back := ps.pres, b.set, b.back
+	if id, ok := a.(*syntax.Ident); ok {
+		if as, _, err := c.symOf(id); err == nil && (as.opt || as.ptr && as.rank == 0) {
+			if h, err := c.hops(as, id); err == nil {
+				if as.ptr {
+					pslot := as.pslot
+					b.set = func(f, cf *frame) {
+						if f.at(h).ptrs[pslot] != nil {
+							set(f, cf)
+							cf.ints[pres] = 1
+						}
+					}
+					if back != nil {
+						b.back = func(f, cf *frame) {
+							if cf.ints[pres] != 0 {
+								back(f, cf)
+							}
+						}
+					}
+					return b
+				}
+				from := as.pres
+				b.set = func(f, cf *frame) {
+					set(f, cf)
+					cf.ints[pres] = f.at(h).ints[from]
+				}
+				return b
+			}
+		}
+	}
+	b.set = func(f, cf *frame) {
+		set(f, cf)
+		cf.ints[pres] = 1
+	}
+	return b
+}
+
+// intrinsicFirstOptional is the position of the first optional argument of
+// the intrinsics that have one (F2018 16.9), kind arguments aside (they are
+// constants, never a dummy).
+var intrinsicFirstOptional = map[string]int{
+	"size": 1, "lbound": 1, "ubound": 1, "shape": 1,
+	"sum": 1, "product": 1, "maxval": 1, "minval": 1, "maxloc": 1, "minloc": 1,
+	"any": 1, "all": 1, "count": 1, "findloc": 2, "norm2": 1, "iany": 1, "iall": 1, "iparity": 1, "parity": 1,
+	"pack": 2, "reshape": 2, "cshift": 2, "eoshift": 2, "unpack": 3,
+	"min": 2, "max": 2, "index": 2, "scan": 2, "verify": 2, "ishftc": 2,
+	"associated": 1,
+}
+
+// noOptionalAtOptional refuses an optional dummy argument passed to an
+// optional argument of an intrinsic: absent, the intrinsic's argument is
+// absent too (F2018 15.5.2.12 p4), which the compiled call cannot express;
+// size(a, dim) with dim absent took dim as 0 (size_optional_dim_1 of
+// gfortran.dg). A keyword argument is taken as optional.
+func (c *compiler) noOptionalAtOptional(n *syntax.Index, name string) error {
+	first, ok := intrinsicFirstOptional[name]
+	if !ok {
+		return nil
+	}
+	for i, a := range n.Args {
+		id, isID := a.Value.(*syntax.Ident)
+		if !isID || i < first && a.Keyword == "" {
+			continue
+		}
+		if s, _, err := c.symOf(id); err == nil && s.opt {
+			return c.errf(id, "an optional dummy argument passed to an optional argument of %s is not supported yet", name)
+		}
+	}
+	return nil
+}
+
+// present compiles PRESENT(a): a is an optional dummy argument of this unit
+// or of a host.
+func (c *compiler) present(n *syntax.Index) (*ex, error) {
+	if len(n.Args) != 1 || n.Args[0].Value == nil {
+		return nil, c.errf(n, "present takes one argument")
+	}
+	id, ok := n.Args[0].Value.(*syntax.Ident)
+	if !ok {
+		return nil, c.errf(n, "the argument of present must be an optional dummy argument")
+	}
+	s, _, err := c.symOf(id)
+	if err == nil && !s.opt {
+		err = c.errf(id, "%s is not an optional dummy argument supported by the evaluator", id.Name)
+	}
+	var h int
+	if err == nil {
+		h, err = c.hops(s, id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	pres := s.pres
+	return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.at(h).ints[pres] != 0 }}, nil
 }
 
 // bind compiles the association of the actual argument a with the dummy ps.
