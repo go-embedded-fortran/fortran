@@ -807,8 +807,12 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 			return c.errf(e, "%s is declared twice", name)
 		}
 		param := ss.Kind == sema.SymParam
-		if param && ss.Rank != 0 {
-			return c.errf(e, "array named constants are not supported yet")
+		// an array named constant is an array variable of constant bounds whose
+		// value is assigned when its unit's frame is made; the analyser refuses
+		// any definition of it after that
+		arrInit := ss.Rank != 0 && init != nil
+		if param && ss.Rank != 0 && init == nil {
+			return c.errf(e, "array named constant %s has no value", name)
 		}
 		elem, err := c.kindOf(e, ss.Type, 0)
 		if err != nil {
@@ -838,7 +842,7 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 			// here, so it would point at the copy: refused rather than wrong
 			return c.errf(e, "dummy argument %s: a TARGET dummy argument is not supported yet (arguments are copied, so a pointer to it would not point at the actual argument)", name)
 		}
-		if init != nil && (c.cur.unit.Kind == syntax.SubroutineUnit || c.cur.unit.Kind == syntax.FunctionUnit) {
+		if init != nil && !param && (c.cur.unit.Kind == syntax.SubroutineUnit || c.cur.unit.Kind == syntax.FunctionUnit) {
 			return c.errf(e, "%s: an initialised variable of a procedure is saved between calls, which is not supported yet", name)
 		}
 		k := elem
@@ -861,18 +865,41 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 			return nil
 		}
 		switch {
-		case ss.Rank != 0 && !kernelArray(ss, k):
+		case ss.Rank != 0 && (!kernelArray(ss, k) || arrInit):
 			if k == kStr {
 				return c.errf(e, "character arrays are not supported yet")
 			}
-			if init != nil {
-				// this path used to drop the initialisation silently
-				return c.errf(e, "%s: an array with an initialisation is not supported yet (assign it in a statement)", name)
+			if arrInit && ss.Flags&(sema.FAllocatable|sema.FPointer) != 0 {
+				return c.errf(e, "%s: an allocatable or pointer array with an initialisation is not supported yet", name)
 			}
 			if err := c.declGA(ss, e, s, k); err != nil {
 				return err
 			}
 			c.syms[ss] = s
+			if arrInit {
+				// the value is assigned once the array is made (declGA's init
+				// runs first): a constructor, reshape or a scalar broadcast,
+				// converted to the array's type as an assignment converts it
+				ent, ok := e.(*syntax.Entity)
+				if !ok {
+					return c.errf(e, "%s: an array initialisation outside a type declaration is not supported yet", name)
+				}
+				v, err := c.expr(init)
+				if err != nil {
+					return err
+				}
+				// the declared name is not a use of it in the analyser's table:
+				// a copy of it stands for the variable while the assignment is
+				// compiled, and leaves the table afterwards
+				id := ent.Name
+				c.info.Uses[&id] = ss
+				fn, err := c.assignGA(e, &id, v, nil)
+				delete(c.info.Uses, &id)
+				if err != nil {
+					return err
+				}
+				c.cur.init = append(c.cur.init, fn)
+			}
 			return nil
 		case ss.Rank != 0:
 			s.k, s.rank, s.slot = kArr, ss.Rank, c.cur.nArrs

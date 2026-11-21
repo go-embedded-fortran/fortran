@@ -405,6 +405,22 @@ func TestConstructorKeepsTheBoundsOfItsValue(t *testing.T) {
 	}
 }
 
+// TestArrayNamedConstants: an array parameter (constructor, reshape, scalar
+// broadcast; in a main program and in a procedure) and an initialised array of
+// a main program have their values. gfortran 15.2.0's output.
+func TestArrayNamedConstants(t *testing.T) {
+	const src = "program p\ninteger, parameter :: a(3) = [10, 20, 30]\nreal, parameter :: r(2,2) = reshape([1., 2., 3., 4.], [2, 2])\nreal(8), parameter :: z(4) = 0.5d0\ninteger :: b(3) = [1, 2, 3]\nprint *, a, sum(a), a(2), size(a)\nprint *, r(2,1), r(1,2)\nprint *, z\nprint *, b + a\ncall s()\ncontains\nsubroutine s()\ninteger, parameter :: q(2) = [7, 8]\nprint *, q(2), q\nend subroutine\nend program\n"
+	const want = "10 20 30 60 20 3 2.00000000 3.00000000 0.50000000000000000 0.50000000000000000 0.50000000000000000 0.50000000000000000 11 22 33 8 7 8"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != want {
+		t.Errorf("array named constants: %q, %v", out, err)
+	}
+	// an initialised array of a procedure would be saved between calls: refused
+	const saved = "program p\ncall s()\ncontains\nsubroutine s()\ninteger :: c(2) = [1, 2]\nprint *, c\nend subroutine\nend program\n"
+	if _, err := runPtr(t, 100<<20, saved); err == nil || !strings.Contains(err.Error(), "saved between calls") {
+		t.Errorf("initialised array of a procedure: want a refusal, got %v", err)
+	}
+}
+
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
 // (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
 func TestBozRealIsTheBitPattern(t *testing.T) {
