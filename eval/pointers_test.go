@@ -419,6 +419,19 @@ func TestArrayNamedConstants(t *testing.T) {
 	if _, err := runPtr(t, 100<<20, saved); err == nil || !strings.Contains(err.Error(), "saved between calls") {
 		t.Errorf("initialised array of a procedure: want a refusal, got %v", err)
 	}
+	// each refusal names its own cause: an initialised allocatable, an
+	// initialiser eval cannot compile, a value of another shape
+	for _, tc := range []struct{ src, want string }{
+		{"integer, allocatable :: a(:) = [1, 2]\nprint *, a\nend\n", "allocatable or pointer array with an initialisation"},
+		{"integer, parameter :: a(2) = [ishft(i=1, shift=2), 3]\nprint *, a\nend\n", "keyword arguments of intrinsics"},
+		{"integer :: a(2) = [1, 2, 3]\nprint *, a\nend\n", "Different shape for array assignment"},
+		// refused by the assignment itself: a value of the kernels' array kind
+		{"real(8) :: k(2)\nreal(8) :: a(2) = k\nprint *, a\nend\n", "real(8) array of the kernels' kind"},
+	} {
+		if _, err := runPtr(t, 100<<20, tc.src); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: want a refusal naming %q, got %v", tc.src, tc.want, err)
+		}
+	}
 }
 
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits

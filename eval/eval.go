@@ -810,10 +810,8 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		// an array named constant is an array variable of constant bounds whose
 		// value is assigned when its unit's frame is made; the analyser refuses
 		// any definition of it after that
+		// (a named constant without a value is refused by the analyser)
 		arrInit := ss.Rank != 0 && init != nil
-		if param && ss.Rank != 0 && init == nil {
-			return c.errf(e, "array named constant %s has no value", name)
-		}
 		elem, err := c.kindOf(e, ss.Type, 0)
 		if err != nil {
 			return err
@@ -880,10 +878,6 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 				// the value is assigned once the array is made (declGA's init
 				// runs first): a constructor, reshape or a scalar broadcast,
 				// converted to the array's type as an assignment converts it
-				ent, ok := e.(*syntax.Entity)
-				if !ok {
-					return c.errf(e, "%s: an array initialisation outside a type declaration is not supported yet", name)
-				}
 				v, err := c.expr(init)
 				if err != nil {
 					return err
@@ -891,7 +885,7 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 				// the declared name is not a use of it in the analyser's table:
 				// a copy of it stands for the variable while the assignment is
 				// compiled, and leaves the table afterwards
-				id := ent.Name
+				id := syntax.Ident{Span: syntax.Span{Pos: e.P()}, Name: name}
 				c.info.Uses[&id] = ss
 				fn, err := c.assignGA(e, &id, v, nil)
 				delete(c.info.Uses, &id)
