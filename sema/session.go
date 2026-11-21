@@ -138,7 +138,11 @@ func (s *Session) AnalyzeNext(state any, index int, src string) (*CellInfo, any)
 		}
 	}
 	modName := fmt.Sprintf("__cell%d", index)
-	var units []*syntax.Unit
+	// the modules of the cell come first: the session module may use them,
+	// and a module is known to a USE only once it is analysed (a CALL of a
+	// procedure of a module of the same cell resolved to nothing, #44)
+	units := append([]*syntax.Unit(nil), others...)
+	var modUnit *syntax.Unit // the session module, nil when the cell has none
 	if len(decls) > 0 || len(procs) > 0 || len(execs) > 0 {
 		ci.Module = modName
 		m := &syntax.Unit{Kind: syntax.ModuleUnit, Ident: syntax.Ident{Name: modName}, HasContains: true}
@@ -157,8 +161,8 @@ func (s *Session) AnalyzeNext(state any, index int, src string) (*CellInfo, any)
 			m.Contains = append(m.Contains, run)
 		}
 		units = append(units, m)
+		modUnit = m
 	}
-	units = append(units, others...)
 	g := &syntax.File{Name: f.Name, Form: f.Form, Set: f.Set, Units: units}
 	ci.File = g
 
@@ -171,10 +175,6 @@ func (s *Session) AnalyzeNext(state any, index int, src string) (*CellInfo, any)
 
 	own := map[string]bool{}
 	ci.Vars = map[string]*Symbol{}
-	var modUnit *syntax.Unit // the session module, nil when the cell has none
-	if ci.Module != "" {
-		modUnit = units[0]
-	}
 	if sc := info.Scopes[modUnit]; modUnit != nil && sc != nil {
 		for _, sym := range sc.Order {
 			if sym.Flags&FUsed != 0 || sym.Name == ci.Run {
