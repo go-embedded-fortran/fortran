@@ -471,6 +471,18 @@ read an absent `dim` as 0). Compared file by file with the previous run, 3 files
 went from refused to identical and none left identical; most files that used
 `optional` meet another refusal further on.
 
+**Modules of a cell, copy-out** (2026-11-21): 3151 files, **identical 243**,
+both-failed 23, differs 3, **refused-by-us 2129**, gfortran-failed 433, skipped
+320. The loose statements of a cell (a main program without `PROGRAM`) now call
+the procedures of a module the same cell defines (#44): the cell's modules are
+analysed before its own statements. That fix ran two files with wrong results,
+which are fixed too: an actual argument that is a scalar component (`x%b`) or an
+array element (`a(i)`) now gets the dummy's final value back, through the place
+fixed when the call starts; and a parenthesised derived-type actual `(e)` is a
+copy, so the `intent(out)` of another dummy associated with `e` no longer resets
+it. Compared file by file with the previous run, 16 files went from refused to
+identical and none left identical.
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the

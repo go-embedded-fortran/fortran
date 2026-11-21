@@ -431,13 +431,14 @@ func (c *compiler) gaIndexRef(n *syntax.Index, r *gref) (*ex, error) {
 			}
 			return g, g.off(f, name, buf[:rank])
 		}
+		pl := func(f *frame) *sref { g, o := pos(f); return &sref{g: g, off: o} }
 		switch et {
 		case kReal:
-			return &ex{k: kReal, kd: kd, slot: -1, r: func(f *frame) float64 { g, o := pos(f); return g.r[o] }}, nil
+			return &ex{k: kReal, kd: kd, slot: -1, r: func(f *frame) float64 { g, o := pos(f); return g.r[o] }, pl: pl}, nil
 		case kLog:
-			return &ex{k: kLog, slot: -1, b: func(f *frame) bool { g, o := pos(f); return g.i[o] != 0 }}, nil
+			return &ex{k: kLog, slot: -1, b: func(f *frame) bool { g, o := pos(f); return g.i[o] != 0 }, pl: pl}, nil
 		}
-		return &ex{k: kInt, kd: kd, slot: -1, i: func(f *frame) int64 { g, o := pos(f); return g.i[o] }}, nil
+		return &ex{k: kInt, kd: kd, slot: -1, i: func(f *frame) int64 { g, o := pos(f); return g.i[o] }, pl: pl}, nil
 	}
 	rank := 0
 	for _, s := range ss {

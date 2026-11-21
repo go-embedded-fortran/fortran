@@ -303,6 +303,7 @@ func (c *compiler) hostStore(s *sym, v *ex, n int, at syntax.Node) (stmtFn, erro
 // intent(in) or value.
 type binding struct {
 	set  func(caller, callee *frame)
+	out  func(caller, callee *frame) // after every set: what intent(out) does to the actual
 	back func(caller, callee *frame)
 }
 
@@ -397,6 +398,11 @@ func (c *compiler) invoker(at syntax.Node, p *procCode, args []syntax.Arg) (func
 		cf := p.newFrame(f, up)
 		for i := range binds {
 			binds[i].set(f, cf)
+		}
+		for i := range binds {
+			if binds[i].out != nil {
+				binds[i].out(f, cf)
+			}
 		}
 		p.run(cf)
 		f.bud.exit(cf)
@@ -561,15 +567,27 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 			return binding{}, c.errf(a, "the actual argument is not of type %s", ps.dt.name)
 		}
 		fn := v.d
-		if intent == "out" {
-			b.set = func(f, cf *frame) {
-				o := fn(f)
-				o.becomeOut(f)
-				cf.dobjs[slot] = o
+		if _, paren := a.(*syntax.Paren); paren {
+			// (x) is a value, not the variable x: the dummy gets a copy, so
+			// that what the call does to x (another argument, intent(out))
+			// does not reach it (interface_assignment_1 of gfortran.dg)
+			obj, dt := fn, v.dt
+			fn = func(f *frame) *dobj {
+				t := dt.newObj(f, nil)
+				t.assign(f, obj(f))
+				return t
 			}
-			return b, nil
 		}
 		b.set = func(f, cf *frame) { cf.dobjs[slot] = fn(f) }
+		if intent == "out" {
+			// after every actual is copied in: call s(e, (e)) copies e
+			// before the intent(out) of the first dummy resets it
+			b.out = func(f, cf *frame) {
+				if o := cf.dobjs[slot]; o != nil {
+					o.becomeOut(f)
+				}
+			}
+		}
 		return b, nil
 	case kGA:
 		// the dummy shares the actual's elements, with lower bounds 1; only a
@@ -602,6 +620,10 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	default:
 		fn := v.r
 		b.set = func(f, cf *frame) { cf.reals[slot] = fn(f) }
+	}
+	// copy-out to a component or an element, through its place
+	if v.pl != nil && intent != "in" && intent != "value" && c.isDesignator(a) {
+		return c.placeBinding(v.pl, ps), nil
 	}
 	// copy-out: the actual is a plain variable and the dummy can be defined
 	id, ok := a.(*syntax.Ident)
@@ -645,6 +667,51 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 		b.back = func(f, cf *frame) { f.ints[tmp] = cf.ints[slot]; st(f) }
 	}
 	return b, nil
+}
+
+// isDesignator reports an actual argument that is a component (x%b) or a
+// subscripted variable (a(i)): (x), +x and a function reference are values,
+// even when their expression is the variable's own (an intrinsic may hand its
+// argument back), and nothing is copied out to them.
+func (c *compiler) isDesignator(a syntax.Expr) bool {
+	switch x := a.(type) {
+	case *syntax.Component:
+		return true
+	case *syntax.Index:
+		return !c.isFuncRef(x)
+	}
+	return false
+}
+
+// placeBinding copies the dummy ps in from the place loc fixes when the call
+// starts (a(i) is the element of the i of that moment, whatever the call does
+// to i), and back out to that same place when it returns.
+func (c *compiler) placeBinding(loc func(*frame) *sref, ps *sym) binding {
+	tmp := c.cur.nPtrs
+	c.cur.nPtrs++
+	slot, n := ps.slot, ps.clen
+	var b binding
+	switch ps.k {
+	case kStr:
+		b.set = func(f, cf *frame) {
+			r := loc(f)
+			f.ptrs[tmp] = r
+			s := r.o.v[r.ci].s
+			if n >= 0 {
+				s = fitLen(s, n)
+			}
+			cf.strs[slot] = s
+		}
+		// a character component keeps its length
+		b.back = func(f, cf *frame) { r := f.ptrs[tmp]; r.o.v[r.ci].s = fitLen(cf.strs[slot], int64(len(r.o.v[r.ci].s))) }
+	case kReal:
+		b.set = func(f, cf *frame) { r := loc(f); f.ptrs[tmp] = r; cf.reals[slot] = r.getReal() }
+		b.back = func(f, cf *frame) { f.ptrs[tmp].setReal(cf.reals[slot]) }
+	default: // integer and logical
+		b.set = func(f, cf *frame) { r := loc(f); f.ptrs[tmp] = r; cf.ints[slot] = r.getInt() }
+		b.back = func(f, cf *frame) { f.ptrs[tmp].setInt(cf.ints[slot]) }
+	}
+	return b
 }
 
 // storeVar compiles an assignment to a scalar variable of this unit or of an

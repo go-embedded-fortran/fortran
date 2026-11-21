@@ -44,9 +44,12 @@ type sref struct {
 	rl     bool
 	g      *garr // or an element: offset off of g
 	off    int
-	palloc bool  // ALLOCATE made it through a pointer (the only target DEALLOCATE may free)
-	freed  bool  // DEALLOCATE freed it, through this pointer or another one
-	chg    int64 // what ALLOCATE charged the heap for it
+	o      *dobj // or a scalar component: component ci of o (argument copy-out only)
+	ci     int
+	rp     *float64 // or an element of a real array of the plain kind (argument copy-out only)
+	palloc bool     // ALLOCATE made it through a pointer (the only target DEALLOCATE may free)
+	freed  bool     // DEALLOCATE freed it, through this pointer or another one
+	chg    int64    // what ALLOCATE charged the heap for it
 }
 
 // Which targets outlive their frame. A pointer held in a frame that outlives
@@ -137,10 +140,13 @@ func escapeTarget(f, holder *frame, result bool, r *sref) *sref {
 
 // same reports two pointers associated with one target.
 func (r *sref) same(o *sref) bool {
-	return r != nil && o != nil && r.f == o.f && r.s == o.s && r.g == o.g && r.off == o.off
+	return r != nil && o != nil && r.f == o.f && r.s == o.s && r.g == o.g && r.off == o.off && r.o == o.o && r.ci == o.ci && r.rp == o.rp
 }
 
 func (r *sref) getInt() int64 {
+	if r.o != nil {
+		return r.o.v[r.ci].i
+	}
 	if r.g != nil {
 		return r.g.i[r.off]
 	}
@@ -148,6 +154,12 @@ func (r *sref) getInt() int64 {
 }
 
 func (r *sref) getReal() float64 {
+	if r.rp != nil {
+		return *r.rp
+	}
+	if r.o != nil {
+		return r.o.v[r.ci].r
+	}
 	if r.g != nil {
 		return r.g.r[r.off]
 	}
@@ -155,6 +167,10 @@ func (r *sref) getReal() float64 {
 }
 
 func (r *sref) setInt(v int64) {
+	if r.o != nil {
+		r.o.v[r.ci].i = v
+		return
+	}
 	if r.g != nil {
 		r.g.i[r.off] = v
 		return
@@ -163,6 +179,14 @@ func (r *sref) setInt(v int64) {
 }
 
 func (r *sref) setReal(v float64) {
+	if r.rp != nil {
+		*r.rp = v
+		return
+	}
+	if r.o != nil {
+		r.o.v[r.ci].r = v
+		return
+	}
 	if r.g != nil {
 		r.g.r[r.off] = v
 		return

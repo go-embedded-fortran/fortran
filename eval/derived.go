@@ -506,15 +506,16 @@ func (c *compiler) component(n *syntax.Component) (*ex, error) {
 			return nil, err
 		}
 		o := x.d
+		pl := func(f *frame) *sref { return &sref{o: o(f), ci: i} }
 		switch dc.k {
 		case kInt:
-			return &ex{k: kInt, kd: dc.kd, slot: -1, i: func(f *frame) int64 { return o(f).v[i].i }}, nil
+			return &ex{k: kInt, kd: dc.kd, slot: -1, i: func(f *frame) int64 { return o(f).v[i].i }, pl: pl}, nil
 		case kLog:
-			return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return o(f).v[i].i != 0 }}, nil
+			return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return o(f).v[i].i != 0 }, pl: pl}, nil
 		case kReal:
-			return &ex{k: kReal, kd: dc.kd, slot: -1, r: func(f *frame) float64 { return o(f).v[i].r }}, nil
+			return &ex{k: kReal, kd: dc.kd, slot: -1, r: func(f *frame) float64 { return o(f).v[i].r }, pl: pl}, nil
 		case kStr:
-			return &ex{k: kStr, slot: -1, s: func(f *frame) string { return o(f).v[i].s }}, nil
+			return &ex{k: kStr, slot: -1, s: func(f *frame) string { return o(f).v[i].s }, pl: pl}, nil
 		case kD:
 			return &ex{k: kD, slot: -1, dt: dc.dt, d: func(f *frame) *dobj { return o(f).v[i].d }}, nil
 		}

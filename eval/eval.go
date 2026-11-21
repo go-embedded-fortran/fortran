@@ -387,6 +387,9 @@ type ex struct {
 	// disassociated), for p => f() (pointers.go); i, r, b and g dereference it.
 	ps func(*frame) *sref
 	pg func(*frame) *garr
+	// pl is set on a scalar component or an array element: where it is, for
+	// the copy-out of an actual argument (bind)
+	pl func(*frame) *sref
 	g  gaFn                 // a general array: its shape and elements
 	et kind                 // the class of the elements of a general array
 	d  func(*frame) *dobj   // a derived-type object (a live reference)
@@ -1657,7 +1660,26 @@ func (c *compiler) element(n *syntax.Index, name string, s *sym) (*ex, error) {
 			return a.data[int(i)+int(j)*a.n1]
 		}
 	}
-	return &ex{k: kReal, slot: -1, r: fn, v: s}, nil
+	rank := s.rank
+	pl := func(f *frame) *sref {
+		a := f.at(h).arrs[slot]
+		if a == nil {
+			unallocated(f, name)
+		}
+		i := i0.get(f) - 1
+		if uint64(i) >= uint64(a.n1) {
+			bounds(f, name, 1, i+1, a.n1)
+		}
+		if rank == 2 {
+			j := i1.get(f) - 1
+			if uint64(j) >= uint64(a.n2) {
+				bounds(f, name, 2, j+1, a.n2)
+			}
+			i += j * int64(a.n1)
+		}
+		return &sref{rp: &a.data[i]}
+	}
+	return &ex{k: kReal, slot: -1, r: fn, v: s, pl: pl}, nil
 }
 
 func unallocated(f *frame, name string) { fail(f, "array %s is not allocated", name) }
