@@ -460,6 +460,17 @@ files went from refused to identical and none left identical. One of them,
 `merge_1`, first differed: `MERGE` evaluated only the value the mask selected,
 and gfortran evaluates both (PR fortran/107874), which `eval` now does.
 
+**Optional arguments** (2026-11-21): 3151 files, **identical 227**,
+both-failed 22, differs 3, **refused-by-us 2146**, gfortran-failed 433, skipped
+320. Scalar integer, real, logical and character dummies may be `optional`, and
+`present` tells (F2018 15.5.2.12): an absent one passed on to another optional
+dummy stays absent, and a disassociated pointer passed to one makes it absent.
+Optional arrays and derived-type dummies are still refused, and so is an
+optional dummy passed to an optional argument of an intrinsic (`size(a, dim)`
+read an absent `dim` as 0). Compared file by file with the previous run, 3 files
+went from refused to identical and none left identical; most files that used
+`optional` meet another refusal further on.
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the

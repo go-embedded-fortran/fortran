@@ -196,7 +196,7 @@ end program p
 func TestPart2Refusals(t *testing.T) {
 	for name, src := range map[string]string{
 		"array dummy":     "program p\n  implicit none\n  integer :: i\n  call s(i)\ncontains\n  subroutine s(a)\n    real(8), intent(in) :: a(:)\n  end subroutine s\nend program p\n",
-		"optional":        "program p\n  implicit none\n  call s()\ncontains\n  subroutine s(a)\n    integer, optional :: a\n  end subroutine s\nend program p\n",
+		"optional array":  "program p\n  implicit none\n  call s()\ncontains\n  subroutine s(a)\n    integer, optional :: a(3)\n  end subroutine s\nend program p\n",
 		"saved local":     "program p\n  implicit none\n  call s()\ncontains\n  subroutine s()\n    integer :: k = 0\n    k = k + 1\n  end subroutine s\nend program p\n",
 		"function result": "program p\n  implicit none\n  integer :: i\n  i = f()\ncontains\n  function f()\n    real(8), allocatable :: f(:)\n  end function f\nend program p\n",
 		"type conversion": "program p\n  implicit none\n  real(8) :: x\n  x = 1d0\n  call s(x)\ncontains\n  subroutine s(a)\n    real(8), intent(in) :: a\n  end subroutine s\nend program p\n",
