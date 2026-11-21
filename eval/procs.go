@@ -494,11 +494,12 @@ func (c *compiler) present(n *syntax.Index) (*ex, error) {
 	if len(n.Args) != 1 || n.Args[0].Value == nil {
 		return nil, c.errf(n, "present takes one argument")
 	}
-	id, ok := n.Args[0].Value.(*syntax.Ident)
-	if !ok {
-		return nil, c.errf(n, "the argument of present must be an optional dummy argument")
+	var s *sym
+	err := c.errf(n, "the argument of present must be an optional dummy argument")
+	id, isID := n.Args[0].Value.(*syntax.Ident)
+	if isID {
+		s, _, err = c.symOf(id)
 	}
-	s, _, err := c.symOf(id)
 	if err == nil && !s.opt {
 		err = c.errf(id, "%s is not an optional dummy argument supported by the evaluator", id.Name)
 	}
