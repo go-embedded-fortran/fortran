@@ -358,8 +358,9 @@ func (c *compiler) declGA(ss *sema.Symbol, e syntax.Node, s *sym, k kind) error 
 	s.k, s.ga, s.et, s.rank, s.slot = kGA, true, k, ss.Rank, c.cur.nGAs
 	c.cur.nGAs++
 	if ss.Flags&sema.FDummy != 0 {
-		// a dummy array takes the shape of its actual argument (a view of it)
-		return nil
+		// an assumed-shape or assumed-size dummy array takes the shape of its
+		// actual argument (a view of it); an explicit-shape one is reshaped
+		return c.explicitShapeDummy(ss, e, s)
 	}
 	if ss.Flags&sema.FAllocatable != 0 {
 		s.alloc = true

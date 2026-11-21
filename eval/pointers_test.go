@@ -343,6 +343,68 @@ func TestIntentOutDerivedIsDefaultInitialized(t *testing.T) {
 	}
 }
 
+// TestValueDummyIsNotCopiedBack pins F2018 8.5.18: a VALUE dummy changed in
+// the callee leaves the actual alone, and a result length declared from it is
+// taken on entry. The expected line is gfortran 15.2.0's output.
+func TestValueDummyIsNotCopiedBack(t *testing.T) {
+	const src = "program p\ninteger :: n\nreal :: x\ncharacter(len=5) :: s\nn = 3\nx = 1.5\ns = 'abc'\ncall sub(n, x, s)\nprint *, n, x, s, len(f(n)), n\ncontains\nsubroutine sub(i, r, c)\ninteger, value :: i\nreal, value :: r\ncharacter(len=5), value :: c\ni = i + 1\nr = r * 2\nc = 'xyz'\nprint *, i, r, c\nend subroutine\nfunction f(k)\ninteger, value :: k\ncharacter(len=k) :: f\nk = 17\nf = ' '\nend function\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "4 3.00000000 xyz 3 1.50000000 abc 3 3" {
+		t.Errorf("VALUE dummies: %q, %v", out, err)
+	}
+	// a VALUE dummy of derived type would need a copy of the object: refused
+	const dt = "module m\ntype :: t\ninteger :: i\nend type\ncontains\nsubroutine s(a)\ntype(t), value :: a\na%i = 1\nend subroutine\nend module\nprogram p\nuse m\ntype(t) :: x\nx%i = 0\ncall s(x)\nprint *, x%i\nend program\n"
+	if _, err := runPtr(t, 100<<20, dt); err == nil || !strings.Contains(err.Error(), "VALUE attribute") {
+		t.Errorf("VALUE derived-type dummy: want a refusal, got %v", err)
+	}
+}
+
+// TestAssumedLengthResultIsRefused: the length of a character(*) function
+// result is the caller's; eval ran it with length 0 and printed "[] 0".
+func TestAssumedLengthResultIsRefused(t *testing.T) {
+	const src = "function g()\ncharacter(*) :: g\ng = \"efgh\"\nprint *, '[', g, ']', len(g)\nend function g\ncharacter(4), external :: g\nprint *, '[', g(), ']'\nend\n"
+	if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), "assumed-length character function result") {
+		t.Errorf("character(*) result: want a refusal, got %v", err)
+	}
+	// a character(*) dummy keeps the actual's length
+	const dummy = "program p\ncall s('abc')\ncontains\nsubroutine s(c)\ncharacter(*) :: c\nprint *, len(c)\nend subroutine\nend program\n"
+	if out, err := runPtr(t, 100<<20, dummy); err != nil || out != "3" {
+		t.Errorf("character(*) dummy: %q, %v", out, err)
+	}
+}
+
+// TestExplicitShapeDummyHasItsDeclaredShape: an explicit-shape dummy array is
+// the actual's element sequence with the declared bounds, which may depend on
+// other dummies (dependent_decls_3 of gfortran.dg). gfortran 15.2.0's output.
+func TestExplicitShapeDummyHasItsDeclaredShape(t *testing.T) {
+	const src = "program p\nreal :: x(8,4), w(4,2)\ninteger :: a(6)\na = [1, 2, 3, 4, 5, 6]\nw = 0\ncall sub(x, w)\nprint *, sum(w), shape(w)\ncall two(a)\ncall low(a, 5)\ncontains\nsubroutine sub(v, d)\nreal, intent(in) :: v(:,:)\nreal, intent(out), dimension(size(v,dim=1)/2, size(v,dim=2)/2) :: d\nd = 1.0\nprint *, shape(d)\nend subroutine\nsubroutine two(b)\ninteger :: b(2,3)\nprint *, b(2,3), b(1,2), shape(b)\nend subroutine\nsubroutine low(b, n)\ninteger :: n\ninteger :: b(0:n-1)\nprint *, b(0), b(n-1), lbound(b), ubound(b)\nend subroutine\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "4 2 8.00000000 4 2 6 3 2 3 1 5 0 4" {
+		t.Errorf("explicit-shape dummies: %q, %v", out, err)
+	}
+	// a bound may name a dummy declared after the array (guality/arg1): the
+	// analyser types it at the end of the unit, and eval compiles it then
+	for _, decl := range []string{"integer :: a(n), n", "integer :: a(n)\ninteger :: n", "integer :: n, a(n)"} {
+		src := "integer :: a(10), b(12)\ncall sub (a, 10)\ncall sub (b, 12)\nwrite (*,*) a, b\nend\nsubroutine sub (a, n)\n" + decl + "\ninteger :: i\ndo i = 1, n\na(i) = i\nend do\nend subroutine\n"
+		if out, err := runPtr(t, 100<<20, src); err != nil || out != "1 2 3 4 5 6 7 8 9 10 1 2 3 4 5 6 7 8 9 10 11 12" {
+			t.Errorf("%s: %q, %v", decl, out, err)
+		}
+	}
+	// a dummy larger than its actual is stopped, not read past the storage
+	const big = "program p\ninteger :: a(3)\na = 1\ncall s(a, 4)\ncontains\nsubroutine s(b, n)\ninteger :: n\ninteger :: b(n)\nprint *, b(n)\nend subroutine\nend program\n"
+	if _, err := runPtr(t, 100<<20, big); err == nil || !strings.Contains(err.Error(), "more than the 3 of its actual") {
+		t.Errorf("dummy larger than its actual: want a stop, got %v", err)
+	}
+}
+
+// TestConstructorKeepsTheBoundsOfItsValue: an allocatable component given in
+// a structure constructor has the bounds of the expression, as an intrinsic
+// assignment would give (alloc_comp_bounds_1). gfortran 15.2.0's output.
+func TestConstructorKeepsTheBoundsOfItsValue(t *testing.T) {
+	const src = "program p\ntype :: s\ninteger, allocatable :: ib(:)\nend type\ninteger, allocatable :: ia(:)\ntype(s) :: x\nallocate(ia(-1:2))\nia = [5, 6, 7, 8]\nx = s(ia)\nprint *, lbound(x%ib), ubound(x%ib), x%ib(-1)\nx = s(ia(:))\nprint *, lbound(x%ib), ubound(x%ib), x%ib(1)\nx = s(ia(0:1))\nprint *, lbound(x%ib), ubound(x%ib), x%ib(1)\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "-1 2 5 1 4 5 1 2 6" {
+		t.Errorf("constructor bounds: %q, %v", out, err)
+	}
+}
+
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
 // (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
 func TestBozRealIsTheBitPattern(t *testing.T) {
@@ -355,11 +417,20 @@ func TestBozRealIsTheBitPattern(t *testing.T) {
 	if out, err := runPtr(t, 100<<20, other); err != nil || out != "16 3.00000000" {
 		t.Errorf("INT of BOZ and REAL of an integer: %q, %v", out, err)
 	}
+	// INT reads the bits as an integer of its kind (gfortran 15.2.0's line)
+	const ints = "program p\nprint *, int(z'FFFFFFFF', 4), int(z'FB2E', 2), int(z'FF', 1), int(z'7F', 1), int(z'FFFFFFFFFFFFFFFF', 8)\nend program\n"
+	if out, err := runPtr(t, 100<<20, ints); err != nil || out != "-1 -1234 -1 127 -1" {
+		t.Errorf("INT of BOZ: %q, %v", out, err)
+	}
+	if _, err := runPtr(t, 100<<20, "program p\nprint *, int(z'1FF', 1)\nend program\n"); err == nil || !strings.Contains(err.Error(), "wider than INTEGER(1)") {
+		t.Errorf("INT of a BOZ wider than its kind: want a refusal, got %v", err)
+	}
 	// what is not modelled is refused, never truncated or guessed
 	for src, want := range map[string]string{
 		"program p\nprint *, real(z\"1FFFFFFFF\")\nend program\n":          "wider than REAL(4)",
 		"program p\nprint *, dble(z\"1FFFFFFFFFFFFFFFFF\")\nend program\n": "wider than 64 bits",
 		"program p\nprint *, real(z\"3F800000\", 16)\nend program\n":       "REAL(16) is not supported",
+		"program p\nprint *, int(z'1', 16)\nend program\n":                 "INTEGER(16) is not supported",
 	} {
 		if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: want a refusal containing %q, got %v", src, want, err)

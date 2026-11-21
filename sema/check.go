@@ -40,6 +40,9 @@ type checker struct {
 	// deferTyping is set while evaluating array bounds and character lengths
 	// of a declaration: an untyped dummy is not given its implicit type yet.
 	deferTyping bool
+	// retype holds the bounds and lengths that deferTyping left of unknown
+	// type; finalize analyses them again once their names are typed.
+	retype []retypeExpr
 	// pending generic interfaces: "module procedure" names to resolve once
 	// the host's contained procedures are declared.
 	pending []pendingGeneric
@@ -272,6 +275,44 @@ func (c *checker) finalize(sc *Scope) {
 			c.typeOf(s, s.Pos)
 		}
 	}
+	c.retypeDeferred(sc)
+}
+
+type retypeExpr struct {
+	sc *Scope
+	e  syntax.Expr
+}
+
+// deferUnknown records a bound or length expression whose analysis under
+// deferTyping met a name not typed yet ("integer :: a(n), n").
+func (c *checker) deferUnknown(sc *Scope, e syntax.Expr, tv TV) {
+	if tv.Type.Basic == Unknown {
+		c.retype = append(c.retype, retypeExpr{sc, e})
+	}
+}
+
+// retypeDeferred analyses again, now that every name of sc has its type, the
+// expressions deferUnknown recorded in sc, so that the types recorded for them
+// (Info.Types) are the final ones: a specification expression may name a
+// variable typed further down, and the evaluator compiles from
+// those types (guality/arg1 of gfortran.dg). The second pass reports nothing:
+// its diagnostics would repeat the first one's.
+func (c *checker) retypeDeferred(sc *Scope) {
+	keep := c.retype[:0]
+	var mine []retypeExpr
+	for _, r := range c.retype {
+		if r.sc == sc {
+			mine = append(mine, r)
+		} else {
+			keep = append(keep, r)
+		}
+	}
+	c.retype = keep
+	errs, stop := len(c.errs), c.stop
+	for _, r := range mine {
+		c.expr(r.sc, r.e)
+	}
+	c.errs, c.stop = c.errs[:errs], stop
 }
 
 // typeOf is the type of a symbol; a symbol that has none yet gets the
@@ -642,6 +683,7 @@ func (c *checker) constLen(sc *Scope, e syntax.Expr) int64 {
 	c.deferTyping = true
 	tv := c.expr(sc, e)
 	c.deferTyping = false
+	c.deferUnknown(sc, e, tv)
 	if tv.Type.Basic == Integer && tv.Const != nil {
 		if tv.Const.I < 0 {
 			return 0
@@ -839,6 +881,7 @@ func (c *checker) boundValue(sc *Scope, e syntax.Expr) (int64, bool) {
 	c.deferTyping = true
 	tv := c.expr(sc, e)
 	c.deferTyping = false
+	c.deferUnknown(sc, e, tv)
 	if !tv.Type.Lenient() && tv.Type.Basic != Integer {
 		c.errorf(e.P(), "Array bound at (1) must be INTEGER, it is %s", tv.Type)
 		return 0, false

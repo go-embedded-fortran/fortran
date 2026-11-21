@@ -437,6 +437,19 @@ test's `dg-options` (`save_1` needs `-fno-automatic`). Such a file is now
 skipped 317. So the identical counts above (192, 201) and in the pull requests
 up to v0.29.0 include tests that both sides failed.
 
+**The differs closed** (2026-11-20, #50 and #51): 3151 files, **identical
+197**, both-failed 22, **differs 3**, refused-by-us 2176, gfortran-failed 433,
+skipped 320. Each fix was checked against gfortran: `Gw.0` output, `intent(out)`
+derived-type dummies reinitialised, character continuations without a leading
+`&`, `REAL`/`DBLE`/`INT` of a BOZ constant as its bit pattern, `VALUE` dummies
+not copied back, explicit-shape dummy arrays with their declared bounds (which
+may name dummies declared after them), and constructor bounds of allocatable
+components. Types with `final` procedures or generic assignment, operator or
+dtio bindings, and assumed-length `character(*)` function results, ran with
+wrong results and are refused instead. The 3 left are not `eval` defects:
+`string_length_2` takes a substring out of bounds, and `short_circuiting_2`/`_3`
+assert opposite evaluation orders of one `.and.` (see #40).
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the

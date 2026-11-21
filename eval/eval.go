@@ -212,7 +212,8 @@ type procCode struct {
 	body                 stmtFn
 	params               []*sym
 	intent               []string
-	result               *sym // a function's result variable
+	afterDecls           []func() error // compiled once the specification part is (declareProc)
+	result               *sym           // a function's result variable
 	declared             bool
 	// module is set for a module: its frame lives for the whole run (frame.mods
 	// [modIdx]) and the module procedures link to it.
@@ -424,8 +425,9 @@ type compiler struct {
 	// cur is the program unit being compiled, procs all of them.
 	modules   []*procCode
 	cur       *procCode
-	tmps      bool        // the statement being compiled makes temporaries (see stmts)
-	lenExpr   syntax.Expr // the length of the character entity being declared
+	tmps      bool         // the statement being compiled makes temporaries (see stmts)
+	lenExpr   syntax.Expr  // the length of the character entity being declared
+	dimSyntax []syntax.Dim // its array spec as written, nil when not in its declaration
 	typedefs  map[string]*syntax.TypeDef
 	tdFile    *syntax.File // the file typedefs was last read from
 	dtypes    map[*sema.DerivedType]*dtype
@@ -767,6 +769,16 @@ func (c *compiler) decl(d *syntax.Decl) error {
 		if c.lenExpr == nil && d.Type != nil {
 			c.lenExpr = d.Type.Len
 		}
+		c.dimSyntax = nil
+		if e.HasDims {
+			c.dimSyntax = e.Dims
+		} else {
+			for _, a := range d.Attrs {
+				if a.Name == "dimension" {
+					c.dimSyntax = a.Dims
+				}
+			}
+		}
 		init := e.Init
 		if e.PtrInit {
 			// "=> null()": a pointer starts disassociated anyway; any other
@@ -778,7 +790,7 @@ func (c *compiler) decl(d *syntax.Decl) error {
 			init = nil
 		}
 		err := c.declSym(ss, e, init)
-		c.lenExpr = nil
+		c.lenExpr, c.dimSyntax = nil, nil
 		if err != nil {
 			return err
 		}
@@ -888,6 +900,12 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 			s.slot, s.clen = c.cur.nStrs, ss.Type.Len
 			c.cur.nStrs++
 			_, star := c.lenExpr.(*syntax.Asterisk)
+			if star && ss.Flags&sema.FResult != 0 {
+				// the length comes from the caller's declaration of the function
+				// (an obsolescent form); it is not passed in, and running with
+				// length 0 gave wrong results (parent_result_ref_2 of gfortran.dg)
+				return c.errf(e, "an assumed-length character function result is not supported")
+			}
 			if _, deferred := c.lenExpr.(*syntax.Triplet); deferred {
 				s.clen = -2
 			} else if s.clen < 0 && !star && c.lenExpr != nil && ss.Flags&sema.FDummy == 0 && !param {
