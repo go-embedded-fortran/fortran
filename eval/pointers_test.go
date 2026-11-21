@@ -434,6 +434,20 @@ func TestArrayNamedConstants(t *testing.T) {
 	}
 }
 
+// TestMergeEvaluatesBothValues pins that MERGE evaluates tsource and fsource
+// whichever the mask selects, as gfortran does (PR fortran/107874); the
+// expected line is gfortran 15.2.0's output.
+func TestMergeEvaluatesBothValues(t *testing.T) {
+	const src = "program p\ninteger :: n = 0\ncharacter(3) :: s\nprint *, merge(ti(), fi(), .true.), n\nprint *, merge(tr(), fr(), .false.), n\ns = merge(ts(), fs(), n > 100)\nprint *, s, n\ncontains\ninteger function ti()\nn = n + 1\nti = 1\nend function\ninteger function fi()\nn = n + 10\nfi = 2\nend function\nreal function tr()\nn = n + 100\ntr = 1.5\nend function\nreal function fr()\nn = n + 1000\nfr = 2.5\nend function\ncharacter(3) function ts()\nn = n + 10000\nts = 'abc'\nend function\ncharacter(3) function fs()\nn = n + 100000\nfs = 'xyz'\nend function\nend program\n"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != "1 11 2.50000000 1111 abc 111111" {
+		t.Errorf("merge evaluates both values: %q, %v", out, err)
+	}
+	const logical = "program p\nlogical :: called(2) = .false.\nprint *, merge(tl(), fl(), .true.), called\ncontains\nlogical function tl()\ntl = .true.\ncalled(1) = .true.\nend function\nlogical function fl()\nfl = .false.\ncalled(2) = .true.\nend function\nend program\n"
+	if out, err := runPtr(t, 100<<20, logical); err != nil || out != "T T T" {
+		t.Errorf("merge of logicals evaluates both values: %q, %v", out, err)
+	}
+}
+
 // TestBozRealIsTheBitPattern pins REAL/DBLE of a BOZ constant to its bits
 // (F2018 16.3.3); the expected line is gfortran 15.2.0's output.
 func TestBozRealIsTheBitPattern(t *testing.T) {
