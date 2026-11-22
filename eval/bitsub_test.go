@@ -73,10 +73,63 @@ func TestMvbitsOutOfRange(t *testing.T) {
 	}
 }
 
+// TestMvbitsElemental pins the elemental form: arrays, sections (with a
+// stride, reversed, of size zero), rank 2, FROM being TO, scalars applied to
+// every element, an array TOPOS and an integer(2) TO. The expected line is
+// gfortran 15.2.0's output for the same source.
+func TestMvbitsElemental(t *testing.T) {
+	const src = `integer :: a(4), b(4), m(2,2), z(3)
+integer(2) :: h(3)
+integer :: k
+a = [1, 2, 3, 4]
+b = 0
+call mvbits(a, 0, 2, b, 1)
+print *, b
+call mvbits(5, 0, 3, b(1:4:2), 8)
+print *, b
+call mvbits(a, 0, 1, a, 4)
+print *, a
+m = reshape([1, 2, 3, 4], [2, 2])
+call mvbits(m, 0, 3, m, 4)
+print *, m
+z = 0
+call mvbits(1, 0, 1, z, [0, 1, 2])
+print *, z
+h = -1
+call mvbits([0_2, 1_2, 3_2], 0, 2, h, 14)
+print *, h
+z = 7
+k = 3
+call mvbits(z(k:1), 0, 1, z(k:1), 2)
+print *, z
+call mvbits(a(4:1:-1), 0, 4, b, 16)
+print *, b
+end
+`
+	const want = "2 4 6 0 1282 4 1286 0 17 2 19 4 17 34 51 68 1 2 4 16383 32767 -1 7 7 7 263426 196612 132358 65536"
+	if out, err := runPtr(t, 100<<20, src); err != nil || out != want {
+		t.Errorf("elemental mvbits: %q, %v; want %q", out, err, want)
+	}
+}
+
+// TestMvbitsNotConformable pins that arrays of different sizes stop the
+// program (their sizes are known at run time only).
+func TestMvbitsNotConformable(t *testing.T) {
+	const src = "integer :: a(4), k\na = 1\nk = 3\ncall mvbits(a(1:k), 0, 1, a, 0)\nend\n"
+	if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), "not conformable") {
+		t.Errorf("mvbits on arrays of sizes 3 and 4: %v; want a failure naming them not conformable", err)
+	}
+}
+
 // TestMvbitsRefusals pins what mvbits refuses at compile time.
 func TestMvbitsRefusals(t *testing.T) {
 	for _, tc := range []struct{ src, msg string }{
-		{"integer :: a(2)\na = 0\ncall mvbits(1, 0, 1, a, 0)\nend\n", "must be a scalar integer"},
+		{"real :: x(2)\ninteger :: a(2)\nx = 0\ncall mvbits(x, 0, 1, a, 0)\nend\n", "argument from must be an integer"},
+		{"integer :: a(2), j\na = 0\ncall mvbits(a, 0, 1, j, 0)\nend\n", "to must be an array when another argument is"},
+		{"integer :: a(2)\na = 0\ncall mvbits(1, 0, 1, (a), 0)\nend\n", "to must be a variable"},
+		{"integer, parameter :: q(2) = [1, 2]\ncall mvbits(1, 0, 1, q, 0)\nend\n", "q is a named constant"},
+		{"integer, parameter :: q(2) = [1, 2]\ncall mvbits(1, 0, 1, q(1), 0)\nend\n", "q is a named constant"},
+		{"integer, parameter :: q(2) = [1, 2]\ncall mvbits(1, 0, 1, q(1:2), 0)\nend\n", "q is a named constant"},
 		{"integer :: j\ncall mvbits(1, 0, 1, j)\nend\n", "argument topos is missing"},
 		{"integer :: j\ncall mvbits(1, 0, 1, j, 0, 2)\nend\n", "takes the arguments"},
 		{"integer :: j\ncall mvbits(1, 0, 1, to=j, 0)\nend\n", "takes the arguments"},
