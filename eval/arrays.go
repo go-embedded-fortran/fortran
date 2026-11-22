@@ -23,12 +23,15 @@ const MaxRank = 7
 type gaFn func(*frame) *garr
 
 type garr struct {
-	et  kind // kInt, kReal or kLog: the class of the elements
+	et  kind // kInt, kReal, kLog or kStr: the class of the elements
 	kd  int
 	lb  []int64
 	ext []int
 	i   []int64   // kInt and kLog (0 or 1)
 	r   []float64 // kReal
+	s   []string  // kStr: each element exactly clen long (strarrays.go)
+	// clen is the length of the elements of a character array
+	clen int64
 
 	// chg is what the array was charged, and own the frame it was charged to
 	// (zero and nil for a temporary: see memory.go).
@@ -56,19 +59,7 @@ func (g *garr) size() int {
 }
 
 func newGarr(f *frame, et kind, kd int, lb []int64, ext []int) *garr {
-	if len(ext) < 1 || len(ext) > MaxRank {
-		fail(f, "array of rank %d is out of range", len(ext))
-	}
-	n := 1
-	for i, e := range ext {
-		if e < 0 {
-			ext[i], e = 0, 0
-		}
-		if e > 0 && n > MaxArrayElems/e {
-			fail(f, "array extent %v is out of range (more than %d elements)", ext, MaxArrayElems)
-		}
-		n *= e
-	}
+	n := elemCount(f, ext)
 	f.bud.peek(f, garrBytes(n))
 	g := &garr{et: et, kd: kd, lb: lb, ext: ext}
 	if et == kReal {
@@ -911,6 +902,7 @@ type acc struct {
 	et kind
 	i  []int64
 	r  []float64
+	s  []string // kStr (addStr)
 }
 
 func (a *acc) add(f *frame, iv int64, rv float64) {
@@ -935,13 +927,16 @@ func (a *acc) add(f *frame, iv int64, rv float64) {
 type emitFn func(*frame, *acc)
 
 func (c *compiler) arrayCons(n *syntax.ArrayCons, tv sema.TV) (*ex, error) {
+	if tv.Type.Basic == sema.Character {
+		return c.strArrayCons(n, tv)
+	}
 	et, ok := classOf(tv.Type)
 	if !ok {
 		return nil, c.errf(n, "an array constructor of type %s is not supported", tv.Type)
 	}
 	var elems []emitFn
 	for _, e := range n.Elems {
-		fn, err := c.emitter(e)
+		fn, err := c.emitter(e, et)
 		if err != nil {
 			return nil, err
 		}
@@ -967,7 +962,9 @@ func (c *compiler) arrayCons(n *syntax.ArrayCons, tv sema.TV) (*ex, error) {
 	}}, nil
 }
 
-func (c *compiler) emitter(e syntax.Expr) (emitFn, error) {
+// emitter compiles an element of an array constructor whose elements are of
+// the class et (kStr: a character constructor).
+func (c *compiler) emitter(e syntax.Expr, et kind) (emitFn, error) {
 	if d, ok := e.(*syntax.ImpliedDo); ok {
 		sy, err := c.implicitDoVar(d)
 		if err != nil {
@@ -989,7 +986,7 @@ func (c *compiler) emitter(e syntax.Expr) (emitFn, error) {
 		}
 		var items []emitFn
 		for _, it := range d.Items {
-			fn, err := c.emitter(it)
+			fn, err := c.emitter(it, et)
 			if err != nil {
 				return nil, err
 			}
@@ -1021,6 +1018,21 @@ func (c *compiler) emitter(e syntax.Expr) (emitFn, error) {
 	x, err := c.expr(e)
 	if err != nil {
 		return nil, err
+	}
+	if et == kStr || x.k == kStr || x.k == kSA {
+		switch {
+		case et != kStr || x.k != kStr && x.k != kSA:
+			return nil, c.errf(e, "an array constructor mixes character and other values")
+		case x.k == kSA:
+			g := x.g
+			return func(f *frame, a *acc) {
+				for _, v := range g(f).s {
+					a.addStr(f, v)
+				}
+			}, nil
+		}
+		s := x.s
+		return func(f *frame, a *acc) { a.addStr(f, s(f)) }, nil
 	}
 	if x.k == kGA {
 		g := x.g

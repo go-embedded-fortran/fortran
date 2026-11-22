@@ -96,13 +96,31 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 		}
 		return args[i].g, nil
 	}
+	// shapeArg is an argument whose shape only is read: a character array too
+	shapeArg := func(i int) (gaFn, error) {
+		if args[i] != nil && args[i].k == kSA {
+			return args[i].g, nil
+		}
+		return arrArg(i)
+	}
+	// strArg is an argument of a character result: a character array
+	strArg := func(i int) (gaFn, error) {
+		if args[i] == nil || args[i].k != kSA {
+			return nil, c.errf(n, "%s: argument %s must be a character array", name, formals[i])
+		}
+		return args[i].g, nil
+	}
+	isStr := tv.Type.Basic == sema.Character
 	arr := func(rank int, et kind, fn gaFn) *ex {
+		if isStr {
+			return &ex{k: kSA, slot: -1, rank: rank, et: kStr, g: fn}
+		}
 		return &ex{k: kGA, slot: -1, rank: rank, et: et, kd: kd, g: fn}
 	}
 	intRes := func(fn intFn) *ex { return &ex{k: kInt, kd: kd, slot: -1, i: fn} }
 	switch name {
 	case "size", "lbound", "ubound":
-		g, err := arrArg(0)
+		g, err := shapeArg(0)
 		if err != nil {
 			return nil, err
 		}
@@ -141,7 +159,7 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 			return out
 		}), nil
 	case "shape":
-		g, err := arrArg(0)
+		g, err := shapeArg(0)
 		if err != nil {
 			return nil, err
 		}
@@ -341,7 +359,13 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 			return out
 		}), nil
 	case "reshape":
-		src, err := arrArg(0)
+		// SOURCE and PAD are of the result's type: character arrays for a
+		// character result
+		valArg := arrArg
+		if isStr {
+			valArg = strArg
+		}
+		src, err := valArg(0)
 		if err != nil {
 			return nil, err
 		}
@@ -351,7 +375,7 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 		}
 		var pad, ord gaFn
 		if args[2] != nil {
-			if pad, err = arrArg(2); err != nil {
+			if pad, err = valArg(2); err != nil {
 				return nil, err
 			}
 		}
@@ -393,7 +417,12 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 					order[d] = int(v - 1)
 				}
 			}
-			out := newGarr(f, rk, kd, ones(len(ext)), ext)
+			var out *garr
+			if isStr {
+				out = newStrGarr(f, s.clen, ones(len(ext)), ext)
+			} else {
+				out = newGarr(f, rk, kd, ones(len(ext)), ext)
+			}
 			total := out.size()
 			var p *garr
 			if pad != nil {
@@ -409,18 +438,21 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 			}
 			idx := make([]int, len(ext))
 			for k := 0; k < total; k++ {
-				var x int64
-				var y float64
-				if k < s.size() {
-					x, y = s.at(k)
-				} else {
-					x, y = p.at((k - s.size()) % p.size())
-				}
 				o := 0
 				for d := range ext {
 					o += idx[d] * strides[d]
 				}
-				out.put(o, x, y)
+				from, at := s, k
+				if k >= s.size() {
+					from, at = p, (k-s.size())%p.size()
+				}
+				if isStr {
+					// PAD is of the source's length (F2018 16.9.163): fit it anyway
+					out.s[o] = fitLen(from.s[at], out.clen)
+				} else {
+					x, y := from.at(at)
+					out.put(o, x, y)
+				}
 				for _, d := range order { // order[0] varies fastest
 					if idx[d]++; idx[d] < ext[d] {
 						break

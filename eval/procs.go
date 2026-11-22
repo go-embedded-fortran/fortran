@@ -640,7 +640,11 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	case kStr:
 		tmp = c.cur.nStrs
 		c.cur.nStrs++
-		read = &ex{k: kStr, slot: -1, s: func(f *frame) string { return f.strs[tmp] }}
+		// the dummy's value over the actual's: a shorter dummy writes back its
+		// own leftmost characters only (overlay); v reads the actual, as it is
+		// when the call returns
+		old := v.s
+		read = &ex{k: kStr, slot: -1, s: func(f *frame) string { return overlay(old(f), f.strs[tmp]) }}
 	case kInt:
 		tmp = c.cur.nInts
 		c.cur.nInts++
@@ -696,14 +700,14 @@ func (c *compiler) placeBinding(loc func(*frame) *sref, ps *sym) binding {
 		b.set = func(f, cf *frame) {
 			r := loc(f)
 			f.ptrs[tmp] = r
-			s := r.o.v[r.ci].s
+			s := r.getStr()
 			if n >= 0 {
 				s = fitLen(s, n)
 			}
 			cf.strs[slot] = s
 		}
-		// a character component keeps its length
-		b.back = func(f, cf *frame) { r := f.ptrs[tmp]; r.o.v[r.ci].s = fitLen(cf.strs[slot], int64(len(r.o.v[r.ci].s))) }
+		// a character component or element keeps its length
+		b.back = func(f, cf *frame) { f.ptrs[tmp].setStr(cf.strs[slot]) }
 	case kReal:
 		b.set = func(f, cf *frame) { r := loc(f); f.ptrs[tmp] = r; cf.reals[slot] = r.getReal() }
 		b.back = func(f, cf *frame) { f.ptrs[tmp].setReal(cf.reals[slot]) }

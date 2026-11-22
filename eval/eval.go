@@ -340,6 +340,7 @@ const (
 	kGA  // an array of the general kind (arrays.go)
 	kD   // a derived-type scalar (derived.go)
 	kDA  // a rank-1 array of a derived type
+	kSA  // a character array (strarrays.go): a garr of et kStr
 )
 
 type strFn func(*frame) string
@@ -661,6 +662,8 @@ func (c *compiler) kindOf(at syntax.Node, t sema.Type, rank int) (kind, error) {
 		k = kReal
 	case t.Basic == sema.Character && t.Kind == 1 && rank == 0:
 		return kStr, nil
+	case t.Basic == sema.Character && t.Kind == 1 && rank > 0 && rank <= MaxRank:
+		return kSA, nil
 	case t.Basic == sema.Derived && t.Der != nil && rank == 0:
 		return kD, nil
 	case t.Basic == sema.Derived && t.Der != nil && rank == 1:
@@ -826,7 +829,7 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		}
 		if elem == kStr {
 			if ss.Rank != 0 {
-				return c.errf(e, "character arrays are not supported yet")
+				return c.declSA(ss, e, init)
 			}
 			if ss.Flags&sema.FPointer != 0 {
 				return c.errf(e, "a pointer character variable is not supported yet")
@@ -872,9 +875,6 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		}
 		switch {
 		case ss.Rank != 0 && (!kernelArray(ss, k) || arrInit):
-			if k == kStr {
-				return c.errf(e, "character arrays are not supported yet")
-			}
 			if arrInit && ss.Flags&(sema.FAllocatable|sema.FPointer) != 0 {
 				return c.errf(e, "%s: an allocatable or pointer array with an initialisation is not supported yet", name)
 			}
@@ -1133,10 +1133,15 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 	if e.k == kGA && want == kArr {
 		want = kGA // a real(8) array of rank 1 or 2 computed in the general kind
 	}
+	if want == kSA && e.k != kSA {
+		// a path that builds no character array (an elemental intrinsic, a
+		// function result) refuses here rather than as an internal error
+		return nil, c.errf(n, "this character array expression is not supported yet")
+	}
 	if e.k != want || ((want == kArr || want == kGA) && e.rank != tv.Rank) {
 		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
 	}
-	if (e.k == kGA || e.k == kArr || e.k == kStr || e.k == kD) && !e.isC {
+	if (e.k == kGA || e.k == kArr || e.k == kStr || e.k == kD || e.k == kSA) && !e.isC {
 		c.tmps = true // the value is a temporary: see stmts
 	}
 	return e, nil
@@ -1231,6 +1236,8 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		return c.objIdent(n, s)
 	case kDA:
 		return c.daIdent(n, s)
+	case kSA:
+		return c.saIdent(n, s)
 	}
 	if s.ptr && !s.ga {
 		return c.ptrRead(n, s)
@@ -1604,6 +1611,9 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	}
 	if s.k == kDA {
 		return c.daElement(n, id, s)
+	}
+	if s.k == kSA {
+		return c.saIndex(n, id, s)
 	}
 	if s.k != kArr {
 		return nil, c.errf(n, "%s is not an array", id.Name)
@@ -2096,6 +2106,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		if sy.isC {
 			return nil, c.errf(l, "%s is a parameter", l.Name)
 		}
+		if sy.k == kSA {
+			return c.assignSA(s, l, sy, nil, rhs)
+		}
 		if sy.ga {
 			return c.assignGA(s, l, rhs, nil)
 		}
@@ -2119,6 +2132,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		sy, _, err := c.symOf(id)
 		if err == nil && sy.k == kDA {
 			return c.assignDerived(s, l, rhs)
+		}
+		if err == nil && sy.k == kSA {
+			return c.assignSA(s, id, sy, l, rhs)
 		}
 		if err == nil && sy.ga {
 			return c.assignGA(s, l, rhs, nil)

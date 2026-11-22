@@ -211,7 +211,7 @@ func (b *budget) retain(f *frame, own *frame, g *garr) *garr {
 	if b == nil || g == nil || own == nil {
 		return g
 	}
-	n := garrBytes(g.size())
+	n := g.bytes()
 	// the array was reserved as a temporary when it was made; it is held now
 	b.tmp = max(0, b.tmp-n)
 	b.charge(f, own, n)
