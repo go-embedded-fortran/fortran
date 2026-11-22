@@ -64,8 +64,10 @@ func bozAsReal(boz *syntax.BozLit, kind int) (float64, string) {
 	return 0, "BOZ constant as REAL(" + strconv.Itoa(kind) + ") is not supported"
 }
 
-// bozCmplx folds CMPLX with a BOZ x or y (see bozReal); its message is always
-// "", and the constant nil when neither part is one or it cannot fold.
+// bozCmplx folds CMPLX whose parts are BOZ, integer or real scalar constants,
+// a BOZ part taken as bits (see bozReal); with no BOZ part the value is the one
+// the general folder would make. Its message is always "", and the constant
+// nil when a part is anything else (a complex x included: foldIntrinsic's).
 func bozCmplx(acts []actual, rt Type) (*Const, string) {
 	var parts [2]*actual
 	for i := range acts {
@@ -76,17 +78,6 @@ func bozCmplx(acts []actual, rt Type) (*Const, string) {
 		case a.kw == "y" || a.kw == "" && i == 1:
 			parts[1] = a
 		}
-	}
-	has := false
-	for _, p := range parts {
-		if p != nil {
-			if _, ok := p.e.(*syntax.BozLit); ok {
-				has = true
-			}
-		}
-	}
-	if !has {
-		return nil, ""
 	}
 	var v [2]float64
 	for i, p := range parts {
