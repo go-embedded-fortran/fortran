@@ -483,6 +483,14 @@ copy, so the `intent(out)` of another dummy associated with `e` no longer resets
 it. Compared file by file with the previous run, 16 files went from refused to
 identical and none left identical.
 
+**External procedures of a cell** (2026-11-22): 3151 files, **identical 257**,
+both-failed 23, differs 3, **refused-by-us 2115**, gfortran-failed 433, skipped
+320. A `PROGRAM` now calls the external subroutines and functions written in the
+same cell, before it or after it. The analyser puts them in the cell's module,
+which a `PROGRAM` does not use, so a call of one resolved to nothing and was
+refused as "only call cpu_time(t) is supported". Compared file by file with the
+previous run, 14 files went from refused to identical and none left identical.
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the

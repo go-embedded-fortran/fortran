@@ -255,6 +255,16 @@ func (c *compiler) cell(ci *sema.CellInfo) (mains []*procCode, err error) {
 			if _, err := add(u, nil); err != nil {
 				return nil, err
 			}
+			if u.Ident.Name == ci.Module {
+				// the procedures written loose in the cell are the cell's
+				// external procedures: a PROGRAM calls them by name without
+				// using the cell's module, as program() lets a file's main do
+				for _, cu := range u.Contains {
+					if cu.Ident.Name != ci.Run {
+						c.externals[cu.Ident.Name] = cu
+					}
+				}
+			}
 		case syntax.ProgramUnit:
 			if prog != nil {
 				return nil, c.errf(u, "a cell holds at most one program")
