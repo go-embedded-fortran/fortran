@@ -150,7 +150,7 @@ end program p
 func TestPart3Refusals(t *testing.T) {
 	for name, src := range map[string]string{
 		"module of another file": "program p\n  use ieee_arithmetic\n  implicit none\nend program p\n",
-		"character array":        "program p\n  implicit none\n  character(len=3) :: a(2)\nend program p\n",
+		"character array":        "program p\n  implicit none\n  character(len=3), allocatable :: a(:)\nend program p\n",
 		"pointer character":      "program p\n  implicit none\n  character(len=3), pointer :: a\nend program p\n",
 	} {
 		t.Run(name, func(t *testing.T) {

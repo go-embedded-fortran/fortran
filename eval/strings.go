@@ -128,6 +128,11 @@ func (c *compiler) strIntrinsic(n *syntax.Index, name string, args []*ex) (*ex, 
 			return string([]byte{byte(v)})
 		}}, nil
 	}
+	if name == "len" && args[0].k == kSA {
+		// the length of the elements of a character array (F2018 16.9.112)
+		g := args[0].g
+		return &ex{k: kInt, slot: -1, i: func(f *frame) int64 { return g(f).clen }}, nil
+	}
 	if args[0].k != kStr {
 		return nil, c.errf(n, "%s needs a character argument", name)
 	}

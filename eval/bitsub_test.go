@@ -150,8 +150,8 @@ func TestMvbitsRefusals(t *testing.T) {
 // the check, this one crashes, and the assertions of the other must be
 // printed before it does.
 func TestMvbitsArgumentRefused(t *testing.T) {
-	const src = "integer :: j\ncall mvbits(len(['ab', 'cd']), 0, 1, j, 0)\nend\n"
-	if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), "type character(*,1) is not supported") {
+	const src = "integer :: j\ncall mvbits(transfer(1.0, 1), 0, 1, j, 0)\nend\n"
+	if _, err := runPtr(t, 100<<20, src); err == nil || !strings.Contains(err.Error(), "type unknown is not supported") {
 		t.Errorf("mvbits with an argument eval refuses: %v", err)
 	}
 }
