@@ -520,6 +520,31 @@ the previous run, 6 files went from refused to identical and none left
 identical; `init_flag_6` went from refused to differs because it needs
 `-finit-character=32`, which the oracle does not pass.
 
+**Complex scalars** (2026-11-22): 3151 files, **identical 271**, both-failed
+23, differs 4, **refused-by-us 2100**, gfortran-failed 433, skipped 320.
+`complex(4)` and `complex(8)` scalars are variables, dummy arguments (copied
+out), function results, host- and module-associated variables and named
+constants. The arithmetic is gfortran's at `-O0`: the general product and
+Smith's division (`gcc/tree-complex.cc`; every value is taken as varying
+because gfortran keeps signed zeros), each operation rounded to its kind, so a
+`complex(4)` sum is single precision before it is stored in a `complex(8)`;
+`z**n` is expanded inline for a constant `n` of -1 to 2 (so `(Inf,0)**1` is
+`(Inf,0)`, not `(Inf,NaN)`) and otherwise uses libgfortran's binary method.
+`cmplx` and `dcmplx` (with `kind=`, and with BOZ arguments taken as the bits
+of a real), `real`, `dble`, `aimag`, `int`, `conjg`, `==`, `/=`, list-directed
+and formatted output, internal READ and `Session.Get` are supported. The
+output of the test programs matches gfortran 15.2.0 byte for byte, except
+where the math library differs. `abs` is within 1 ulp of the exact value,
+checked against `math/big`. `exp` and `log` come from Go's `math/cmplx`, which
+is one ulp from glibc on the tested values; they are held to 2 ulp of values
+exact to 30 digits. For `sqrt` of a `complex(4)`, glibc's `csqrtf` is the one
+that is one ulp from the correctly rounded value, not ours. Complex arrays,
+complex components, `complex(16)` and the other intrinsics of a complex
+argument are still refused. Compared file by file with the previous run, 4
+files went from refused to identical and none left identical. Before this
+change, 70 files stopped first on a complex type; now 32 do (29 on complex
+arrays, 3 on complex components).
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the

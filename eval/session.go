@@ -167,8 +167,9 @@ func (s *Session) Run(ctx context.Context, src string, out, stderr io.Writer) (s
 }
 
 // Get is the value of the variable name, as the last cell that defined it left
-// it: int8..int64 for an integer, float32 or float64 for a real, bool for a
-// logical, string for a character; ok is false for a name that is not a
+// it: int8..int64 for an integer, float32 or float64 for a real, complex64 or
+// complex128 for a complex, bool for a logical, string for a character; ok is
+// false for a name that is not a
 // scalar variable of the session (arrays and derived types are not read
 // yet).
 func (s *Session) Get(name string) (v any, ok bool) {
@@ -215,6 +216,15 @@ func (s *Session) Get(name string) (v any, ok bool) {
 			return y.cs, true
 		}
 		return f.strs[y.slot], true
+	case kCplx:
+		z := y.cz
+		if !y.isC {
+			z = complex(f.reals[y.slot], f.reals[y.slot+1])
+		}
+		if y.kd == 4 {
+			return complex64(z), true
+		}
+		return z, true
 	}
 	return nil, false
 }

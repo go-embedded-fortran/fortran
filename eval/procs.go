@@ -253,6 +253,8 @@ func (f *frame) at(h int) *frame {
 func hostRead(s *sym, n int) *ex {
 	slot := s.slot
 	switch s.k {
+	case kCplx:
+		return cplxRead(s, n)
 	case kStr:
 		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return f.hop(n).strs[slot] }}
 	case kInt:
@@ -267,6 +269,8 @@ func hostRead(s *sym, n int) *ex {
 func (c *compiler) hostStore(s *sym, v *ex, n int, at syntax.Node) (stmtFn, error) {
 	slot, kd := s.slot, s.kd
 	switch {
+	case s.k == kCplx || v.k == kCplx:
+		return c.cplxStore(s, v, n, at)
 	case s.k == kInt && v.k == kInt:
 		fn := v.i
 		return func(f *frame) { x := fn(f); f.hop(n).ints[slot] = narrow(kd, x) }, nil
@@ -617,6 +621,9 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	case kLog:
 		fn := v.b
 		b.set = func(f, cf *frame) { cf.ints[slot] = b2i(fn(f)) }
+	case kCplx:
+		fn := v.z
+		b.set = func(f, cf *frame) { z := fn(f); cf.reals[slot], cf.reals[slot+1] = real(z), imag(z) }
 	default:
 		fn := v.r
 		b.set = func(f, cf *frame) { cf.reals[slot] = fn(f) }
@@ -653,6 +660,10 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 		tmp = c.cur.nInts
 		c.cur.nInts++
 		read = &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.ints[tmp] != 0 }}
+	case kCplx:
+		tmp = c.cur.nReals
+		c.cur.nReals += 2
+		read = &ex{k: kCplx, kd: ps.kd, slot: -1, z: func(f *frame) complex128 { return complex(f.reals[tmp], f.reals[tmp+1]) }}
 	default:
 		tmp = c.cur.nReals
 		c.cur.nReals++
@@ -665,6 +676,8 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 	switch ps.k {
 	case kReal:
 		b.back = func(f, cf *frame) { f.reals[tmp] = cf.reals[slot]; st(f) }
+	case kCplx:
+		b.back = func(f, cf *frame) { f.reals[tmp], f.reals[tmp+1] = cf.reals[slot], cf.reals[slot+1]; st(f) }
 	case kStr:
 		b.back = func(f, cf *frame) { f.strs[tmp] = cf.strs[slot]; st(f) }
 	default:
@@ -811,6 +824,8 @@ func (c *compiler) funcCallArgs(n *syntax.Index, p *procCode, args []syntax.Arg)
 		return &ex{k: kInt, kd: r.kd, slot: -1, i: func(f *frame) int64 { return run(f).ints[slot] }}, nil
 	case kLog:
 		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return run(f).ints[slot] != 0 }}, nil
+	case kCplx:
+		return &ex{k: kCplx, kd: r.kd, slot: -1, z: func(f *frame) complex128 { g := run(f); return complex(g.reals[slot], g.reals[slot+1]) }}, nil
 	}
 	return &ex{k: kReal, kd: r.kd, slot: -1, r: func(f *frame) float64 { return run(f).reals[slot] }}, nil
 }
