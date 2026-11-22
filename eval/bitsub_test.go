@@ -127,6 +127,7 @@ func TestMvbitsRefusals(t *testing.T) {
 		{"real :: x(2)\ninteger :: a(2)\nx = 0\ncall mvbits(x, 0, 1, a, 0)\nend\n", "argument from must be an integer"},
 		{"integer :: a(2), j\na = 0\ncall mvbits(a, 0, 1, j, 0)\nend\n", "to must be an array when another argument is"},
 		{"integer :: a(2)\na = 0\ncall mvbits(1, 0, 1, (a), 0)\nend\n", "to must be a variable"},
+		{"integer, target :: t\ninteger, pointer :: p\nt = 0\np => t\ncall mvbits(1, 0, 1, p, 0)\nprint *, t\nend\n", "a pointer is not supported yet"},
 		{"integer, parameter :: q(2) = [1, 2]\ncall mvbits(1, 0, 1, q, 0)\nend\n", "q is a named constant"},
 		{"integer, parameter :: q(2) = [1, 2]\ncall mvbits(1, 0, 1, q(1), 0)\nend\n", "q is a named constant"},
 		{"integer, parameter :: q(2) = [1, 2]\ncall mvbits(1, 0, 1, q(1:2), 0)\nend\n", "q is a named constant"},

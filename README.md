@@ -491,15 +491,18 @@ which a `PROGRAM` does not use, so a call of one resolved to nothing and was
 refused as "only call cpu_time(t) is supported". Compared file by file with the
 previous run, 14 files went from refused to identical and none left identical.
 
-**MVBITS** (2026-11-22): 3151 files, **identical 259**, both-failed 23,
-differs 3, **refused-by-us 2113**, gfortran-failed 433, skipped 320. `call
-mvbits(from, frompos, len, to, topos)` runs for scalar integers of every kind,
-with positional or keyword arguments (F2018 16.9.137). `to` may be a variable,
-an element or a component, and it is read and written at one place. Bits that do
-not fit in `to` stop the program instead of being cut. The elemental form with
-arrays is still refused. Compared file by file with the previous run,
-`mvbits_1` and `mvbits_2` went from refused to identical and none left
-identical.
+**MVBITS** (2026-11-22): 3151 files, **identical 261**, both-failed 23,
+differs 3, **refused-by-us 2111**, gfortran-failed 433, skipped 320. `call
+mvbits(from, frompos, len, to, topos)` runs on integers of every kind, with
+positional or keyword arguments (F2018 16.9.137). A scalar `to` may be a
+variable, an element or a component, and it is read and written at one place.
+In the elemental form, `to` is an array or a section, scalar arguments apply to
+every element, and all new elements are computed from the old `to` before any
+is stored, so `from` may be `to`. Bits that do not fit in `to` stop the program
+instead of being cut, and so do arrays of different shapes. A named constant,
+or a part of one, is refused as `to`. Compared file by file with the previous
+run, `mvbits_1`, `mvbits_2`, `mvbits_3` and `mvbits_5` went from refused to
+identical and none left identical.
 
 ## Semantic analysis (M2, part 1)
 
