@@ -225,6 +225,16 @@ func (c *compiler) readItem(e syntax.Expr) (ioItem, error) {
 		}
 		it.get = func(f *frame) rt.Val { return rt.Val{K: rt.Real, Size: size, F: fn(f)} }
 		it.put = func(f *frame, v rt.Val) { f.reals[tmp] = v.F }
+	case kCplx:
+		tmp := c.cur.nReals
+		c.cur.nReals += 2
+		read = &ex{k: kCplx, kd: s.kd, slot: -1, z: func(f *frame) complex128 { return complex(f.reals[tmp], f.reals[tmp+1]) }}
+		size, fn := 8, cur.z
+		if s.kd == 4 {
+			size = 4
+		}
+		it.get = func(f *frame) rt.Val { z := fn(f); return rt.Cmplx(size, real(z), imag(z)) }
+		it.put = func(f *frame, v rt.Val) { f.reals[tmp], f.reals[tmp+1] = v.F, v.G }
 	case kStr:
 		tmp := c.cur.nStrs
 		c.cur.nStrs++

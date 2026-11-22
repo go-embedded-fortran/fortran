@@ -336,11 +336,12 @@ const (
 	kReal
 	kArr
 	kLog
-	kStr // a character scalar value (an expression; there are no character variables yet)
-	kGA  // an array of the general kind (arrays.go)
-	kD   // a derived-type scalar (derived.go)
-	kDA  // a rank-1 array of a derived type
-	kSA  // a character array (strarrays.go): a garr of et kStr
+	kStr  // a character scalar value (an expression; there are no character variables yet)
+	kGA   // an array of the general kind (arrays.go)
+	kD    // a derived-type scalar (derived.go)
+	kDA   // a rank-1 array of a derived type
+	kSA   // a character array (strarrays.go): a garr of et kStr
+	kCplx // a complex scalar (complex.go): two real slots
 )
 
 type strFn func(*frame) string
@@ -355,6 +356,7 @@ type sym struct {
 	isC    bool // a parameter
 	ci     int64
 	cr     float64
+	cz     complex128 // the value of a complex named constant
 	rank   int
 	shape  []intFn // constant-shape arrays: allocated at start
 	owner  *procCode
@@ -383,6 +385,7 @@ type ex struct {
 	b boolFn
 	s strFn
 	a arrFn
+	z cplxFn
 	// ps and pg are set on the reference of a function whose result is a
 	// pointer: the result's target as such (nil when the function returned it
 	// disassociated), for p => f() (pointers.go); i, r, b and g dereference it.
@@ -404,6 +407,7 @@ type ex struct {
 	isC  bool
 	ci   int64
 	cr   float64
+	cz   complex128
 	slot int // >= 0 when the expression is a plain scalar variable
 	// aff is set when an integer expression is ints[avs]+avo of the frame avh
 	// static links up (see hops; 0: this frame)
@@ -660,6 +664,10 @@ func (c *compiler) kindOf(at syntax.Node, t sema.Type, rank int) (kind, error) {
 		k = kLog
 	case t.Basic == sema.Real && (t.Kind == 4 || t.Kind == 8):
 		k = kReal
+	case t.Basic == sema.Complex && (t.Kind == 4 || t.Kind == 8) && rank == 0:
+		return kCplx, nil
+	case t.Basic == sema.Complex && (t.Kind == 4 || t.Kind == 8):
+		return 0, c.errf(at, "complex arrays are not supported yet")
 	case t.Basic == sema.Character && t.Kind == 1 && rank == 0:
 		return kStr, nil
 	case t.Basic == sema.Character && t.Kind == 1 && rank > 0 && rank <= MaxRank:
@@ -824,6 +832,9 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		// (a named constant without a value is refused by the analyser)
 		arrInit := ss.Rank != 0 && init != nil
 		elem, err := c.kindOf(e, ss.Type, 0)
+		if err == nil && elem == kCplx && ss.Rank != 0 {
+			err = c.errf(e, "complex arrays are not supported yet")
+		}
 		if err != nil {
 			return err
 		}
@@ -979,6 +990,9 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 					}
 				})
 			}
+		case k == kCplx:
+			s.slot = c.cur.nReals // the real part, then the imaginary part
+			c.cur.nReals += 2
 		default:
 			s.slot = c.cur.nReals
 			c.cur.nReals++
@@ -995,6 +1009,8 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 				s.ci = b2i(ss.Const.B)
 			} else if k == kInt {
 				s.ci = ss.Const.I
+			} else if k == kCplx {
+				s.cz = constCmplx(ss.Const)
 			} else {
 				s.cr = constFloat(ss.Const)
 			}
@@ -1121,6 +1137,8 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 		case kStr:
 			s := tv.Const.S
 			e = &ex{k: kStr, isC: true, slot: -1, s: func(*frame) string { return s }}
+		case kCplx:
+			e = constCplx(constCmplx(tv.Const))
 		default:
 			e = constReal(constFloat(tv.Const))
 		}
@@ -1170,6 +1188,9 @@ func fit(e *ex, t sema.Type) *ex {
 	case e.k == kReal && t.Basic == sema.Real:
 		fr := e.r
 		return &ex{k: kReal, kd: kd, slot: -1, r: func(f *frame) float64 { return float64(float32(fr(f))) }}
+	case e.k == kCplx && t.Basic == sema.Complex:
+		fz := e.z
+		return &ex{k: kCplx, kd: kd, slot: -1, z: func(f *frame) complex128 { return round4(fz(f)) }}
 	case e.k == kInt && t.Basic == sema.Integer:
 		fi := e.i
 		// integer(4) arithmetic is not wrapped between operations (that would
@@ -1255,6 +1276,8 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		}
 	}
 	switch {
+	case s.k == kCplx:
+		return cplxRead(s, 0), nil
 	case s.isC && s.k == kInt:
 		e := constInt(s.ci)
 		e.kd = s.kd
@@ -1318,6 +1341,8 @@ func (c *compiler) negate(n syntax.Node, x *ex) (*ex, error) {
 		}
 		fr := x.r
 		return &ex{k: kReal, slot: -1, r: func(f *frame) float64 { return -fr(f) }}, nil
+	case kCplx:
+		return cplxNegate(x), nil
 	}
 	return nil, c.errf(n, "negation of an array is not supported")
 }
@@ -1340,6 +1365,9 @@ func (c *compiler) binary(n *syntax.Binary, tv sema.TV) (*ex, error) {
 	switch n.Op {
 	case "+", "-", "*", "/", "**":
 	case "==", "/=", "<", "<=", ">", ">=":
+		if x.k == kCplx || y.k == kCplx {
+			return c.cplxCompare(n, x, y)
+		}
 		return c.relational(n, x, y)
 	case ".and.", ".or.", ".eqv.", ".neqv.":
 		return c.logical(n, x, y)
@@ -1347,6 +1375,8 @@ func (c *compiler) binary(n *syntax.Binary, tv sema.TV) (*ex, error) {
 		return nil, c.errf(n, "operator %q is not supported", n.Op)
 	}
 	switch {
+	case x.k == kCplx || y.k == kCplx:
+		return c.cplxBinary(n, x, y, tv)
 	case x.k == kArr || y.k == kArr:
 		return c.arrayBinary(n, x, y)
 	case tv.Type.Basic == sema.Integer: // both operands are integers (F2018 Table 10.2)
@@ -1724,8 +1754,11 @@ func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, err
 			return c.arrIntrinsic(n, name, tv, formals)
 		}
 	}
-	args := make([]*ex, len(n.Args))
+	args := make([]*ex, 0, len(n.Args))
 	for i, a := range n.Args {
+		if a.Value != nil && a.Keyword == "kind" && (name == "cmplx" || name == "dcmplx") {
+			continue // the analyser made it the result's kind (tv)
+		}
 		if a.Value == nil || (a.Keyword != "" && !((name == "index" || name == "scan" || name == "verify") && a.Keyword == "back" && i == 2)) {
 			return nil, c.errf(n, "keyword arguments of intrinsics are not supported")
 		}
@@ -1733,7 +1766,7 @@ func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, err
 		if err != nil {
 			return nil, err
 		}
-		args[i] = v
+		args = append(args, v)
 	}
 	for _, a := range args {
 		if a.k == kGA {
@@ -1749,6 +1782,14 @@ func (c *compiler) intrinsicWith(n *syntax.Index, name string, tv sema.TV, args 
 			return c.errf(n, "%s takes %d arguments", name, k)
 		}
 		return nil
+	}
+	if e, handled, err := c.cplxIntrinsic(n, name, tv, args); handled {
+		return e, err
+	}
+	for _, a := range args {
+		if a.k == kCplx { // the paths below read real or integer arguments only
+			return nil, c.errf(n, "%s of a complex argument is not supported yet", name)
+		}
 	}
 	switch name {
 	case "merge", "scan", "verify":
@@ -2052,6 +2093,8 @@ func (c *compiler) intrinsicWith(n *syntax.Index, name string, tv sema.TV, args 
 func (c *compiler) store(s *sym, v *ex, at syntax.Node) (stmtFn, error) {
 	slot := s.slot
 	switch {
+	case s.k == kCplx || v.k == kCplx:
+		return c.cplxStore(s, v, 0, at)
 	case s.k == kInt && v.k == kInt:
 		kd := s.kd
 		if v.isC {

@@ -56,7 +56,7 @@ var runtimeAllocs = map[string]struct {
 	"eval.go:compiler.declSym":                  {2, "charged: a character variable's blank value is charge(n) before strings.Repeat"},
 	"eval.go:compiler.intrinsicWith":            {1, "charged: REPEAT peeks len*count before strings.Repeat, after the MaxStringLen check"},
 	"eval.go:procCode.newFrame":                 {8, "bounded: a frame's slots (scalar pointers' among them), counts fixed by the unit's source; frames are bounded by the call depth bound"},
-	"print.go:compiler.printItem":               {8, "bounded: one value per scalar output item (source); arrays go through printVals or valsFit, implied-dos through impliedDo's valRoom"},
+	"print.go:compiler.printItem":               {9, "bounded: one value per scalar output item (source); arrays go through printVals or valsFit, implied-dos through impliedDo's valRoom"},
 	"procs.go:compiler.program":                 {2, "bounded: one entry per program unit (source), built when the program is compiled"},
 	"session.go:Session.Run":                    {1, "bounded: one frame per module of the session (source)"},
 	"session.go:compiler.cell":                  {2, "bounded: one entry per program unit of the cell (source)"},
