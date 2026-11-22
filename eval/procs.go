@@ -256,11 +256,11 @@ func hostRead(s *sym, n int) *ex {
 	case kStr:
 		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return f.hop(n).strs[slot] }}
 	case kInt:
-		return &ex{k: kInt, kd: s.kd, slot: -1, aff: true, avs: slot, avh: n, i: func(f *frame) int64 { return f.hop(n).ints[slot] }}
+		return &ex{k: kInt, kd: s.kd, slot: -1, aff: true, avs: slot, avh: n, i: func(f *frame) int64 { return f.hop(n).ints[slot] }, pl: varPlace(s, n)}
 	case kLog:
-		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.hop(n).ints[slot] != 0 }}
+		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.hop(n).ints[slot] != 0 }, pl: varPlace(s, n)}
 	}
-	return &ex{k: kReal, kd: s.kd, slot: -1, r: func(f *frame) float64 { return f.hop(n).reals[slot] }}
+	return &ex{k: kReal, kd: s.kd, slot: -1, r: func(f *frame) float64 { return f.hop(n).reals[slot] }, pl: varPlace(s, n)}
 }
 
 // hostStore is the assignment to a scalar variable of an enclosing unit.
