@@ -8,6 +8,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/go-embedded-fortran/fortran/sema"
+	"github.com/go-embedded-fortran/fortran/syntax"
 )
 
 // TestComplexScalars runs testdata/complex/*.f90 and compares the output with
@@ -20,9 +23,16 @@ import (
 // result, a module variable read by host association, a named constant, and
 // negation (-0 printed); cx2: formatted output of both kinds, and internal
 // READ, list-directed, of a pair in parentheses and of an input that is not
-// one (iostat 5010, the variable unchanged).
+// one (iostat 5010, the variable unchanged); cx3: BOZ arguments of cmplx and
+// dcmplx, taken as the bits of a real of the result's kind (folded by sema);
+// cx4: a named constant as an actual argument, complex(4) values rounded at
+// each operation and not only on output (a sum, sin, exp and abs read in
+// double precision), and z**1 of an infinite z, which is z and not 1*z.
+// (sqrt of a complex(4) is left out: glibc's csqrtf is one ulp from the
+// correctly rounded imaginary part of sqrt((2,3)), 0.89597747..., which ours
+// is.)
 func TestComplexScalars(t *testing.T) {
-	for _, name := range []string{"cx1", "cx2"} {
+	for _, name := range []string{"cx1", "cx2", "cx3", "cx4"} {
 		t.Run(name, func(t *testing.T) {
 			src, err := os.ReadFile("testdata/complex/" + name + ".f90")
 			if err != nil {
@@ -56,17 +66,65 @@ func TestComplexScalars(t *testing.T) {
 // TestComplexRefusals pins what is not supported yet: it is refused with a
 // positioned error, never run wrong.
 func TestComplexRefusals(t *testing.T) {
-	for name, src := range map[string]string{
-		"array":             "program p\n  implicit none\n  complex(8) :: c(2)\n  c = 1\nend program p\n",
-		"tan of a complex":  "program p\n  implicit none\n  complex(8) :: c\n  c = (1d0, 1d0)\n  print *, tan(c)\nend program p\n",
-		"ordering":          "program p\n  implicit none\n  complex(8) :: c\n  c = 1\n  print *, c < c\nend program p\n",
-		"complex(16) value": "program p\n  implicit none\n  complex(16) :: c\n  c = 1\nend program p\n",
+	// want is a part of the message: the refusal must be this one, not another
+	// the program happens to meet first
+	for name, c := range map[string]struct{ src, want string }{
+		"array":                  {"complex(8) :: c(2)\n  c = 1", "complex arrays are not supported yet"},
+		"tan of a complex":       {"complex(8) :: c\n  c = (1d0, 1d0)\n  print *, tan(c)", "tan of a complex argument is not supported yet"},
+		"ordering":               {"complex(8) :: c\n  c = 1\n  print *, c < c", "comparison operator '<'"},
+		"complex(16) value":      {"complex(16) :: c\n  c = 1", "complex(16) is not supported"},
+		"boz beside a variable":  {"complex(8) :: c\n  real(8) :: x\n  x = 1\n  c = cmplx(z'3FF0000000000000', x, 8)", "beside a part that is not a scalar constant"},
+		"boz wider than real(4)": {"complex(4) :: c\n  c = cmplx(z'3FF0000000000000', 0)", "wider than REAL(4)"},
+		"boz beside a complex":   {"complex(8) :: c\n  c = cmplx(z'3FF0000000000000', (1d0, 0d0), 8)", "not integer or real"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := runExact(t, src); err == nil {
+			_, err := runExact(t, "program p\n  implicit none\n  "+c.src+"\nend program p\n")
+			if err == nil {
 				t.Fatal("accepted")
 			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("refused for another reason: %v", err)
+			}
+			t.Log(err)
 		})
+	}
+}
+
+// TestComplexGuardsBehindTheAnalyser drives the compiler's own checks that the
+// analyser makes first (an ordering of complex values, cmplx of a complex and
+// a second part, a second argument to aimag): reached directly, each is a
+// positioned refusal, never a value computed from a wrong reading.
+func TestComplexGuardsBehindTheAnalyser(t *testing.T) {
+	f, err := syntax.Parse("g.f90", []byte("end\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &compiler{file: f}
+	z := constCplx(1)
+	r := &ex{k: kReal, slot: -1, r: func(*frame) float64 { return 1 }}
+	if _, err := c.cplxCompare(&syntax.Binary{Op: "<"}, z, z); err == nil {
+		t.Error("z < z: accepted")
+	}
+	for _, op := range []string{"==", "/="} {
+		if _, err := c.cplxCompare(&syntax.Binary{Op: op}, z, z); err != nil {
+			t.Errorf("z %s z: %v", op, err)
+		}
+	}
+	tv := sema.TV{Type: sema.Type{Basic: sema.Complex, Kind: 8}}
+	for name, args := range map[string][]*ex{
+		"cmplx":  {z, r},
+		"dcmplx": {r, r, r, r},
+		"aimag":  {z, r},
+		"conjg":  {z, z},
+	} {
+		if _, handled, err := c.cplxIntrinsic(&syntax.Index{}, name, tv, args); !handled || err == nil {
+			t.Errorf("%s of %d arguments: handled %v, err %v", name, len(args), handled, err)
+		}
+	}
+	for name, args := range map[string][]*ex{"real": {z, r}, "int": {z, r}, "dble": {z, r}, "cmplx": {r, r, r}} {
+		if _, _, err := c.cplxIntrinsic(&syntax.Index{}, name, tv, args); err != nil {
+			t.Errorf("%s of %d arguments: %v", name, len(args), err)
+		}
 	}
 }
 

@@ -61,13 +61,7 @@ func (e *ex) asCplx() *ex {
 		if e.k == kReal && e.kd == 4 {
 			kd = 4
 		}
-		r := e.asReal()
-		if r.isC {
-			z := constCplx(complex(r.cr, 0))
-			z.kd = kd
-			return z
-		}
-		fr := r.r
+		fr := e.asReal().r
 		return &ex{k: kCplx, kd: kd, slot: -1, z: func(f *frame) complex128 { return complex(fr(f), 0) }}
 	}
 	return e
@@ -198,9 +192,6 @@ func cadd(kd int, x, y complex128, sub bool) complex128 {
 // exponent inverts x first.
 func cpowi(kd int, x complex128, n int64) complex128 {
 	pow := complex(1, 0)
-	if n == 0 {
-		return pow
-	}
 	u := uint64(n)
 	if n < 0 {
 		u = uint64(-n) // -MinInt64 wraps to its own magnitude as an unsigned value
@@ -280,11 +271,6 @@ func (c *compiler) cplxCompare(n *syntax.Binary, x, y *ex) (*ex, error) {
 
 // cplxNegate is -x for a complex x.
 func cplxNegate(x *ex) *ex {
-	if x.isC {
-		e := constCplx(-x.cz)
-		e.kd = x.kd
-		return e
-	}
 	a := x.z
 	return &ex{k: kCplx, kd: x.kd, slot: -1, z: func(f *frame) complex128 { return -a(f) }}
 }
