@@ -1266,15 +1266,22 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		return e, nil
 	case s.k == kInt:
 		slot := s.slot
-		return &ex{k: kInt, kd: s.kd, slot: slot, aff: true, avs: slot, i: func(f *frame) int64 { return f.ints[slot] }}, nil
+		return &ex{k: kInt, kd: s.kd, slot: slot, aff: true, avs: slot, i: func(f *frame) int64 { return f.ints[slot] }, pl: varPlace(s, 0)}, nil
 	case s.k == kLog:
 		slot := s.slot
-		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.ints[slot] != 0 }}, nil
+		return &ex{k: kLog, slot: -1, b: func(f *frame) bool { return f.ints[slot] != 0 }, pl: varPlace(s, 0)}, nil
 	case s.k == kReal:
 		slot := s.slot
-		return &ex{k: kReal, kd: s.kd, slot: slot, r: func(f *frame) float64 { return f.reals[slot] }}, nil
+		return &ex{k: kReal, kd: s.kd, slot: slot, r: func(f *frame) float64 { return f.reals[slot] }, pl: varPlace(s, 0)}, nil
 	}
 	return arrIdent(n.Name, s, 0), nil
+}
+
+// varPlace is the place of the scalar integer, logical or real variable s of
+// the frame h static links up.
+func varPlace(s *sym, h int) func(*frame) *sref {
+	slot, rl := s.slot, s.k == kReal
+	return func(f *frame) *sref { return &sref{f: f.at(h), s: slot, rl: rl} }
 }
 
 // arrIdent is the whole array s, which lives in the frame h static links up
@@ -2252,6 +2259,9 @@ func (c *compiler) call(s *syntax.Call) (stmtFn, error) {
 	}
 	if id, ok := s.Proc.(*syntax.Ident); ok && c.externals[id.Name] != nil {
 		return c.callStmt(s, &sema.Symbol{Name: id.Name})
+	}
+	if id, ok := s.Proc.(*syntax.Ident); ok && id.Name == "mvbits" {
+		return c.mvbits(s)
 	}
 	id, ok := s.Proc.(*syntax.Ident)
 	if !ok || id.Name != "cpu_time" || len(s.Args) != 1 {
