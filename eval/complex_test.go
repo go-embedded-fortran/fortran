@@ -18,9 +18,11 @@ import (
 // int, abs, conjg, sqrt, exp, log, sin, cos, == and /=, conversions in
 // assignments, a complex dummy argument copied out, a complex function
 // result, a module variable read by host association, a named constant, and
-// negation (-0 printed).
+// negation (-0 printed); cx2: formatted output of both kinds, and internal
+// READ, list-directed, of a pair in parentheses and of an input that is not
+// one (iostat 5010, the variable unchanged).
 func TestComplexScalars(t *testing.T) {
-	for _, name := range []string{"cx1"} {
+	for _, name := range []string{"cx1", "cx2"} {
 		t.Run(name, func(t *testing.T) {
 			src, err := os.ReadFile("testdata/complex/" + name + ".f90")
 			if err != nil {
