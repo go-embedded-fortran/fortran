@@ -504,6 +504,22 @@ or a part of one, is refused as `to`. Compared file by file with the previous
 run, `mvbits_1`, `mvbits_2`, `mvbits_3` and `mvbits_5` went from refused to
 identical and none left identical.
 
+**Character arrays** (2026-11-22): 3151 files, **identical 267**, both-failed
+23, differs 4, **refused-by-us 2104**, gfortran-failed 433, skipped 320. A
+character array of a constant length and constant bounds is now a variable:
+whole, element and section assignment (each value cut or blank-padded to the
+length), constructors with or without a type-spec (a type-spec length may be
+computed at run time; without one, values of different lengths stop the
+program), list-directed output, `size`, `shape`, `lbound`, `ubound`, `len` and
+`reshape`. A character array is charged its characters against the memory
+limit. A character dummy shorter than its actual now writes back only its own
+characters and keeps the actual's tail, where it used to blank the tail.
+Dummy, allocatable and pointer character arrays, vector subscripts and the
+elemental character intrinsics are still refused. Compared file by file with
+the previous run, 6 files went from refused to identical and none left
+identical; `init_flag_6` went from refused to differs because it needs
+`-finit-character=32`, which the oracle does not pass.
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the
