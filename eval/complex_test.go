@@ -122,6 +122,12 @@ func TestComplexGuardsBehindTheAnalyser(t *testing.T) {
 			t.Errorf("%s of %d arguments: handled %v, err %v", name, len(args), handled, err)
 		}
 	}
+	// a complex argument past the first: cplxIntrinsic looks at the first only,
+	// and the real paths would read a value the complex does not have
+	rtv := sema.TV{Type: sema.Type{Basic: sema.Real, Kind: 8}}
+	if _, err := c.intrinsicWith(&syntax.Index{}, "max", rtv, []*ex{r, z}); err == nil || !strings.Contains(err.Error(), "max of a complex argument") {
+		t.Errorf("max(r, z): %v", err)
+	}
 	for name, args := range map[string][]*ex{"real": {z, r}, "int": {z, r}, "dble": {z, r}, "cmplx": {r, r, r}} {
 		if _, _, err := c.cplxIntrinsic(&syntax.Index{}, name, tv, args); err != nil {
 			t.Errorf("%s of %d arguments: %v", name, len(args), err)
