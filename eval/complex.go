@@ -319,6 +319,13 @@ func (c *compiler) cplxIntrinsic(n *syntax.Index, name string, tv sema.TV, args 
 		if len(args) < 1 || len(args) > 3 || !numeric(args[0]) || len(args) >= 2 && (args[0].k == kCplx || args[1].k != kInt && args[1].k != kReal) {
 			return nil, true, c.errf(n, "%s of these arguments is not supported", name)
 		}
+		// a BOZ part is the bits of a real (F2018 16.9.55): sema folds the
+		// constant cases, and one it left would be read here as an integer
+		for _, a := range n.Args {
+			if _, boz := a.Value.(*syntax.BozLit); boz {
+				return nil, true, c.errf(n, "a BOZ argument of %s that is not folded to a constant is not supported", name)
+			}
+		}
 		var fn cplxFn
 		if len(args) == 1 {
 			fn = args[0].asCplx().z

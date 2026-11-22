@@ -20,7 +20,10 @@ import (
 //
 // CMPLX(x [, y [, kind]]) and DCMPLX take a BOZ x or y the same way, as a real
 // of the result's kind (F2018 16.9.55): cmplx(z'3FF0000000000000', 0, 8) is
-// (1, 0). It is folded when the other part is a constant, refused otherwise.
+// (1, 0). It is folded when the other part is an integer or real constant and
+// left unfolded otherwise, never refused here: gfortran accepts the program,
+// and the evaluator is the one that says what it cannot run (a refusal by the
+// analyser costs a file of the differential floor).
 func bozReal(name string, acts []actual, rt Type) (*Const, string) {
 	if name == "int" && len(acts) > 0 && rt.Basic == Integer {
 		return bozInt(acts[0].e, rt)
@@ -61,8 +64,8 @@ func bozAsReal(boz *syntax.BozLit, kind int) (float64, string) {
 	return 0, "BOZ constant as REAL(" + strconv.Itoa(kind) + ") is not supported"
 }
 
-// bozCmplx folds CMPLX with a BOZ x or y (see bozReal); (nil, "") when
-// neither part is one.
+// bozCmplx folds CMPLX with a BOZ x or y (see bozReal); its message is always
+// "", and the constant nil when neither part is one or it cannot fold.
 func bozCmplx(acts []actual, rt Type) (*Const, string) {
 	var parts [2]*actual
 	for i := range acts {
@@ -93,7 +96,7 @@ func bozCmplx(acts []actual, rt Type) (*Const, string) {
 		if boz, ok := p.e.(*syntax.BozLit); ok {
 			f, msg := bozAsReal(boz, rt.Kind)
 			if msg != "" {
-				return nil, msg
+				return nil, ""
 			}
 			v[i] = f
 			continue
@@ -101,13 +104,13 @@ func bozCmplx(acts []actual, rt Type) (*Const, string) {
 		k := p.tv.Const
 		switch {
 		case k == nil || p.tv.Rank != 0:
-			return nil, "a BOZ argument of CMPLX beside a part that is not a scalar constant is not supported"
+			return nil, ""
 		case k.Type.Basic == Integer:
 			v[i] = float64(k.I)
 		case k.Type.Basic == Real:
 			v[i] = k.F
 		default:
-			return nil, "a BOZ argument of CMPLX beside a part that is not integer or real is not supported"
+			return nil, ""
 		}
 		if rt.Kind == 4 {
 			v[i] = float64(float32(v[i]))

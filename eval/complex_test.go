@@ -14,7 +14,7 @@ import (
 )
 
 // TestComplexScalars runs testdata/complex/*.f90 and compares the output with
-// the .out beside it, gfortran 15.2.0's at -O0 for the same source, byte for
+// the .want beside it, gfortran 15.2.0's at -O0 for the same source, byte for
 // byte: complex(4) and complex(8) arithmetic with integer, real and complex
 // operands, Smith's division, integer powers inline (-1..2) and by the
 // binary method (3, -3, 5, -2), a real power, cmplx/dcmplx, real, dble, aimag,
@@ -24,7 +24,8 @@ import (
 // negation (-0 printed); cx2: formatted output of both kinds, and internal
 // READ, list-directed, of a pair in parentheses and of an input that is not
 // one (iostat 5010, the variable unchanged); cx3: BOZ arguments of cmplx and
-// dcmplx, taken as the bits of a real of the result's kind (folded by sema);
+// dcmplx, taken as the bits of a real of the result's kind (folded by sema;
+// one it cannot fold is refused by eval, never by the analyser);
 // cx4: a named constant as an actual argument, complex(4) values rounded at
 // each operation and not only on output (a sum, sin, exp and abs read in
 // double precision), and z**1 of an infinite z, which is z and not 1*z.
@@ -38,7 +39,9 @@ func TestComplexScalars(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, err := os.ReadFile("testdata/complex/" + name + ".out")
+			// .want, not .out: the repository ignores *.out, and an ignored
+			// expected file passes here and is missing in CI
+			want, err := os.ReadFile("testdata/complex/" + name + ".want")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -73,10 +76,10 @@ func TestComplexRefusals(t *testing.T) {
 		"tan of a complex":          {"complex(8) :: c\n  c = (1d0, 1d0)\n  print *, tan(c)", "tan of a complex argument is not supported yet"},
 		"ordering":                  {"complex(8) :: c\n  c = 1\n  print *, c < c", "comparison operator '<'"},
 		"complex(16) value":         {"complex(16) :: c\n  c = 1", "complex(16) is not supported"},
-		"boz beside a variable":     {"complex(8) :: c\n  real(8) :: x\n  x = 1\n  c = cmplx(z'3FF0000000000000', x, 8)", "beside a part that is not a scalar constant"},
-		"boz wider than real(4)":    {"complex(4) :: c\n  c = cmplx(z'3FF0000000000000', 0)", "wider than REAL(4)"},
+		"boz beside a variable":     {"complex(8) :: c\n  real(8) :: x\n  x = 1\n  c = cmplx(z'3FF0000000000000', x, 8)", "a BOZ argument of cmplx that is not folded"},
+		"boz wider than real(4)":    {"complex(4) :: c\n  c = cmplx(z'3FF0000000000000', 0)", "a BOZ argument of cmplx that is not folded"},
 		"int of a boz past 64 bits": {"integer(8) :: i\n  i = int(z'1FFFFFFFFFFFFFFFF', 8)", "wider than 64 bits"},
-		"boz beside a complex":      {"complex(8) :: c\n  c = cmplx(z'3FF0000000000000', (1d0, 0d0), 8)", "not integer or real"},
+		"boz beside a complex":      {"complex(8) :: c\n  c = cmplx(z'3FF0000000000000', (1d0, 0d0), 8)", "cmplx of these arguments is not supported"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := runExact(t, "program p\n  implicit none\n  "+c.src+"\nend program p\n")
