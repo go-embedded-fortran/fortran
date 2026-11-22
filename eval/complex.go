@@ -376,8 +376,7 @@ func (c *compiler) cplxIntrinsic(n *syntax.Index, name string, tv sema.TV, args 
 	default:
 		return nil, true, c.errf(n, "%s of a complex argument is not supported yet", name)
 	}
-	if akd == 4 {
-		return &ex{k: kCplx, kd: 4, slot: -1, z: func(f *frame) complex128 { return round4(g(a(f))) }}, true, nil
-	}
+	// computed in double precision; fit rounds a complex(4) result once (the
+	// result is unmarked, kd 0, so that it does)
 	return &ex{k: kCplx, slot: -1, z: func(f *frame) complex128 { return g(a(f)) }}, true, nil
 }

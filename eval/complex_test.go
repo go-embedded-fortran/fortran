@@ -69,13 +69,14 @@ func TestComplexRefusals(t *testing.T) {
 	// want is a part of the message: the refusal must be this one, not another
 	// the program happens to meet first
 	for name, c := range map[string]struct{ src, want string }{
-		"array":                  {"complex(8) :: c(2)\n  c = 1", "complex arrays are not supported yet"},
-		"tan of a complex":       {"complex(8) :: c\n  c = (1d0, 1d0)\n  print *, tan(c)", "tan of a complex argument is not supported yet"},
-		"ordering":               {"complex(8) :: c\n  c = 1\n  print *, c < c", "comparison operator '<'"},
-		"complex(16) value":      {"complex(16) :: c\n  c = 1", "complex(16) is not supported"},
-		"boz beside a variable":  {"complex(8) :: c\n  real(8) :: x\n  x = 1\n  c = cmplx(z'3FF0000000000000', x, 8)", "beside a part that is not a scalar constant"},
-		"boz wider than real(4)": {"complex(4) :: c\n  c = cmplx(z'3FF0000000000000', 0)", "wider than REAL(4)"},
-		"boz beside a complex":   {"complex(8) :: c\n  c = cmplx(z'3FF0000000000000', (1d0, 0d0), 8)", "not integer or real"},
+		"array":                     {"complex(8) :: c(2)\n  c = 1", "complex arrays are not supported yet"},
+		"tan of a complex":          {"complex(8) :: c\n  c = (1d0, 1d0)\n  print *, tan(c)", "tan of a complex argument is not supported yet"},
+		"ordering":                  {"complex(8) :: c\n  c = 1\n  print *, c < c", "comparison operator '<'"},
+		"complex(16) value":         {"complex(16) :: c\n  c = 1", "complex(16) is not supported"},
+		"boz beside a variable":     {"complex(8) :: c\n  real(8) :: x\n  x = 1\n  c = cmplx(z'3FF0000000000000', x, 8)", "beside a part that is not a scalar constant"},
+		"boz wider than real(4)":    {"complex(4) :: c\n  c = cmplx(z'3FF0000000000000', 0)", "wider than REAL(4)"},
+		"int of a boz past 64 bits": {"integer(8) :: i\n  i = int(z'1FFFFFFFFFFFFFFFF', 8)", "wider than 64 bits"},
+		"boz beside a complex":      {"complex(8) :: c\n  c = cmplx(z'3FF0000000000000', (1d0, 0d0), 8)", "not integer or real"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := runExact(t, "program p\n  implicit none\n  "+c.src+"\nend program p\n")
@@ -124,6 +125,19 @@ func TestComplexGuardsBehindTheAnalyser(t *testing.T) {
 	for name, args := range map[string][]*ex{"real": {z, r}, "int": {z, r}, "dble": {z, r}, "cmplx": {r, r, r}} {
 		if _, _, err := c.cplxIntrinsic(&syntax.Index{}, name, tv, args); err != nil {
 			t.Errorf("%s of %d arguments: %v", name, len(args), err)
+		}
+	}
+}
+
+// TestComplexConstantRead reads a named complex constant through cplxRead, the
+// way ident would if the analyser had not folded it: the value is the
+// constant's own, not the slots it does not have.
+func TestComplexConstantRead(t *testing.T) {
+	for _, kd := range []int{4, 8} {
+		e := cplxRead(&sym{k: kCplx, kd: kd, isC: true, cz: complex(3, -4), slot: 0}, 0)
+		f := &frame{reals: []float64{7, 7}}
+		if got := e.z(f); got != complex(3, -4) || e.kd != kd {
+			t.Errorf("kind %d: %v (kd %d)", kd, got, e.kd)
 		}
 	}
 }
