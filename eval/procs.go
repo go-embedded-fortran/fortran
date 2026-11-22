@@ -641,12 +641,9 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 		tmp = c.cur.nStrs
 		c.cur.nStrs++
 		// the dummy's value over the actual's: a shorter dummy writes back its
-		// own leftmost characters only (overlay)
-		cur, err := c.ident(id)
-		if err != nil || cur.k != kStr {
-			return b, err
-		}
-		old := cur.s
+		// own leftmost characters only (overlay); v reads the actual, as it is
+		// when the call returns
+		old := v.s
 		read = &ex{k: kStr, slot: -1, s: func(f *frame) string { return overlay(old(f), f.strs[tmp]) }}
 	case kInt:
 		tmp = c.cur.nInts

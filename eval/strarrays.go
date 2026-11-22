@@ -104,15 +104,15 @@ func (c *compiler) declSA(ss *sema.Symbol, e syntax.Node, init syntax.Expr) erro
 		return nil
 	}
 	v, err := c.expr(init)
-	if err != nil {
-		return err
+	var fn stmtFn
+	if err == nil {
+		// as for a numeric array (declSym): a copy of the name stands for the
+		// variable while the assignment is compiled
+		id := syntax.Ident{Span: syntax.Span{Pos: e.P()}, Name: name}
+		c.info.Uses[&id] = ss
+		fn, err = c.assignSA(e, &id, s, nil, v)
+		delete(c.info.Uses, &id)
 	}
-	// as for a numeric array (declSym): a copy of the name stands for the
-	// variable while the assignment is compiled
-	id := syntax.Ident{Span: syntax.Span{Pos: e.P()}, Name: name}
-	c.info.Uses[&id] = ss
-	fn, err := c.assignSA(e, &id, v)
-	delete(c.info.Uses, &id)
 	if err != nil {
 		return err
 	}
@@ -120,22 +120,21 @@ func (c *compiler) declSA(ss *sema.Symbol, e syntax.Node, init syntax.Expr) erro
 	return nil
 }
 
-// saIdent is the character array s as a whole.
+// saIdent is the character array s as a whole. (The reference fails only for
+// a variable of another program unit, which the analyser does not resolve;
+// the expression is not used then.)
 func (c *compiler) saIdent(id *syntax.Ident, s *sym) (*ex, error) {
 	r, err := c.symRef(id, s)
-	if err != nil {
-		return nil, err
-	}
-	return &ex{k: kSA, slot: -1, rank: s.rank, et: kStr, g: r.get, v: s}, nil
+	return &ex{k: kSA, slot: -1, rank: s.rank, et: kStr, g: r.get, v: s}, err
 }
 
 // saIndex is an element of the character array s, or a section of it.
 func (c *compiler) saIndex(n *syntax.Index, id *syntax.Ident, s *sym) (*ex, error) {
 	r, err := c.symRef(id, s)
-	if err != nil {
-		return nil, err
+	var ss []sub
+	if err == nil {
+		ss, err = c.subs(n, s.rank)
 	}
-	ss, err := c.subs(n, r.rank)
 	if err != nil {
 		return nil, err
 	}
@@ -180,10 +179,8 @@ func (c *compiler) saIndex(n *syntax.Index, id *syntax.Ident, s *sym) (*ex, erro
 // its actual is associated with the actual's leftmost characters only (F2018
 // 15.5.2.11), so the others keep their value; a dummy is never longer.
 func overlay(old, v string) string {
-	if len(v) >= len(old) {
-		return v[:len(old)]
-	}
-	return v + old[len(v):]
+	n := min(len(v), len(old))
+	return v[:n] + old[n:]
 }
 
 // getStr and setStr read and write a character place for the copy-out of an
@@ -204,42 +201,22 @@ func (r *sref) setStr(v string) {
 	r.g.s[r.off] = overlay(r.g.s[r.off], v)
 }
 
-// saRef is the character array an assignment target designates, and its
-// subscript list, if any.
-func (c *compiler) saRef(at syntax.Node, lhs syntax.Expr) (*gref, *syntax.Index, error) {
-	var base syntax.Expr = lhs
-	var ix *syntax.Index
-	if i, ok := lhs.(*syntax.Index); ok {
-		base, ix = i.X, i
+// assignSA compiles an assignment to the character array s named id, or to
+// the section or element ix of it (nil: the whole array): each element takes
+// the value cut or blank-padded to the array's length (F2018 10.2.1.3). An
+// array value is computed whole before it is stored (a section of the target
+// is a copy), so a(2:3) = a(1:2) is right.
+func (c *compiler) assignSA(at syntax.Node, id *syntax.Ident, s *sym, ix *syntax.Index, rhs *ex) (stmtFn, error) {
+	ref, err := c.symRef(id, s)
+	var ss []sub
+	if err == nil && ix != nil {
+		ss, err = c.subs(ix, s.rank)
 	}
-	b, ok := base.(*syntax.Ident)
-	if !ok {
-		return nil, nil, c.errf(at, "unsupported assignment target")
-	}
-	s, _, err := c.symOf(b)
-	if err != nil || s.k != kSA {
-		return nil, nil, c.errf(at, "%s is not a character array", b.Name)
-	}
-	r, err := c.symRef(b, s)
-	return r, ix, err
-}
-
-// assignSA compiles an assignment to a character array, a section or an
-// element of it: each element takes the value cut or blank-padded to the
-// array's length (F2018 10.2.1.3). An array value is computed whole before it
-// is stored (a section of the target is a copy), so a(2:3) = a(1:2) is right.
-func (c *compiler) assignSA(at syntax.Node, lhs syntax.Expr, rhs *ex) (stmtFn, error) {
-	ref, ix, err := c.saRef(at, lhs)
 	if err != nil {
 		return nil, err
 	}
-	var ss []sub
-	whole := true
-	if ix != nil {
-		whole = false
-		if ss, err = c.subs(ix, ref.rank); err != nil {
-			return nil, err
-		}
+	whole := ix == nil
+	if !whole {
 		if !allScalar(ss) {
 			c.tmps = true // as in assignGA: the offsets are temporaries
 		}
@@ -303,13 +280,21 @@ func (c *compiler) assignSA(at syntax.Node, lhs syntax.Expr, rhs *ex) (stmtFn, e
 // stop the program rather than being cut to one of them.
 func (c *compiler) strArrayCons(n *syntax.ArrayCons, tv sema.TV) (*ex, error) {
 	tlen := tv.Type.Len
+	// a type-spec whose length is not constant, [character(len=n) :: ...]:
+	// the length is evaluated each time
+	var lenFn intFn
+	var err error
+	if tlen < 0 && n.Type != nil && n.Type.Len != nil {
+		lenFn, err = c.intExpr(n.Type.Len)
+	}
 	var elems []emitFn
-	for _, e := range n.Elems {
-		fn, err := c.emitter(e, kStr)
-		if err != nil {
-			return nil, err
-		}
+	for i := 0; err == nil && i < len(n.Elems); i++ {
+		var fn emitFn
+		fn, err = c.emitter(n.Elems[i], kStr)
 		elems = append(elems, fn)
+	}
+	if err != nil {
+		return nil, err
 	}
 	return &ex{k: kSA, slot: -1, rank: 1, et: kStr, g: func(f *frame) *garr {
 		a := &acc{et: kStr}
@@ -317,7 +302,9 @@ func (c *compiler) strArrayCons(n *syntax.ArrayCons, tv sema.TV) (*ex, error) {
 			fn(f, a)
 		}
 		clen := tlen
-		if clen < 0 {
+		if lenFn != nil {
+			clen = max(0, lenFn(f)) // a negative length is 0 (F2018 7.4.4.2)
+		} else if clen < 0 {
 			clen = 0
 			for k, v := range a.s {
 				if k == 0 {

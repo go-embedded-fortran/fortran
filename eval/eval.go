@@ -1138,7 +1138,7 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 		// function result) refuses here rather than as an internal error
 		return nil, c.errf(n, "this character array expression is not supported yet")
 	}
-	if e.k != want || ((want == kArr || want == kGA || want == kSA) && e.rank != tv.Rank) {
+	if e.k != want || ((want == kArr || want == kGA) && e.rank != tv.Rank) {
 		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
 	}
 	if (e.k == kGA || e.k == kArr || e.k == kStr || e.k == kD || e.k == kSA) && !e.isC {
@@ -2107,7 +2107,7 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 			return nil, c.errf(l, "%s is a parameter", l.Name)
 		}
 		if sy.k == kSA {
-			return c.assignSA(s, l, rhs)
+			return c.assignSA(s, l, sy, nil, rhs)
 		}
 		if sy.ga {
 			return c.assignGA(s, l, rhs, nil)
@@ -2134,7 +2134,7 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 			return c.assignDerived(s, l, rhs)
 		}
 		if err == nil && sy.k == kSA {
-			return c.assignSA(s, l, rhs)
+			return c.assignSA(s, id, sy, l, rhs)
 		}
 		if err == nil && sy.ga {
 			return c.assignGA(s, l, rhs, nil)
