@@ -189,15 +189,29 @@ func TestComplexArrayGuards(t *testing.T) {
 	// a variable of another unit: symRef refuses it
 	s := &sym{k: kCA, kd: 8, rank: 1, owner: &procCode{}}
 	id := &syntax.Ident{Name: "c"}
-	if _, err := c.caIdent(id, s); err == nil {
-		t.Error("caIdent of another unit's variable: accepted")
+	// a crash past the guard is a failure of this assertion, not of the binary
+	refuses := func(what string, fn func() error) {
+		t.Helper()
+		defer func() {
+			if p := recover(); p != nil {
+				t.Errorf("%s: crashed instead of refusing: %v", what, p)
+			}
+		}()
+		if err := fn(); err == nil || !strings.Contains(err.Error(), "another program unit") {
+			t.Errorf("%s: %v", what, err)
+		}
 	}
-	if _, err := c.caIndex(&syntax.Index{}, id, s); err == nil {
-		t.Error("caIndex of another unit's variable: accepted")
-	}
-	if _, err := c.assignCA(id, id, s, nil, constCplx(1)); err == nil {
-		t.Error("assignCA to another unit's variable: accepted")
-	}
+	refuses("caIdent", func() error { _, err := c.caIdent(id, s); return err })
+	refuses("caIndex", func() error { _, err := c.caIndex(&syntax.Index{}, id, s); return err })
+	refuses("caIndex of an element", func() error {
+		_, err := c.caIndex(&syntax.Index{Args: []syntax.Arg{{Value: &syntax.IntLit{Text: "1"}}}}, id, s)
+		return err
+	})
+	refuses("assignCA", func() error { _, err := c.assignCA(id, id, s, nil, constCplx(1)); return err })
+	refuses("assignCA to an element", func() error {
+		_, err := c.assignCA(id, id, s, &syntax.Index{Args: []syntax.Arg{{Value: &syntax.IntLit{Text: "1"}}}}, constCplx(1))
+		return err
+	})
 	ca := &ex{k: kCA, slot: -1, rank: 1, et: kCplx, kd: 8, g: func(*frame) *garr { return nil }}
 	lg := &ex{k: kLog, slot: -1}
 	tv := sema.TV{Type: sema.Type{Basic: sema.Complex, Kind: 8}, Rank: 1}
