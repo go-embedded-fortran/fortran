@@ -70,7 +70,7 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 		args[at] = v
 	}
 	for i, a := range args {
-		if a != nil && a.k == kArr {
+		if a != nil && a.k == kArr && !(name == "dot_product" && tv.Type.Basic == sema.Complex) { // cplxDot reads it (numArr)
 			return nil, c.errf(n, "%s of a real(8) array of the kernels' kind (declared with bounds 1) is not supported yet", name)
 		}
 		if i < len(formals) && a == nil && (i == 0 || (name == "reshape" && i == 1) || (name == "spread") && i < 3 || (name == "cshift" || name == "eoshift") && i == 1 || (name == "dot_product" || name == "matmul" || name == "pack") && i < 2) {
@@ -96,9 +96,10 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 		}
 		return args[i].g, nil
 	}
-	// shapeArg is an argument whose shape only is read: a character array too
+	// shapeArg is an argument whose shape only is read: a character or a
+	// complex array too
 	shapeArg := func(i int) (gaFn, error) {
-		if args[i] != nil && args[i].k == kSA {
+		if args[i] != nil && (args[i].k == kSA || args[i].k == kCA) {
 			return args[i].g, nil
 		}
 		return arrArg(i)
@@ -111,9 +112,31 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 		return args[i].g, nil
 	}
 	isStr := tv.Type.Basic == sema.Character
+	// a complex array argument (cplxarrays.go) is read by the intrinsics below
+	// that only read its shape or move its elements, and by dot_product
+	isCplx := tv.Type.Basic == sema.Complex
+	for _, a := range args {
+		if a != nil && (a.k == kCA || isCplx || a.k == kCplx) {
+			switch name {
+			case "size", "lbound", "ubound", "shape", "reshape", "transpose", "dot_product":
+			default:
+				return nil, c.errf(n, "%s of a complex array is not supported yet", name)
+			}
+		}
+	}
+	// cplxArg is an argument of a complex result that is moved, not computed
+	cplxArg := func(i int) (gaFn, error) {
+		if args[i] == nil || args[i].k != kCA {
+			return nil, c.errf(n, "%s: argument %s must be a complex array", name, formals[i])
+		}
+		return args[i].g, nil
+	}
 	arr := func(rank int, et kind, fn gaFn) *ex {
 		if isStr {
 			return &ex{k: kSA, slot: -1, rank: rank, et: kStr, g: fn}
+		}
+		if isCplx {
+			return &ex{k: kCA, slot: -1, rank: rank, et: kCplx, kd: kd, g: fn}
 		}
 		return &ex{k: kGA, slot: -1, rank: rank, et: et, kd: kd, g: fn}
 	}
@@ -266,6 +289,9 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 		}
 		return intRes(func(f *frame) int64 { t, _ := cnt(f); return int64(t) }), nil
 	case "dot_product":
+		if isCplx {
+			return c.cplxDot(n, args[0], args[1], kd)
+		}
 		a, err := arrArg(0)
 		if err != nil {
 			return nil, err
@@ -294,7 +320,11 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 		}
 		return intRes(func(f *frame) int64 { i, _ := dot(f); return narrow(kd, i) }), nil
 	case "transpose":
-		g, err := arrArg(0)
+		valArg := arrArg
+		if isCplx {
+			valArg = cplxArg
+		}
+		g, err := valArg(0)
 		if err != nil {
 			return nil, err
 		}
@@ -303,9 +333,18 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 			if len(a.ext) != 2 {
 				fail(f, "transpose of an array of rank %d", len(a.ext))
 			}
-			out := newGarr(f, a.et, a.kd, []int64{1, 1}, []int{a.ext[1], a.ext[0]})
+			var out *garr
+			if isCplx {
+				out = newCplxGarr(f, a.kd, []int64{1, 1}, []int{a.ext[1], a.ext[0]})
+			} else {
+				out = newGarr(f, a.et, a.kd, []int64{1, 1}, []int{a.ext[1], a.ext[0]})
+			}
 			for i := 0; i < a.ext[0]; i++ {
 				for j := 0; j < a.ext[1]; j++ {
+					if isCplx {
+						out.c[j+i*a.ext[1]] = a.c[i+j*a.ext[0]]
+						continue
+					}
 					x, y := a.at(i + j*a.ext[0])
 					out.put(j+i*a.ext[1], x, y)
 				}
@@ -362,8 +401,11 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 		// SOURCE and PAD are of the result's type: character arrays for a
 		// character result
 		valArg := arrArg
-		if isStr {
+		switch {
+		case isStr:
 			valArg = strArg
+		case isCplx:
+			valArg = cplxArg
 		}
 		src, err := valArg(0)
 		if err != nil {
@@ -418,9 +460,12 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 				}
 			}
 			var out *garr
-			if isStr {
+			switch {
+			case isStr:
 				out = newStrGarr(f, s.clen, ones(len(ext)), ext)
-			} else {
+			case isCplx:
+				out = newCplxGarr(f, kd, ones(len(ext)), ext)
+			default:
 				out = newGarr(f, rk, kd, ones(len(ext)), ext)
 			}
 			total := out.size()
@@ -449,6 +494,9 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 				if isStr {
 					// PAD is of the source's length (F2018 16.9.163): fit it anyway
 					out.s[o] = fitLen(from.s[at], out.clen)
+				} else if isCplx {
+					// SOURCE and PAD are of the result's type and kind
+					out.c[o] = from.c[at]
 				} else {
 					x, y := from.at(at)
 					out.put(o, x, y)

@@ -32,8 +32,26 @@ import (
 // (sqrt of a complex(4) is left out: glibc's csqrtf is one ulp from the
 // correctly rounded imaginary part of sqrt((2,3)), 0.89597747..., which ours
 // is.)
+//
+// ca1-ca3 are the complex arrays (cplxarrays.go): constructors with an
+// implied-do, elements, sections with a negative stride, overlapping section
+// assignment, scalar and real-array values converted, rank 2, size, shape and
+// the bounds, a named constant, complex(4) rounding on assignment, formatted
+// output (ca1); every elemental operator with complex, real and integer array
+// and scalar operands, powers inline and by the binary method, == and /= as
+// logical arrays with any and all, real, aimag, conjg, abs, cmplx and dble
+// elementwise, complex(4) compared with a real(4) array (ca2); a module array,
+// host association, an element passed to an inout dummy and copied back, and
+// a zero-sized array (ca3); a real(8) array of the kernels' kind given a
+// constructor, a complex array and a complex element, which was an internal
+// error before (ca4); complex dummy arrays of explicit, assumed and assumed
+// size shape, an array function result, transpose, reshape with pad and
+// order, and dot_product of complex, mixed real and complex(4) vectors (ca5;
+// dot_product of zero-sized complex vectors is compared with 0 and not printed:
+// gfortran prints its folded value as the integer 0, where F2018 16.9.71 makes
+// it a complex zero, which is what we print).
 func TestComplexScalars(t *testing.T) {
-	for _, name := range []string{"cx1", "cx2", "cx3", "cx4"} {
+	for _, name := range []string{"cx1", "cx2", "cx3", "cx4", "ca1", "ca2", "ca3", "ca4", "ca5"} {
 		t.Run(name, func(t *testing.T) {
 			src, err := os.ReadFile("testdata/complex/" + name + ".f90")
 			if err != nil {
@@ -72,7 +90,23 @@ func TestComplexRefusals(t *testing.T) {
 	// want is a part of the message: the refusal must be this one, not another
 	// the program happens to meet first
 	for name, c := range map[string]struct{ src, want string }{
-		"array":                     {"complex(8) :: c(2)\n  c = 1", "complex arrays are not supported yet"},
+		"array expression to inout": {"call s()\ncontains\n  subroutine s()\n    call t([(1d0, 0d0)])\n  end subroutine s\n  subroutine t(x)\n    complex(8) :: x(1)\n  end subroutine t", "can only be passed to an intent(in) dummy"},
+		"optional array dummy":      {"call t()\ncontains\n  subroutine t(x)\n    complex(8), optional :: x(2)\n  end subroutine t", "an optional, value or target complex array dummy argument"},
+		"matmul of arrays":          {"complex(8) :: c(2, 2)\n  c = 1\n  print *, matmul(c, c)", "matmul of a complex array is not supported yet"},
+		"spread of a scalar":        {"print *, spread((1d0, 2d0), 1, 2)", "spread of a complex array is not supported yet"},
+		"allocatable array":         {"complex(8), allocatable :: c(:)\n  allocate (c(2))", "an allocatable or pointer complex array is not supported yet"},
+		"pointer array":             {"complex(8), pointer :: c(:)\n  nullify (c)", "an allocatable or pointer complex array is not supported yet"},
+		"automatic array":           {"call s(2)\ncontains\n  subroutine s(n)\n    integer :: n\n    complex(8) :: c(n)\n    c = 0\n  end subroutine s", "an array needs constant bounds"},
+		"saved array":               {"call s()\ncontains\n  subroutine s()\n    complex(8) :: c(1) = 0\n  end subroutine s", "saved between calls"},
+		"array power":               {"complex(8) :: c(2)\n  integer :: n\n  n = 3\n  c = 1\n  c = c**n", "constant integer exponent only"},
+		"real array power":          {"complex(8) :: c(2)\n  c = 1\n  c = c**1.5d0", "constant integer exponent only"},
+		"tan of an array":           {"complex(8) :: c(2)\n  c = 1\n  print *, tan(c)", "tan of a complex array is not supported yet"},
+		"sum of an array":           {"complex(8) :: c(2)\n  c = 1\n  print *, sum(c)", "sum of a complex array is not supported yet"},
+		"array of two arguments":    {"complex(8) :: c(2)\n  c = 1\n  print *, merge(c, c, .true.)", "merge of a complex array is not supported yet"},
+		"real of an array and kind": {"complex(8) :: c(2)\n  c = 1\n  print *, real(c, 4)", "real of these arguments is not supported"},
+		"cmplx of an array and y":   {"complex(8) :: c(2)\n  c = 1\n  print *, cmplx(c, c, 8)", "cmplx of these arguments is not supported"},
+		"read of an array":          {"complex(8) :: c(2)\n  character(8) :: s\n  s = '(1,2)'\n  read (s, *) c", "an input item"},
+		"where on an array":         {"complex(8) :: c(2)\n  c = 1\n  where ([.true., .false.]) c = 2", "not an array of the general kind"},
 		"tan of a complex":          {"complex(8) :: c\n  c = (1d0, 1d0)\n  print *, tan(c)", "tan of a complex argument is not supported yet"},
 		"ordering":                  {"complex(8) :: c\n  c = 1\n  print *, c < c", "comparison operator '<'"},
 		"complex(16) value":         {"complex(16) :: c\n  c = 1", "complex(16) is not supported"},

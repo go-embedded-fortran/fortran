@@ -20,8 +20,11 @@ func strGarrBytes(n int, clen int64) int64 { return (16+clen)*int64(n) + arrayOv
 
 // bytes is what g is charged when it is held.
 func (g *garr) bytes() int64 {
-	if g.et == kStr {
+	switch g.et {
+	case kStr:
 		return strGarrBytes(g.size(), g.clen)
+	case kCplx:
+		return cplxGarrBytes(g.size())
 	}
 	return garrBytes(g.size())
 }

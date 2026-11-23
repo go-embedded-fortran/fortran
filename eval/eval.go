@@ -342,6 +342,7 @@ const (
 	kDA   // a rank-1 array of a derived type
 	kSA   // a character array (strarrays.go): a garr of et kStr
 	kCplx // a complex scalar (complex.go): two real slots
+	kCA   // a complex array (cplxarrays.go): a garr of et kCplx
 )
 
 type strFn func(*frame) string
@@ -666,8 +667,10 @@ func (c *compiler) kindOf(at syntax.Node, t sema.Type, rank int) (kind, error) {
 		k = kReal
 	case t.Basic == sema.Complex && (t.Kind == 4 || t.Kind == 8) && rank == 0:
 		return kCplx, nil
+	case t.Basic == sema.Complex && (t.Kind == 4 || t.Kind == 8) && rank > 0 && rank <= MaxRank:
+		return kCA, nil
 	case t.Basic == sema.Complex && (t.Kind == 4 || t.Kind == 8):
-		return 0, c.errf(at, "complex arrays are not supported yet")
+		return 0, c.errf(at, "arrays of assumed rank are not supported")
 	case t.Basic == sema.Character && t.Kind == 1 && rank == 0:
 		return kStr, nil
 	case t.Basic == sema.Character && t.Kind == 1 && rank > 0 && rank <= MaxRank:
@@ -832,11 +835,11 @@ func (c *compiler) declSym(ss *sema.Symbol, e syntax.Node, init syntax.Expr) err
 		// (a named constant without a value is refused by the analyser)
 		arrInit := ss.Rank != 0 && init != nil
 		elem, err := c.kindOf(e, ss.Type, 0)
-		if err == nil && elem == kCplx && ss.Rank != 0 {
-			err = c.errf(e, "complex arrays are not supported yet")
-		}
 		if err != nil {
 			return err
+		}
+		if elem == kCplx && ss.Rank != 0 {
+			return c.declCA(ss, e, init)
 		}
 		if elem == kStr {
 			if ss.Rank != 0 {
@@ -1079,6 +1082,12 @@ func (e *ex) asReal() *ex {
 		}
 		fi := e.i
 		return &ex{k: kReal, slot: -1, r: func(f *frame) float64 { return float64(fi(f)) }}
+	case kCplx:
+		// its real part: what an assignment of a complex to a real gives (F2018
+		// Table 10.8); an operation with a complex operand never reaches here
+		// (cplxBinary), and an element assignment r(i) = z read a nil function
+		fz := e.z
+		return &ex{k: kReal, kd: e.kd, slot: -1, r: func(f *frame) float64 { return real(fz(f)) }}
 	}
 	return e
 }
@@ -1159,7 +1168,12 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 	if e.k != want || ((want == kArr || want == kGA) && e.rank != tv.Rank) {
 		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
 	}
-	if (e.k == kGA || e.k == kArr || e.k == kStr || e.k == kD || e.k == kSA) && !e.isC {
+	if want == kCA && e.k != kCA {
+		// as for a character array: a path that builds no complex array
+		// refuses here rather than as an internal error
+		return nil, c.errf(n, "this complex array expression is not supported yet")
+	}
+	if (e.k == kGA || e.k == kArr || e.k == kStr || e.k == kD || e.k == kSA || e.k == kCA) && !e.isC {
 		c.tmps = true // the value is a temporary: see stmts
 	}
 	return e, nil
@@ -1217,6 +1231,9 @@ func (c *compiler) expr1(n syntax.Expr, tv sema.TV) (*ex, error) {
 		if err != nil {
 			return nil, err
 		}
+		if x.k == kCA {
+			return c.caUnary(n, x)
+		}
 		if x.k == kGA {
 			return c.gaUnary(n, x)
 		}
@@ -1259,6 +1276,8 @@ func (c *compiler) ident(n *syntax.Ident) (*ex, error) {
 		return c.daIdent(n, s)
 	case kSA:
 		return c.saIdent(n, s)
+	case kCA:
+		return c.caIdent(n, s)
 	}
 	if s.ptr && !s.ga {
 		return c.ptrRead(n, s)
@@ -1358,6 +1377,9 @@ func (c *compiler) binary(n *syntax.Binary, tv sema.TV) (*ex, error) {
 	}
 	if x.k == kStr || y.k == kStr {
 		return c.strBinary(n, x, y)
+	}
+	if x.k == kCA || y.k == kCA || (x.k == kGA || y.k == kGA || x.k == kArr || y.k == kArr) && (x.k == kCplx || y.k == kCplx) {
+		return c.caBinary(n, x, y, tv)
 	}
 	if x.k == kGA || y.k == kGA {
 		return c.gaBinary(n, x, y, tv)
@@ -1645,6 +1667,9 @@ func (c *compiler) index(n *syntax.Index, tv sema.TV) (*ex, error) {
 	if s.k == kSA {
 		return c.saIndex(n, id, s)
 	}
+	if s.k == kCA {
+		return c.caIndex(n, id, s)
+	}
 	if s.k != kArr {
 		return nil, c.errf(n, "%s is not an array", id.Name)
 	}
@@ -1767,6 +1792,11 @@ func (c *compiler) intrinsic(n *syntax.Index, name string, tv sema.TV) (*ex, err
 			return nil, err
 		}
 		args = append(args, v)
+	}
+	for _, a := range args {
+		if a.k == kCA || tv.Type.Basic == sema.Complex && tv.Rank > 0 {
+			return c.caIntrinsic(n, name, tv, args)
+		}
 	}
 	for _, a := range args {
 		if a.k == kGA {
@@ -2152,6 +2182,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		if sy.k == kSA {
 			return c.assignSA(s, l, sy, nil, rhs)
 		}
+		if sy.k == kCA {
+			return c.assignCA(s, l, sy, nil, rhs)
+		}
 		if sy.ga {
 			return c.assignGA(s, l, rhs, nil)
 		}
@@ -2178,6 +2211,9 @@ func (c *compiler) assign(s *syntax.Assignment) (stmtFn, error) {
 		}
 		if err == nil && sy.k == kSA {
 			return c.assignSA(s, id, sy, l, rhs)
+		}
+		if err == nil && sy.k == kCA {
+			return c.assignCA(s, id, sy, l, rhs)
 		}
 		if err == nil && sy.ga {
 			return c.assignGA(s, l, rhs, nil)
@@ -2259,6 +2295,27 @@ func (c *compiler) assignArray(at syntax.Node, s *sym, name string, rhs *ex) (st
 			fail(f, "array %s is not allocated", name)
 		}
 		return d
+	}
+	if rhs.k == kGA || rhs.k == kCA {
+		// an array of the general kind (a constructor, an elemental result) or a
+		// complex array: element by element, converted as an assignment
+		// converts (a complex element gives its real part, F2018 Table 10.8).
+		// asReal below has no array form: this was a nil function and an
+		// internal error at run time for r = [1d0, 2d0] (kernelArray r)
+		g := rhs.g
+		return func(f *frame) {
+			d, src := dest(f), g(f)
+			ext := []int{d.n1}
+			if d.rank == 2 {
+				ext = []int{d.n1, d.n2}
+			}
+			if !sameShape(ext, src.ext) {
+				fail(f, "arrays of extents %v and %v are not conformable", ext, src.ext)
+			}
+			for i := range d.data {
+				d.data[i] = real(src.cat(i))
+			}
+		}, nil
 	}
 	if rhs.k != kArr {
 		v := rhs.asReal().r
