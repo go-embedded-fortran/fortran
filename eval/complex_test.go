@@ -49,9 +49,10 @@ import (
 // order, and dot_product of complex, mixed real and complex(4) vectors (ca5;
 // dot_product of zero-sized complex vectors is compared with 0 and not printed:
 // gfortran prints its folded value as the integer 0, where F2018 16.9.71 makes
-// it a complex zero, which is what we print).
+// it a complex zero, which is what we print); an integer(8) array compared
+// with a complex(4) one in single precision (ca6).
 func TestComplexScalars(t *testing.T) {
-	for _, name := range []string{"cx1", "cx2", "cx3", "cx4", "ca1", "ca2", "ca3", "ca4", "ca5"} {
+	for _, name := range []string{"cx1", "cx2", "cx3", "cx4", "ca1", "ca2", "ca3", "ca4", "ca5", "ca6"} {
 		t.Run(name, func(t *testing.T) {
 			src, err := os.ReadFile("testdata/complex/" + name + ".f90")
 			if err != nil {
@@ -113,6 +114,10 @@ func TestComplexRefusals(t *testing.T) {
 		"boz beside a variable":     {"complex(8) :: c\n  real(8) :: x\n  x = 1\n  c = cmplx(z'3FF0000000000000', x, 8)", "a BOZ argument of cmplx that is not folded"},
 		"boz wider than real(4)":    {"complex(4) :: c\n  c = cmplx(z'3FF0000000000000', 0)", "a BOZ argument of cmplx that is not folded"},
 		"int of a boz past 64 bits": {"integer(8) :: i\n  i = int(z'1FFFFFFFFFFFFFFFF', 8)", "wider than 64 bits"},
+		"refused initial value":     {"complex(8) :: c(1) = [spread((1d0, 2d0), 1, 1)]\n  print *, c", "spread of a complex array is not supported yet"},
+		"refused constructor item":  {"complex(8) :: c(2)\n  c = 1\n  print *, [(1d0, 0d0), tan(c(1))]", "tan of a complex argument is not supported yet"},
+		"complex in a real array":   {"print *, [real(8) :: (1d0, 2d0)]", "an array constructor mixes complex and other values"},
+		"boz beside an array":       {"real(8) :: r(2)\n  r = 1\n  print *, cmplx(z'3FF0000000000000', r, 8)", "a BOZ argument of cmplx that is not folded"},
 		"boz beside a complex":      {"complex(8) :: c\n  c = cmplx(z'3FF0000000000000', (1d0, 0d0), 8)", "cmplx of these arguments is not supported"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -169,6 +174,46 @@ func TestComplexGuardsBehindTheAnalyser(t *testing.T) {
 		if _, _, err := c.cplxIntrinsic(&syntax.Index{}, name, tv, args); err != nil {
 			t.Errorf("%s of %d arguments: %v", name, len(args), err)
 		}
+	}
+}
+
+// TestComplexArrayGuards drives the complex-array paths whose refusals the
+// analyser or the dispatch makes unreachable from a program: each is a
+// positioned refusal, never a nil function run later.
+func TestComplexArrayGuards(t *testing.T) {
+	f, err := syntax.Parse("g.f90", []byte("end\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &compiler{file: f, cur: &procCode{}}
+	// a variable of another unit: symRef refuses it
+	s := &sym{k: kCA, kd: 8, rank: 1, owner: &procCode{}}
+	id := &syntax.Ident{Name: "c"}
+	if _, err := c.caIdent(id, s); err == nil {
+		t.Error("caIdent of another unit's variable: accepted")
+	}
+	if _, err := c.caIndex(&syntax.Index{}, id, s); err == nil {
+		t.Error("caIndex of another unit's variable: accepted")
+	}
+	if _, err := c.assignCA(id, id, s, nil, constCplx(1)); err == nil {
+		t.Error("assignCA to another unit's variable: accepted")
+	}
+	ca := &ex{k: kCA, slot: -1, rank: 1, et: kCplx, kd: 8, g: func(*frame) *garr { return nil }}
+	lg := &ex{k: kLog, slot: -1}
+	tv := sema.TV{Type: sema.Type{Basic: sema.Complex, Kind: 8}, Rank: 1}
+	for _, xy := range [][2]*ex{{lg, ca}, {ca, lg}} {
+		if _, err := c.caBinary(&syntax.Binary{Op: "+"}, xy[0], xy[1], tv); err == nil || !strings.Contains(err.Error(), "this operand") {
+			t.Errorf("caBinary of a logical operand: %v", err)
+		}
+	}
+	if _, err := c.caIntrinsic(&syntax.Index{}, "conjg", tv, []*ex{lg}); err == nil || !strings.Contains(err.Error(), "this operand") {
+		t.Errorf("caIntrinsic of a logical argument: %v", err)
+	}
+	if _, err := c.cplxDot(&syntax.Index{}, ca, lg, 8); err == nil {
+		t.Error("cplxDot of a logical argument: accepted")
+	}
+	if _, err := c.cplxArrayCons(&syntax.ArrayCons{}, sema.TV{Type: sema.Type{Basic: sema.Complex, Kind: 16}}); err == nil {
+		t.Error("a complex(16) constructor: accepted")
 	}
 }
 
