@@ -124,13 +124,10 @@ func (c *compiler) arrIntrinsic(n *syntax.Index, name string, tv sema.TV, formal
 			}
 		}
 	}
-	// cplxArg is an argument of a complex result that is moved, not computed
-	cplxArg := func(i int) (gaFn, error) {
-		if args[i] == nil || args[i].k != kCA {
-			return nil, c.errf(n, "%s: argument %s must be a complex array", name, formals[i])
-		}
-		return args[i].g, nil
-	}
+	// cplxArg is an argument of a complex result that is moved, not computed:
+	// the analyser types it a complex array, which expr compiles as kCA or
+	// refuses, and the required SOURCE and a present PAD are the only callers
+	cplxArg := func(i int) (gaFn, error) { return args[i].g, nil }
 	arr := func(rank int, et kind, fn gaFn) *ex {
 		if isStr {
 			return &ex{k: kSA, slot: -1, rank: rank, et: kStr, g: fn}
