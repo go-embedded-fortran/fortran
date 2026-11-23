@@ -117,6 +117,7 @@ func TestComplexRefusals(t *testing.T) {
 		"refused initial value":     {"complex(8) :: c(1) = [spread((1d0, 2d0), 1, 1)]\n  print *, c", "spread of a complex array is not supported yet"},
 		"refused constructor item":  {"complex(8) :: c(2)\n  c = 1\n  print *, [(1d0, 0d0), tan(c(1))]", "tan of a complex argument is not supported yet"},
 		"complex in a real array":   {"print *, [real(8) :: (1d0, 2d0)]", "an array constructor mixes complex and other values"},
+		"kernel array to transpose": {"real(8) :: r(2, 2)\n  r = 1\n  print *, transpose(r)", "transpose of a real(8) array of the kernels' kind"},
 		"boz beside an array":       {"real(8) :: r(2)\n  r = 1\n  print *, cmplx(z'3FF0000000000000', r, 8)", "a BOZ argument of cmplx that is not folded"},
 		"boz beside a complex":      {"complex(8) :: c\n  c = cmplx(z'3FF0000000000000', (1d0, 0d0), 8)", "cmplx of these arguments is not supported"},
 	} {
@@ -212,6 +213,11 @@ func TestComplexArrayGuards(t *testing.T) {
 		_, err := c.assignCA(id, id, s, &syntax.Index{Args: []syntax.Arg{{Value: &syntax.IntLit{Text: "1"}}}}, constCplx(1))
 		return err
 	})
+	// an external procedure without an interface: the analyser does not see the
+	// dummy's kind, the binding does
+	if _, err := runExact(t, "program p\n  complex(4) :: c(2)\n  c = 1\n  call t(c)\nend program p\nsubroutine t(x)\n  complex(8) :: x(2)\n  print *, x\nend subroutine t\n"); err == nil || !strings.Contains(err.Error(), "differ in kind") {
+		t.Errorf("a complex(4) array to a complex(8) dummy: %v", err)
+	}
 	ca := &ex{k: kCA, slot: -1, rank: 1, et: kCplx, kd: 8, g: func(*frame) *garr { return nil }}
 	lg := &ex{k: kLog, slot: -1}
 	tv := sema.TV{Type: sema.Type{Basic: sema.Complex, Kind: 8}, Rank: 1}

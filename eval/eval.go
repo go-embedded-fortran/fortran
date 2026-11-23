@@ -1168,11 +1168,6 @@ func (c *compiler) expr(n syntax.Expr) (*ex, error) {
 	if e.k != want || ((want == kArr || want == kGA) && e.rank != tv.Rank) {
 		return nil, c.errf(n, "internal error: the evaluator compiled a %d (rank %d) where the analyser typed %s (rank %d)", e.k, e.rank, tv.Type, tv.Rank)
 	}
-	if want == kCA && e.k != kCA {
-		// as for a character array: a path that builds no complex array
-		// refuses here rather than as an internal error
-		return nil, c.errf(n, "this complex array expression is not supported yet")
-	}
 	if (e.k == kGA || e.k == kArr || e.k == kStr || e.k == kD || e.k == kSA || e.k == kCA) && !e.isC {
 		c.tmps = true // the value is a temporary: see stmts
 	}
