@@ -608,6 +608,22 @@ func (c *compiler) bind(at syntax.Node, ps *sym, intent string, a syntax.Expr) (
 			cf.gas[slot] = &garr{et: g.et, kd: g.kd, lb: ones(len(g.ext)), ext: g.ext, i: g.i, r: g.r}
 		}
 		return b, nil
+	case kCA:
+		// as kGA: the dummy shares the actual's elements, with lower bounds 1
+		if v.v == nil || v.v.k != kCA {
+			if intent != "in" {
+				return binding{}, c.errf(a, "an array section or expression can only be passed to an intent(in) dummy argument yet")
+			}
+		}
+		if v.kd != ps.kd {
+			return binding{}, c.errf(a, "the actual argument and its dummy argument differ in kind")
+		}
+		fn := v.g
+		b.set = func(f, cf *frame) {
+			g := fn(f)
+			cf.gas[slot] = &garr{et: kCplx, kd: g.kd, lb: ones(len(g.ext)), ext: g.ext, c: g.c}
+		}
+		return b, nil
 	case kStr:
 		fn, n := v.s, ps.clen
 		if n < 0 { // character(*): the dummy takes the length of the actual
@@ -724,6 +740,14 @@ func (c *compiler) placeBinding(loc func(*frame) *sref, ps *sym) binding {
 	case kReal:
 		b.set = func(f, cf *frame) { r := loc(f); f.ptrs[tmp] = r; cf.reals[slot] = r.getReal() }
 		b.back = func(f, cf *frame) { f.ptrs[tmp].setReal(cf.reals[slot]) }
+	case kCplx: // an element of a complex array (cplxarrays.go)
+		b.set = func(f, cf *frame) {
+			r := loc(f)
+			f.ptrs[tmp] = r
+			z := r.g.c[r.off]
+			cf.reals[slot], cf.reals[slot+1] = real(z), imag(z)
+		}
+		b.back = func(f, cf *frame) { r := f.ptrs[tmp]; r.g.c[r.off] = complex(cf.reals[slot], cf.reals[slot+1]) }
 	default: // integer and logical
 		b.set = func(f, cf *frame) { r := loc(f); f.ptrs[tmp] = r; cf.ints[slot] = r.getInt() }
 		b.back = func(f, cf *frame) { f.ptrs[tmp].setInt(cf.ints[slot]) }
@@ -818,6 +842,15 @@ func (c *compiler) funcCallArgs(n *syntax.Index, p *procCode, args []syntax.Arg)
 			e.pg = func(f *frame) *garr { return run(f).gas[slot] }
 		}
 		return e, nil
+	case kCA:
+		name := p.name
+		return &ex{k: kCA, slot: -1, rank: r.rank, et: kCplx, kd: r.kd, g: func(f *frame) *garr {
+			g := run(f).gas[slot]
+			if g == nil {
+				fail(f, "the result of %s is not allocated", name)
+			}
+			return g
+		}}, nil
 	case kStr:
 		return &ex{k: kStr, slot: -1, s: func(f *frame) string { return run(f).strs[slot] }}, nil
 	case kInt:

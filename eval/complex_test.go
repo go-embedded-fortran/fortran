@@ -32,8 +32,27 @@ import (
 // (sqrt of a complex(4) is left out: glibc's csqrtf is one ulp from the
 // correctly rounded imaginary part of sqrt((2,3)), 0.89597747..., which ours
 // is.)
+//
+// ca1-ca3 are the complex arrays (cplxarrays.go): constructors with an
+// implied-do, elements, sections with a negative stride, overlapping section
+// assignment, scalar and real-array values converted, rank 2, size, shape and
+// the bounds, a named constant, complex(4) rounding on assignment, formatted
+// output (ca1); every elemental operator with complex, real and integer array
+// and scalar operands, powers inline and by the binary method, == and /= as
+// logical arrays with any and all, real, aimag, conjg, abs, cmplx and dble
+// elementwise, complex(4) compared with a real(4) array (ca2); a module array,
+// host association, an element passed to an inout dummy and copied back, and
+// a zero-sized array (ca3); a real(8) array of the kernels' kind given a
+// constructor, a complex array and a complex element, which was an internal
+// error before (ca4); complex dummy arrays of explicit, assumed and assumed
+// size shape, an array function result, transpose, reshape with pad and
+// order, and dot_product of complex, mixed real and complex(4) vectors (ca5;
+// dot_product of zero-sized complex vectors is compared with 0 and not printed:
+// gfortran prints its folded value as the integer 0, where F2018 16.9.71 makes
+// it a complex zero, which is what we print); an integer(8) array compared
+// with a complex(4) one in single precision (ca6).
 func TestComplexScalars(t *testing.T) {
-	for _, name := range []string{"cx1", "cx2", "cx3", "cx4"} {
+	for _, name := range []string{"cx1", "cx2", "cx3", "cx4", "ca1", "ca2", "ca3", "ca4", "ca5", "ca6"} {
 		t.Run(name, func(t *testing.T) {
 			src, err := os.ReadFile("testdata/complex/" + name + ".f90")
 			if err != nil {
@@ -72,13 +91,34 @@ func TestComplexRefusals(t *testing.T) {
 	// want is a part of the message: the refusal must be this one, not another
 	// the program happens to meet first
 	for name, c := range map[string]struct{ src, want string }{
-		"array":                     {"complex(8) :: c(2)\n  c = 1", "complex arrays are not supported yet"},
+		"array expression to inout": {"call s()\ncontains\n  subroutine s()\n    call t([(1d0, 0d0)])\n  end subroutine s\n  subroutine t(x)\n    complex(8) :: x(1)\n  end subroutine t", "can only be passed to an intent(in) dummy"},
+		"optional array dummy":      {"call t()\ncontains\n  subroutine t(x)\n    complex(8), optional :: x(2)\n  end subroutine t", "an optional, value or target complex array dummy argument"},
+		"matmul of arrays":          {"complex(8) :: c(2, 2)\n  c = 1\n  print *, matmul(c, c)", "matmul of a complex array is not supported yet"},
+		"spread of a scalar":        {"print *, spread((1d0, 2d0), 1, 2)", "spread of a complex array is not supported yet"},
+		"allocatable array":         {"complex(8), allocatable :: c(:)\n  allocate (c(2))", "an allocatable or pointer complex array is not supported yet"},
+		"pointer array":             {"complex(8), pointer :: c(:)\n  nullify (c)", "an allocatable or pointer complex array is not supported yet"},
+		"automatic array":           {"call s(2)\ncontains\n  subroutine s(n)\n    integer :: n\n    complex(8) :: c(n)\n    c = 0\n  end subroutine s", "an array needs constant bounds"},
+		"saved array":               {"call s()\ncontains\n  subroutine s()\n    complex(8) :: c(1) = 0\n  end subroutine s", "saved between calls"},
+		"array power":               {"complex(8) :: c(2)\n  integer :: n\n  n = 3\n  c = 1\n  c = c**n", "constant integer exponent only"},
+		"real array power":          {"complex(8) :: c(2)\n  c = 1\n  c = c**1.5d0", "constant integer exponent only"},
+		"tan of an array":           {"complex(8) :: c(2)\n  c = 1\n  print *, tan(c)", "tan of a complex array is not supported yet"},
+		"sum of an array":           {"complex(8) :: c(2)\n  c = 1\n  print *, sum(c)", "sum of a complex array is not supported yet"},
+		"array of two arguments":    {"complex(8) :: c(2)\n  c = 1\n  print *, merge(c, c, .true.)", "merge of a complex array is not supported yet"},
+		"real of an array and kind": {"complex(8) :: c(2)\n  c = 1\n  print *, real(c, 4)", "real of these arguments is not supported"},
+		"cmplx of an array and y":   {"complex(8) :: c(2)\n  c = 1\n  print *, cmplx(c, c, 8)", "cmplx of these arguments is not supported"},
+		"read of an array":          {"complex(8) :: c(2)\n  character(8) :: s\n  s = '(1,2)'\n  read (s, *) c", "an input item"},
+		"where on an array":         {"complex(8) :: c(2)\n  c = 1\n  where ([.true., .false.]) c = 2", "not an array of the general kind"},
 		"tan of a complex":          {"complex(8) :: c\n  c = (1d0, 1d0)\n  print *, tan(c)", "tan of a complex argument is not supported yet"},
 		"ordering":                  {"complex(8) :: c\n  c = 1\n  print *, c < c", "comparison operator '<'"},
 		"complex(16) value":         {"complex(16) :: c\n  c = 1", "complex(16) is not supported"},
 		"boz beside a variable":     {"complex(8) :: c\n  real(8) :: x\n  x = 1\n  c = cmplx(z'3FF0000000000000', x, 8)", "a BOZ argument of cmplx that is not folded"},
 		"boz wider than real(4)":    {"complex(4) :: c\n  c = cmplx(z'3FF0000000000000', 0)", "a BOZ argument of cmplx that is not folded"},
 		"int of a boz past 64 bits": {"integer(8) :: i\n  i = int(z'1FFFFFFFFFFFFFFFF', 8)", "wider than 64 bits"},
+		"refused initial value":     {"complex(8) :: c(1) = [spread((1d0, 2d0), 1, 1)]\n  print *, c", "spread of a complex array is not supported yet"},
+		"refused constructor item":  {"complex(8) :: c(2)\n  c = 1\n  print *, [(1d0, 0d0), tan(c(1))]", "tan of a complex argument is not supported yet"},
+		"complex in a real array":   {"print *, [real(8) :: (1d0, 2d0)]", "an array constructor mixes complex and other values"},
+		"kernel array to transpose": {"real(8) :: r(2, 2)\n  r = 1\n  print *, transpose(r)", "transpose of a real(8) array of the kernels' kind"},
+		"boz beside an array":       {"real(8) :: r(2)\n  r = 1\n  print *, cmplx(z'3FF0000000000000', r, 8)", "a BOZ argument of cmplx that is not folded"},
 		"boz beside a complex":      {"complex(8) :: c\n  c = cmplx(z'3FF0000000000000', (1d0, 0d0), 8)", "cmplx of these arguments is not supported"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -135,6 +175,65 @@ func TestComplexGuardsBehindTheAnalyser(t *testing.T) {
 		if _, _, err := c.cplxIntrinsic(&syntax.Index{}, name, tv, args); err != nil {
 			t.Errorf("%s of %d arguments: %v", name, len(args), err)
 		}
+	}
+}
+
+// TestComplexArrayGuards drives the complex-array paths whose refusals the
+// analyser or the dispatch makes unreachable from a program: each is a
+// positioned refusal, never a nil function run later.
+func TestComplexArrayGuards(t *testing.T) {
+	f, err := syntax.Parse("g.f90", []byte("end\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &compiler{file: f, cur: &procCode{}}
+	// a variable of another unit: symRef refuses it
+	s := &sym{k: kCA, kd: 8, rank: 1, owner: &procCode{}}
+	id := &syntax.Ident{Name: "c"}
+	// a crash past the guard is a failure of this assertion, not of the binary
+	refuses := func(what string, fn func() error) {
+		t.Helper()
+		defer func() {
+			if p := recover(); p != nil {
+				t.Errorf("%s: crashed instead of refusing: %v", what, p)
+			}
+		}()
+		if err := fn(); err == nil || !strings.Contains(err.Error(), "another program unit") {
+			t.Errorf("%s: %v", what, err)
+		}
+	}
+	refuses("caIdent", func() error { _, err := c.caIdent(id, s); return err })
+	refuses("caIndex", func() error { _, err := c.caIndex(&syntax.Index{}, id, s); return err })
+	refuses("caIndex of an element", func() error {
+		_, err := c.caIndex(&syntax.Index{Args: []syntax.Arg{{Value: &syntax.IntLit{Text: "1"}}}}, id, s)
+		return err
+	})
+	refuses("assignCA", func() error { _, err := c.assignCA(id, id, s, nil, constCplx(1)); return err })
+	refuses("assignCA to an element", func() error {
+		_, err := c.assignCA(id, id, s, &syntax.Index{Args: []syntax.Arg{{Value: &syntax.IntLit{Text: "1"}}}}, constCplx(1))
+		return err
+	})
+	// an external procedure without an interface: the analyser does not see the
+	// dummy's kind, the binding does
+	if _, err := runExact(t, "program p\n  complex(4) :: c(2)\n  c = 1\n  call t(c)\nend program p\nsubroutine t(x)\n  complex(8) :: x(2)\n  print *, x\nend subroutine t\n"); err == nil || !strings.Contains(err.Error(), "differ in kind") {
+		t.Errorf("a complex(4) array to a complex(8) dummy: %v", err)
+	}
+	ca := &ex{k: kCA, slot: -1, rank: 1, et: kCplx, kd: 8, g: func(*frame) *garr { return nil }}
+	lg := &ex{k: kLog, slot: -1}
+	tv := sema.TV{Type: sema.Type{Basic: sema.Complex, Kind: 8}, Rank: 1}
+	for _, xy := range [][2]*ex{{lg, ca}, {ca, lg}} {
+		if _, err := c.caBinary(&syntax.Binary{Op: "+"}, xy[0], xy[1], tv); err == nil || !strings.Contains(err.Error(), "this operand") {
+			t.Errorf("caBinary of a logical operand: %v", err)
+		}
+	}
+	if _, err := c.caIntrinsic(&syntax.Index{}, "conjg", tv, []*ex{lg}); err == nil || !strings.Contains(err.Error(), "this operand") {
+		t.Errorf("caIntrinsic of a logical argument: %v", err)
+	}
+	if _, err := c.cplxDot(&syntax.Index{}, ca, lg, 8); err == nil {
+		t.Error("cplxDot of a logical argument: accepted")
+	}
+	if _, err := c.cplxArrayCons(&syntax.ArrayCons{}, sema.TV{Type: sema.Type{Basic: sema.Complex, Kind: 16}}); err == nil {
+		t.Error("a complex(16) constructor: accepted")
 	}
 }
 

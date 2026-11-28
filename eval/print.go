@@ -234,6 +234,9 @@ func (c *compiler) printItem(it syntax.Expr) (item, error) {
 	case kSA:
 		fn := x.g
 		return func(f *frame, l []rt.Val) []rt.Val { return printStrs(f, l, fn(f)) }, nil
+	case kCA:
+		fn, size := x.g, tv.Type.Kind
+		return func(f *frame, l []rt.Val) []rt.Val { return printCplxs(f, l, fn(f), size) }, nil
 	case kArr:
 		fn := x.a
 		return func(f *frame, l []rt.Val) []rt.Val {

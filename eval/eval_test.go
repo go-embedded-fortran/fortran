@@ -496,10 +496,9 @@ end program p
 // is refused, whatever it looks like.
 func TestKindsComeFromTheAnalyser(t *testing.T) {
 	for name, src := range map[string]string{
-		"integer(16)":   "program p\n  implicit none\n  integer(16) :: i\nend program p\n",
-		"real(16)":      "program p\n  implicit none\n  real(16) :: x\nend program p\n",
-		"complex(16)":   "program p\n  implicit none\n  complex(16) :: c\nend program p\n",
-		"complex array": "program p\n  implicit none\n  complex(8) :: c(3)\nend program p\n",
+		"integer(16)": "program p\n  implicit none\n  integer(16) :: i\nend program p\n",
+		"real(16)":    "program p\n  implicit none\n  real(16) :: x\nend program p\n",
+		"complex(16)": "program p\n  implicit none\n  complex(16) :: c\nend program p\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := compile(t, src)

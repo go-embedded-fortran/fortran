@@ -545,6 +545,31 @@ files went from refused to identical and none left identical. Before this
 change, 70 files stopped first on a complex type; now 32 do (29 on complex
 arrays, 3 on complex components).
 
+**Complex arrays** (2026-11-23): 3151 files, **identical 277**, both-failed
+23, differs 4, **refused-by-us 2094**, gfortran-failed 433, skipped 320.
+`complex(4)` and `complex(8)` arrays of rank 1 to 7 are variables of constant
+bounds, named constants, module and host-associated variables, dummy
+arguments of explicit, assumed or assumed-size shape (sharing the actual's
+elements), and function results. Elements (copied back when passed to a scalar
+dummy argument), sections, constructors and assignment from complex, real and
+integer arrays and scalars work. So do every elemental operator, and `==`
+and `/=` as logical arrays. `real`, `aimag`, `conjg`, `abs`, `cmplx` and
+`dble` apply element by element; `size`, `shape`, `lbound`, `ubound`,
+`reshape`, `transpose` and `dot_product` (gfortran's inline loop, `conjg(a)*b`
+summed in order) are supported, as is list-directed and formatted output.
+Each elemental operation is the scalar one above, so it has the same rounding
+and error bound. The output of the test programs matches gfortran 15.2.0 byte
+for byte. One exception: gfortran prints the folded `dot_product` of two
+zero-sized complex vectors as the integer `0`, where F2018 16.9.71 makes it a
+complex zero, which is what we print. This change also fixes an internal error
+on `main`: a `real(8)` array of rank 1 or 2 with bounds 1, given a constructor
+(`r = [1d0, 2d0]`) or a complex element, read a function that did not exist.
+`matmul`, `sum` and the other reductions of complex arrays are still refused,
+as are allocatable, pointer and optional complex arrays, complex components and
+a rank-2 actual argument passed to an assumed-size rank-1 dummy (true of every
+array type). Compared file by file with v0.38.0, 6 files went from refused to
+identical and none left identical.
+
 ## Semantic analysis (M2, part 1)
 
 `github.com/go-embedded-fortran/fortran/sema` turns a parsed file into the

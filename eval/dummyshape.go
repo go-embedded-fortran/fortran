@@ -93,6 +93,9 @@ func (c *compiler) explicitShapeDummy(ss *sema.Symbol, e syntax.Node, s *sym) er
 		if g.i != nil {
 			v.i = g.i[:n:n]
 		}
+		if g.c != nil {
+			v.c = g.c[:n:n]
+		}
 		f.gas[slot] = v
 	})
 	return nil

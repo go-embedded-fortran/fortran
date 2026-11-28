@@ -27,9 +27,10 @@ type garr struct {
 	kd  int
 	lb  []int64
 	ext []int
-	i   []int64   // kInt and kLog (0 or 1)
-	r   []float64 // kReal
-	s   []string  // kStr: each element exactly clen long (strarrays.go)
+	i   []int64      // kInt and kLog (0 or 1)
+	r   []float64    // kReal
+	s   []string     // kStr: each element exactly clen long (strarrays.go)
+	c   []complex128 // kCplx (cplxarrays.go)
 	// clen is the length of the elements of a character array
 	clen int64
 
@@ -82,6 +83,7 @@ func (g *garr) clone() *garr {
 	h := &garr{et: g.et, kd: g.kd, lb: append([]int64(nil), g.lb...), ext: append([]int(nil), g.ext...)}
 	h.i = append([]int64(nil), g.i...)
 	h.r = append([]float64(nil), g.r...)
+	h.c = append([]complex128(nil), g.c...)
 	return h
 }
 
@@ -902,7 +904,8 @@ type acc struct {
 	et kind
 	i  []int64
 	r  []float64
-	s  []string // kStr (addStr)
+	s  []string     // kStr (addStr)
+	c  []complex128 // kCplx (addCplx)
 }
 
 func (a *acc) add(f *frame, iv int64, rv float64) {
@@ -927,8 +930,11 @@ func (a *acc) add(f *frame, iv int64, rv float64) {
 type emitFn func(*frame, *acc)
 
 func (c *compiler) arrayCons(n *syntax.ArrayCons, tv sema.TV) (*ex, error) {
-	if tv.Type.Basic == sema.Character {
+	switch tv.Type.Basic {
+	case sema.Character:
 		return c.strArrayCons(n, tv)
+	case sema.Complex:
+		return c.cplxArrayCons(n, tv)
 	}
 	et, ok := classOf(tv.Type)
 	if !ok {
@@ -1018,6 +1024,9 @@ func (c *compiler) emitter(e syntax.Expr, et kind) (emitFn, error) {
 	x, err := c.expr(e)
 	if err != nil {
 		return nil, err
+	}
+	if et == kCplx || x.k == kCplx || x.k == kCA {
+		return c.cplxEmitter(e, x, et)
 	}
 	if et == kStr || x.k == kStr || x.k == kSA {
 		switch {
